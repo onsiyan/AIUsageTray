@@ -13,7 +13,7 @@ use codex_usage_core::{
 };
 use codex_usage_windows_auth::{
     WindowsCredentialManagerAuthMaterialStore,
-    browser_cookies::{BrowserLoginOptions, WindowsBrowserCookieImporter},
+    browser_cookies::{BrowserKind, BrowserLoginOptions, WindowsBrowserCookieImporter},
 };
 use reqwest::Method;
 use serde_json::Value;
@@ -24,12 +24,38 @@ use url::Url;
 struct Arguments {
     database: Option<PathBuf>,
     label: Option<String>,
+    browser: Option<BrowserKind>,
+    profile_id: Option<String>,
+    list_profiles: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let arguments = parse_arguments()?;
-    let database_path = arguments.database.unwrap_or_else(default_database_path);
+    let Arguments {
+        database,
+        label,
+        browser,
+        profile_id,
+        list_profiles,
+    } = parse_arguments()?;
+    let importer = WindowsBrowserCookieImporter::from_process()?;
+    if list_profiles {
+        let profiles = importer.discover_profiles(browser)?;
+        if profiles.is_empty() {
+            println!("No supported Chromium browser profiles were found.");
+        }
+        for profile in profiles {
+            let display_name = profile
+                .display_name
+                .as_deref()
+                .map(|name| format!(" — {name}"))
+                .unwrap_or_default();
+            println!("{} / {}{display_name}", profile.browser, profile.profile_id);
+        }
+        return Ok(());
+    }
+
+    let database_path = database.unwrap_or_else(default_database_path);
     if let Some(parent) = database_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -38,13 +64,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let account_store: Arc<dyn AccountStore> = sqlite.clone();
     let snapshot_store: Arc<dyn UsageSnapshotStore> = sqlite;
     let transport = Arc::new(ReqwestUsageHttpTransport::new(Duration::from_secs(45))?);
-    let importer = WindowsBrowserCookieImporter::from_process()?;
     let login_url = Url::parse("https://chatgpt.com/")?;
 
     println!("Opening ChatGPT in your default browser if no signed-in session is available.");
     println!("No password is handled by this tool; only the existing browser session is imported.");
     let login = importer
-        .open_and_wait_for_provider(OPENAI, &login_url, BrowserLoginOptions::default())
+        .open_and_wait_for_provider(
+            OPENAI,
+            &login_url,
+            BrowserLoginOptions {
+                browser,
+                profile_id: profile_id.clone(),
+                ..BrowserLoginOptions::default()
+            },
+        )
         .await?;
     let material = AccountAuthMaterial {
         cookies: login.imported.cookies,
@@ -59,8 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut account = if let Some(account) = existing {
         account
     } else {
-        let label = arguments
-            .label
+        let label = label
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .map(str::to_owned)
@@ -185,8 +217,14 @@ struct BrowserIdentity {
 }
 
 fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
+    parse_arguments_from(env::args_os().skip(1))
+}
+
+fn parse_arguments_from(
+    values: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<Arguments, Box<dyn std::error::Error>> {
     let mut arguments = Arguments::default();
-    let mut values = env::args_os().skip(1);
+    let mut values = values.into_iter();
     while let Some(argument) = values.next() {
         match argument.to_string_lossy().as_ref() {
             "--database" => {
@@ -203,16 +241,88 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
                         .into_owned(),
                 );
             }
+            "--browser" => {
+                let value = values
+                    .next()
+                    .ok_or("--browser requires chrome, edge, brave, or chromium")?
+                    .to_string_lossy()
+                    .into_owned();
+                arguments.browser = Some(
+                    BrowserKind::ALL
+                        .into_iter()
+                        .find(|browser| browser.as_str().eq_ignore_ascii_case(&value))
+                        .ok_or("--browser must be chrome, edge, brave, or chromium")?,
+                );
+            }
+            "--profile-id" => {
+                arguments.profile_id = Some(
+                    values
+                        .next()
+                        .ok_or("--profile-id requires a profile id")?
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+            "--list-profiles" => arguments.list_profiles = true,
             "--help" | "-h" => {
                 println!(
-                    "Usage: codex-usage-codex-probe [--database PATH] [--label LABEL]\n\nImports the signed-in ChatGPT session from a supported Chromium browser, verifies its email, stores cookies per account in Windows Credential Manager, and queries WHAM directly. It does not read Codex auth files or launch Codex CLI/app-server."
+                    "Usage: codex-usage-codex-probe [--database PATH] [--label LABEL] [--browser chrome|edge|brave|chromium] [--profile-id ID]\n       codex-usage-codex-probe --list-profiles [--browser chrome|edge|brave|chromium]\n\nImports the signed-in ChatGPT session from a supported Chromium profile, verifies its email, stores cookies per account in Windows Credential Manager, and queries WHAM directly. Use --list-profiles to find a profile id when more than one profile is available. It does not read Codex auth files or launch Codex CLI/app-server."
                 );
                 std::process::exit(0);
             }
             other => return Err(format!("unknown argument: {other}").into()),
         }
     }
+    if arguments.profile_id.is_some() && arguments.browser.is_none() {
+        return Err("--profile-id requires --browser".into());
+    }
     Ok(arguments)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BrowserKind, parse_arguments_from};
+    use std::ffi::OsString;
+
+    #[test]
+    fn arguments_can_pin_a_browser_profile_for_multi_account_import() {
+        let arguments = parse_arguments_from(
+            [
+                "--browser",
+                "edge",
+                "--profile-id",
+                "Profile 2",
+                "--label",
+                "Codex Work",
+            ]
+            .map(OsString::from),
+        )
+        .unwrap();
+
+        assert_eq!(arguments.browser, Some(BrowserKind::Edge));
+        assert_eq!(arguments.profile_id.as_deref(), Some("Profile 2"));
+        assert_eq!(arguments.label.as_deref(), Some("Codex Work"));
+        assert!(!arguments.list_profiles);
+    }
+
+    #[test]
+    fn arguments_reject_an_unknown_browser_name() {
+        let error = parse_arguments_from(["--browser", "opera"].map(OsString::from))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("chrome, edge, brave, or chromium"));
+    }
+
+    #[test]
+    fn arguments_can_list_profiles_without_opening_a_login_flow() {
+        let arguments =
+            parse_arguments_from(["--list-profiles", "--browser", "chrome"].map(OsString::from))
+                .unwrap();
+
+        assert!(arguments.list_profiles);
+        assert_eq!(arguments.browser, Some(BrowserKind::Chrome));
+    }
 }
 
 fn default_database_path() -> PathBuf {
