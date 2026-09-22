@@ -1404,10 +1404,21 @@ fn snapshot_from_model_quotas(
         window.kind = UsageWindowKind::Secondary;
         window
     });
+    let is_remote = matches!(source, "api-model-catalog" | "api-verified-quota");
+    let gemini_pool_quota = gemini_index.map(|index| &ordered[index]);
+    let claude_gpt_pool_quota = claude_gpt_index.map(|index| &ordered[index]);
     let additional_windows = ordered
         .iter()
         .enumerate()
         .filter(|(index, _)| Some(*index) != primary_index && Some(*index) != claude_gpt_index)
+        .filter(|(_, quota)| {
+            should_show_model_quota_window(
+                quota,
+                is_remote,
+                gemini_pool_quota,
+                claude_gpt_pool_quota,
+            )
+        })
         .map(|(_, quota)| AdditionalRateLimitWindow {
             key: quota.key.clone(),
             name: quota.name.clone(),
@@ -1478,6 +1489,10 @@ fn model_quota_pool(quota: &Quota) -> Option<AntigravityQuotaPool> {
     if !model_is_summary_eligible(quota) {
         return None;
     }
+    model_quota_family(quota)
+}
+
+fn model_quota_family(quota: &Quota) -> Option<AntigravityQuotaPool> {
     let model = format!("{} {}", quota.key, quota.name).to_ascii_lowercase();
     if model.contains("claude") || model.contains("gpt") || model.contains("openai") {
         Some(AntigravityQuotaPool::ClaudeGpt)
@@ -1486,6 +1501,17 @@ fn model_quota_pool(quota: &Quota) -> Option<AntigravityQuotaPool> {
     } else {
         None
     }
+}
+
+fn model_quota_mirror_pool(quota: &Quota) -> Option<AntigravityQuotaPool> {
+    model_quota_family(quota).or_else(|| {
+        let model_id = quota.key.to_ascii_lowercase();
+        let label = quota.name.to_ascii_lowercase();
+        (model_id.starts_with("tab_")
+            || model_id.contains("autocomplete")
+            || label.contains("autocomplete"))
+        .then_some(AntigravityQuotaPool::Gemini)
+    })
 }
 
 fn known_remaining_fraction(quota: &Quota) -> Option<f64> {
@@ -1541,6 +1567,52 @@ fn local_unknown_model_representative_index(models: &[Quota]) -> Option<usize> {
         })
         .min_by(|(_, left), (_, right)| compare_quota_representatives(left, right))
         .map(|(index, _)| index)
+}
+
+fn remote_quota_mirrors_pool(quota: &Quota, pool_quota: &Quota) -> bool {
+    let (Some(quota_reset), Some(pool_reset)) = (
+        quota.window.reset_at_utc.as_ref(),
+        pool_quota.window.reset_at_utc.as_ref(),
+    ) else {
+        return false;
+    };
+    if quota_reset != pool_reset {
+        return false;
+    }
+    matches!(
+        (quota.remaining_fraction, pool_quota.remaining_fraction),
+        (Some(quota_fraction), Some(pool_fraction))
+            if quota_fraction.is_finite()
+                && pool_fraction.is_finite()
+                && quota_fraction == pool_fraction
+    )
+}
+
+fn should_show_model_quota_window(
+    quota: &Quota,
+    is_remote: bool,
+    gemini_pool_quota: Option<&Quota>,
+    claude_gpt_pool_quota: Option<&Quota>,
+) -> bool {
+    let pool = model_quota_pool(quota);
+    if pool.is_some() && model_is_summary_eligible(quota) {
+        return false;
+    }
+    if is_remote {
+        let represented_pool = match model_quota_mirror_pool(quota) {
+            Some(AntigravityQuotaPool::Gemini) => gemini_pool_quota,
+            Some(AntigravityQuotaPool::ClaudeGpt) => claude_gpt_pool_quota,
+            None => None,
+        };
+        if represented_pool.is_some_and(|pool_quota| remote_quota_mirrors_pool(quota, pool_quota)) {
+            return false;
+        }
+    }
+    match quota.remaining_fraction {
+        Some(fraction) if fraction.is_finite() => fraction.clamp(0.0, 1.0) * 100.0 < 99.9,
+        Some(_) => false,
+        None => quota.window.reset_at_utc.is_some(),
+    }
 }
 
 fn apply_summary_quota(quota: &Quota, groups: &[LocalQuotaSummaryGroup]) -> Quota {
@@ -2147,8 +2219,131 @@ mod tests {
         let secondary = snapshot.secondary.as_ref().unwrap();
         assert_eq!(secondary.name, "GPT-OSS 120B");
         assert_eq!(secondary.used_percent, 70.0);
-        assert_eq!(snapshot.additional_windows.len(), 4);
+        let mut additional_keys = snapshot
+            .additional_windows
+            .iter()
+            .map(|window| window.key.as_str())
+            .collect::<Vec<_>>();
+        additional_keys.sort_unstable();
+        assert_eq!(additional_keys, ["gemini-image", "tab_gemini_autocomplete"]);
         assert_eq!(snapshot.metrics.len(), quotas.len());
+    }
+
+    #[test]
+    fn remote_model_windows_hide_only_exact_pool_mirrors() {
+        let account =
+            AccountRecord::create("one", "one@example.com", None, ANTIGRAVITY, None).unwrap();
+        let reset = Some(
+            DateTime::parse_from_rfc3339("2030-01-01T05:00:00Z")
+                .unwrap()
+                .into(),
+        );
+        let quotas = vec![
+            to_quota("gemini-flash", "Gemini Flash".to_owned(), Some(0.7), reset),
+            to_quota("gpt-oss-120b", "GPT-OSS 120B".to_owned(), Some(0.8), reset),
+            to_quota(
+                "gemini-3.7-flash-image",
+                "Gemini 3.7 Flash Image".to_owned(),
+                Some(0.7),
+                reset,
+            ),
+            to_quota(
+                "gemini-3.7-flash-image-no-reset",
+                "Gemini 3.7 Flash Image No Reset".to_owned(),
+                Some(0.7),
+                None,
+            ),
+            to_quota(
+                "gemini-3.7-flash-image-different",
+                "Gemini 3.7 Flash Image Different".to_owned(),
+                Some(0.6),
+                reset,
+            ),
+            to_quota(
+                "gemini-3.7-flash-image-reset-only",
+                "Gemini 3.7 Flash Image Reset Only".to_owned(),
+                None,
+                reset,
+            ),
+            to_quota(
+                "gemini-3.7-flash-image-full",
+                "Gemini 3.7 Flash Image Full".to_owned(),
+                Some(1.0),
+                reset,
+            ),
+            to_quota(
+                "claude-sonnet-image",
+                "Claude Sonnet Image".to_owned(),
+                Some(0.8),
+                reset,
+            ),
+            to_quota(
+                "claude-sonnet-image-different",
+                "Claude Sonnet Image Different".to_owned(),
+                Some(0.6),
+                reset,
+            ),
+            to_quota(
+                "tab_gemini_autocomplete",
+                "Gemini autocomplete".to_owned(),
+                Some(0.7),
+                reset,
+            ),
+        ];
+
+        let local = snapshot_from_model_quotas(
+            &account,
+            &quotas,
+            Some(account.email.clone()),
+            None,
+            "local-legacy",
+            "authoritative",
+        );
+        let remote = snapshot_from_model_quotas(
+            &account,
+            &quotas,
+            Some(account.email.clone()),
+            None,
+            "api-model-catalog",
+            "authoritative",
+        );
+
+        let mut local_keys = local
+            .additional_windows
+            .iter()
+            .map(|window| window.key.as_str())
+            .collect::<Vec<_>>();
+        local_keys.sort_unstable();
+        assert_eq!(
+            local_keys,
+            [
+                "claude-sonnet-image",
+                "claude-sonnet-image-different",
+                "gemini-3.7-flash-image",
+                "gemini-3.7-flash-image-different",
+                "gemini-3.7-flash-image-no-reset",
+                "gemini-3.7-flash-image-reset-only",
+                "tab_gemini_autocomplete",
+            ]
+        );
+
+        let mut remote_keys = remote
+            .additional_windows
+            .iter()
+            .map(|window| window.key.as_str())
+            .collect::<Vec<_>>();
+        remote_keys.sort_unstable();
+        assert_eq!(
+            remote_keys,
+            [
+                "claude-sonnet-image-different",
+                "gemini-3.7-flash-image-different",
+                "gemini-3.7-flash-image-no-reset",
+                "gemini-3.7-flash-image-reset-only",
+            ]
+        );
+        assert_eq!(local.metrics.len(), quotas.len());
+        assert_eq!(remote.metrics.len(), quotas.len());
     }
 
     #[test]
