@@ -35,7 +35,6 @@ pub enum ClaudeSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaudePlanReason {
     ExplicitSourceSelection,
-    ExplicitOAuthOwnerCliFallback,
     AutomaticAdminApi,
     AppAutoPreferredOAuth,
     AppAutoFallbackCli,
@@ -81,9 +80,6 @@ impl ClaudeSourcePlan {
     pub fn preferred_step(&self) -> Option<&ClaudeSourcePlanStep> {
         match self.input.selected_source {
             ClaudeSourceMode::Automatic => self.available_steps().next(),
-            ClaudeSourceMode::OAuth if self.input.runtime == ClaudeRuntime::App => {
-                self.available_steps().next()
-            }
             ClaudeSourceMode::AdminApi
             | ClaudeSourceMode::OAuth
             | ClaudeSourceMode::Web
@@ -138,25 +134,11 @@ pub fn plan(input: ClaudeSourcePlanningInput) -> ClaudeSourcePlan {
                 input,
             )]
         }
-        ClaudeSourceMode::OAuth => match input.runtime {
-            ClaudeRuntime::App => vec![
-                step(
-                    ClaudeSource::OAuth,
-                    ClaudePlanReason::ExplicitSourceSelection,
-                    input,
-                ),
-                step(
-                    ClaudeSource::Cli,
-                    ClaudePlanReason::ExplicitOAuthOwnerCliFallback,
-                    input,
-                ),
-            ],
-            ClaudeRuntime::Cli => vec![step(
-                ClaudeSource::OAuth,
-                ClaudePlanReason::ExplicitSourceSelection,
-                input,
-            )],
-        },
+        ClaudeSourceMode::OAuth => vec![step(
+            ClaudeSource::OAuth,
+            ClaudePlanReason::ExplicitSourceSelection,
+            input,
+        )],
         ClaudeSourceMode::Web => vec![step(
             ClaudeSource::Web,
             ClaudePlanReason::ExplicitSourceSelection,
@@ -245,7 +227,6 @@ fn source_label(source: ClaudeSource) -> &'static str {
 fn reason_label(reason: ClaudePlanReason) -> &'static str {
     match reason {
         ClaudePlanReason::ExplicitSourceSelection => "explicit-source-selection",
-        ClaudePlanReason::ExplicitOAuthOwnerCliFallback => "explicit-oauth-owner-cli-fallback",
         ClaudePlanReason::AutomaticAdminApi => "automatic-admin-api",
         ClaudePlanReason::AppAutoPreferredOAuth => "app-auto-preferred-oauth",
         ClaudePlanReason::AppAutoFallbackCli => "app-auto-fallback-cli",
@@ -327,20 +308,21 @@ mod tests {
     }
 
     #[test]
-    fn explicit_oauth_cli_fallback_is_runtime_sensitive() {
+    fn explicit_oauth_selection_never_falls_back_to_another_account_source() {
         let app = plan(input(
             ClaudeRuntime::App,
             ClaudeSourceMode::OAuth,
             false,
             false,
             true,
-            false,
+            true,
         ));
-        assert_eq!(app.order_label(), "oauth→cli");
+        assert_eq!(app.order_label(), "oauth");
         assert_eq!(
             app.preferred_step().map(|step| step.source),
-            Some(ClaudeSource::Cli)
+            Some(ClaudeSource::OAuth)
         );
+        assert_eq!(app.available_steps().count(), 1);
 
         let cli = plan(input(
             ClaudeRuntime::Cli,
@@ -351,6 +333,7 @@ mod tests {
             true,
         ));
         assert_eq!(cli.order_label(), "oauth");
+        assert_eq!(cli.available_steps().count(), 1);
     }
 
     #[test]
