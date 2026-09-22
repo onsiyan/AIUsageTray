@@ -1028,19 +1028,26 @@ fn local_bucket_kind(bucket: &LocalQuotaSummaryBucket) -> LocalBucketKind {
         bucket.display_name.as_str(),
         bucket.window.as_deref().unwrap_or_default(),
     ];
-    let session_aliases = ["session", "5h", "5-hour", "five hour", "five-hour"];
     for value in values {
         let normalized = value.trim().to_ascii_lowercase().replace('_', "-");
-        if session_aliases
-            .iter()
-            .any(|alias| normalized == *alias || normalized.ends_with(&format!("-{alias}")))
-            || normalized.contains("five hour")
-        {
+        let tokens = normalized
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .filter(|token| !token.is_empty())
+            .collect::<Vec<_>>();
+        let is_session = tokens.iter().any(|token| {
+            matches!(
+                *token,
+                "session" | "5h" | "5hr" | "5hrs" | "5hour" | "5hours"
+            )
+        }) || tokens
+            .windows(2)
+            .any(|pair| pair[0] == "five" && pair[1] == "hour");
+        if is_session {
             return LocalBucketKind::Session;
         }
-        if normalized == "weekly"
-            || normalized.ends_with("-weekly")
-            || normalized.contains("weekly")
+        if tokens
+            .iter()
+            .any(|token| matches!(*token, "week" | "weekly"))
         {
             return LocalBucketKind::Weekly;
         }
@@ -1106,8 +1113,10 @@ fn local_window_seconds(bucket: &LocalQuotaSummaryBucket) -> i64 {
 fn local_bucket_metric(bucket: &LocalQuotaSummaryBucket) -> UsageMetric {
     let group_title = local_group_title(&bucket.group_name);
     let bucket_title = local_bucket_title(bucket);
-    let used_percent = bucket
-        .remaining_fraction
+    let usage_known = !bucket.disabled && bucket.remaining_fraction.is_some();
+    let used_percent = usage_known
+        .then(|| bucket.remaining_fraction)
+        .flatten()
         .map(|remaining| ((1.0 - remaining) * 100.0).clamp(0.0, 100.0));
     let mut metadata = HashMap::from([
         ("source".to_owned(), "local-quota-summary".to_owned()),
@@ -1115,10 +1124,7 @@ fn local_bucket_metric(bucket: &LocalQuotaSummaryBucket) -> UsageMetric {
         ("raw_group".to_owned(), bucket.group_name.clone()),
         ("bucket_id".to_owned(), bucket.bucket_id.clone()),
         ("raw_bucket".to_owned(), bucket.display_name.clone()),
-        (
-            "usage_known".to_owned(),
-            (!bucket.disabled && bucket.remaining_fraction.is_some()).to_string(),
-        ),
+        ("usage_known".to_owned(), usage_known.to_string()),
     ]);
     if let Some(remaining) = bucket.remaining_fraction {
         metadata.insert("remaining_fraction".to_owned(), remaining.to_string());
@@ -1138,9 +1144,12 @@ fn local_bucket_metric(bucket: &LocalQuotaSummaryBucket) -> UsageMetric {
         name: format!("{group_title} {bucket_title}"),
         used_percent,
         used_amount: used_percent,
-        limit_amount: Some(100.0),
-        remaining_amount: bucket.remaining_fraction.map(|value| value * 100.0),
-        unit: Some("percent".to_owned()),
+        limit_amount: usage_known.then_some(100.0),
+        remaining_amount: usage_known
+            .then(|| bucket.remaining_fraction)
+            .flatten()
+            .map(|value| value * 100.0),
+        unit: usage_known.then(|| "percent".to_owned()),
         reset_at_utc: bucket.reset_at_utc,
         reset_label: bucket.reset_description.clone(),
         metadata,
@@ -1183,6 +1192,7 @@ fn snapshot_from_quota_summary(
         .collect::<Vec<_>>();
     let all_windows = buckets
         .iter()
+        .filter(|bucket| !bucket.disabled && bucket.remaining_fraction.is_some())
         .map(|bucket| {
             let group_title = local_group_title(&bucket.group_name);
             let bucket_title = local_bucket_title(bucket);
@@ -1755,6 +1765,70 @@ mod tests {
             window.seconds_until_reset(DateTime::from_timestamp(1_704_063_600, 0).unwrap()),
             Some(3_600)
         );
+    }
+
+    #[test]
+    fn unknown_or_disabled_summary_buckets_keep_reset_context_without_fake_windows() {
+        let root = json!({
+            "groups": [{
+                "displayName": "Gemini Models",
+                "buckets": [
+                    {
+                        "bucketId": "gemini-5h-limit",
+                        "displayName": "5h limit",
+                        "remainingFraction": 0.8,
+                        "resetTime": "2030-01-01T05:00:00Z"
+                    },
+                    {
+                        "bucketId": "gemini-weekly",
+                        "displayName": "Weekly Limit",
+                        "remainingFraction": 0.25,
+                        "disabled": true,
+                        "resetTime": "2030-01-08T00:00:00Z"
+                    },
+                    {
+                        "bucketId": "3p-5h",
+                        "displayName": "Five Hour Limit",
+                        "resetTime": "2030-01-01T05:00:00Z"
+                    }
+                ]
+            }]
+        });
+        let groups = parse_quota_summary(&root);
+        let account =
+            AccountRecord::create("local", "local@example.com", None, ANTIGRAVITY, None).unwrap();
+
+        let snapshot = snapshot_from_quota_summary(
+            &account,
+            &groups,
+            &[],
+            Some("local@example.com".to_owned()),
+            None,
+            "local",
+        );
+
+        assert_eq!(
+            snapshot.primary.as_ref().unwrap().limit_window_seconds,
+            18_000
+        );
+        assert_eq!(snapshot.additional_windows.len(), 1);
+        for bucket_id in ["gemini-weekly", "3p-5h"] {
+            let metric = snapshot
+                .metrics
+                .iter()
+                .find(|metric| {
+                    metric.metadata.get("bucket_id").map(String::as_str) == Some(bucket_id)
+                })
+                .unwrap();
+            assert_eq!(metric.used_percent, None);
+            assert_eq!(metric.remaining_amount, None);
+            assert_eq!(metric.unit, None);
+            assert_eq!(
+                metric.metadata.get("usage_known").map(String::as_str),
+                Some("false")
+            );
+            assert!(metric.reset_at_utc.is_some());
+        }
     }
 
     #[test]
