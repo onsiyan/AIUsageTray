@@ -98,6 +98,19 @@ pub trait AccountAuthMaterialStore: Send + Sync {
         material: &AccountAuthMaterial,
     ) -> Result<(), AuthError>;
     async fn remove(&self, account_id: AccountId) -> Result<(), AuthError>;
+
+    /// Replaces one stored cookie only when its current value still matches
+    /// the value used by the request that renewed it. Stores that cannot make
+    /// this conditional update safely must leave the default no-op in place.
+    async fn replace_cookie_if_matches(
+        &self,
+        _account_id: AccountId,
+        _cookie_name: &str,
+        _expected_value: &str,
+        _replacement_value: &str,
+    ) -> Result<bool, AuthError> {
+        Ok(false)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -144,6 +157,37 @@ impl AccountAuthMaterialStore for InMemoryAuthMaterialStore {
     async fn remove(&self, account_id: AccountId) -> Result<(), AuthError> {
         self.materials.write().await.remove(&account_id);
         Ok(())
+    }
+
+    async fn replace_cookie_if_matches(
+        &self,
+        account_id: AccountId,
+        cookie_name: &str,
+        expected_value: &str,
+        replacement_value: &str,
+    ) -> Result<bool, AuthError> {
+        if cookie_name.trim().is_empty()
+            || expected_value.is_empty()
+            || replacement_value.trim().is_empty()
+        {
+            return Ok(false);
+        }
+        let mut materials = self.materials.write().await;
+        let Some(material) = materials.get_mut(&account_id) else {
+            return Ok(false);
+        };
+        let Some(cookie) = material
+            .cookies
+            .iter_mut()
+            .find(|cookie| cookie.name.eq_ignore_ascii_case(cookie_name))
+        else {
+            return Ok(false);
+        };
+        if cookie.value != expected_value {
+            return Ok(false);
+        }
+        cookie.value = replacement_value.to_owned();
+        Ok(true)
     }
 }
 

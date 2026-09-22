@@ -15,7 +15,7 @@ use super::{
 };
 use crate::{
     accounts::OPENAI,
-    auth::AccountAuthMaterialProvider,
+    auth::{AccountAuthMaterialProvider, AccountAuthMaterialStore},
     transport::{TransportError, UsageHttpTransport},
     usage::UsageAdapter,
 };
@@ -125,6 +125,27 @@ impl ProviderRegistry {
         auth: Arc<dyn AccountAuthMaterialProvider>,
         config: ProviderRegistryConfig,
     ) -> Result<Self, ProviderRegistryError> {
+        Self::from_dependencies_inner(transport, auth, None, config)
+    }
+
+    /// Constructs the complete adapter set and gives Claude Web access to the
+    /// same secure account-scoped credential store used by the host. This is
+    /// required only for persisting a verified server-rotated session cookie.
+    pub fn from_dependencies_with_auth_store(
+        transport: Arc<dyn UsageHttpTransport>,
+        auth: Arc<dyn AccountAuthMaterialProvider>,
+        auth_store: Arc<dyn AccountAuthMaterialStore>,
+        config: ProviderRegistryConfig,
+    ) -> Result<Self, ProviderRegistryError> {
+        Self::from_dependencies_inner(transport, auth, Some(auth_store), config)
+    }
+
+    fn from_dependencies_inner(
+        transport: Arc<dyn UsageHttpTransport>,
+        auth: Arc<dyn AccountAuthMaterialProvider>,
+        auth_store: Option<Arc<dyn AccountAuthMaterialStore>>,
+        config: ProviderRegistryConfig,
+    ) -> Result<Self, ProviderRegistryError> {
         let openai_adapter = WhamUsageAdapter::new(
             Arc::clone(&transport),
             Arc::clone(&auth),
@@ -133,17 +154,19 @@ impl ProviderRegistry {
         )?
         .with_reset_credits(config.fetch_openai_reset_credits);
         let openai = Arc::new(openai_adapter) as Arc<dyn UsageAdapter>;
-        let claude = Arc::new(
-            ClaudeUsageAdapter::new(
-                Arc::clone(&transport),
-                Arc::clone(&auth),
-                config.fetch_claude_prepaid_credits,
-            )?
-            .with_account_identity(config.fetch_claude_account_identity)
-            .with_web_extras(config.fetch_claude_web_extras)
-            .with_source_mode(config.claude_source_mode)
-            .with_runtime(config.claude_runtime),
-        ) as Arc<dyn UsageAdapter>;
+        let mut claude_adapter = ClaudeUsageAdapter::new(
+            Arc::clone(&transport),
+            Arc::clone(&auth),
+            config.fetch_claude_prepaid_credits,
+        )?
+        .with_account_identity(config.fetch_claude_account_identity)
+        .with_web_extras(config.fetch_claude_web_extras)
+        .with_source_mode(config.claude_source_mode)
+        .with_runtime(config.claude_runtime);
+        if let Some(auth_store) = auth_store {
+            claude_adapter = claude_adapter.with_auth_material_store(auth_store);
+        }
+        let claude = Arc::new(claude_adapter) as Arc<dyn UsageAdapter>;
         let opencode_go = Arc::new(
             OpenCodeGoUsageAdapter::new(Arc::clone(&transport), Arc::clone(&auth))?
                 .with_source_mode(config.opencode_go_source_mode),

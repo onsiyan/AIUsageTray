@@ -98,17 +98,21 @@ impl UsageRuntime {
     ) -> Result<Arc<Self>, RuntimeBootstrapError> {
         let auth = Arc::new(ClaudeOAuthRefreshingAuthMaterialProvider::new(
             auth,
-            auth_store,
+            Arc::clone(&auth_store),
             Arc::clone(&transport),
         )) as Arc<dyn AccountAuthMaterialProvider>;
-        Self::from_dependencies(
+        let providers = Arc::new(ProviderRegistry::from_dependencies_with_auth_store(
+            Arc::clone(&transport),
+            auth,
+            auth_store,
+            provider_config,
+        )?);
+        Ok(Self::new(
             account_store,
             snapshot_store,
-            transport,
-            auth,
-            provider_config,
+            providers,
             refresh_config,
-        )
+        ))
     }
 
     /// Convenience composition root for the durable SQLite-backed runtime.

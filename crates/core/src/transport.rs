@@ -111,16 +111,7 @@ impl UsageHttpTransport for ReqwestUsageHttpTransport {
 
         let response = builder.send().await?;
         let status_code = response.status().as_u16();
-        let headers = response
-            .headers()
-            .iter()
-            .filter_map(|(name, value)| {
-                value
-                    .to_str()
-                    .ok()
-                    .map(|value| (name.to_string(), value.to_owned()))
-            })
-            .collect();
+        let headers = collect_response_headers(response.headers());
         let body = response.text().await?;
 
         Ok(UsageHttpResponse {
@@ -128,5 +119,53 @@ impl UsageHttpTransport for ReqwestUsageHttpTransport {
             body,
             headers,
         })
+    }
+}
+
+fn collect_response_headers(headers: &header::HeaderMap) -> BTreeMap<String, String> {
+    let mut collected = BTreeMap::new();
+    for (name, value) in headers {
+        let Ok(value) = value.to_str() else {
+            continue;
+        };
+        let name = name.as_str().to_owned();
+        if name.eq_ignore_ascii_case("set-cookie") {
+            let joined = collected.entry(name).or_insert_with(String::new);
+            if !joined.is_empty() {
+                joined.push('\n');
+            }
+            joined.push_str(value);
+        } else {
+            collected.insert(name, value.to_owned());
+        }
+    }
+    collected
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_response_headers;
+    use reqwest::header::{HeaderMap, HeaderValue, SET_COOKIE};
+
+    #[test]
+    fn repeated_set_cookie_headers_remain_individually_parseable() {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            SET_COOKIE,
+            HeaderValue::from_static("__cf_bm=cloudflare; Path=/; HttpOnly"),
+        );
+        headers.append(
+            SET_COOKIE,
+            HeaderValue::from_static("sessionKey=sk-ant-sid-renewed; Path=/; HttpOnly"),
+        );
+
+        assert_eq!(
+            collect_response_headers(&headers)
+                .get("set-cookie")
+                .map(String::as_str),
+            Some(
+                "__cf_bm=cloudflare; Path=/; HttpOnly\nsessionKey=sk-ant-sid-renewed; Path=/; HttpOnly"
+            )
+        );
     }
 }

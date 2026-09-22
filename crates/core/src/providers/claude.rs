@@ -1,7 +1,7 @@
 pub use super::claude_planner::ClaudeSourceMode;
 use crate::{
     accounts::{AccountId, AccountRecord, CLAUDE, VerifiedIdentity},
-    auth::{AccountAuthMaterialProvider, AuthError},
+    auth::{AccountAuthMaterialProvider, AccountAuthMaterialStore, AuthError},
     providers::claude_cli::{self, ClaudeCliError, ClaudeCliProbeOptions},
     providers::claude_planner::{self, ClaudeRuntime, ClaudeSource},
     providers::shared::{
@@ -10,7 +10,8 @@ use crate::{
     transport::{TransportError, UsageHttpRequest, UsageHttpTransport},
     usage::{
         AdditionalRateLimitWindow, CreditsSnapshot, RateLimitWindow, SpendSnapshot, UsageAdapter,
-        UsageMetric, UsagePrimaryWindowKind, UsageProbeResult, UsageSnapshot, UsageWindowKind,
+        UsageAdapterErrorCode, UsageMetric, UsagePrimaryWindowKind, UsageProbeResult,
+        UsageSnapshot, UsageSourceDiagnostic, UsageWindowKind,
     },
 };
 use async_trait::async_trait;
@@ -25,6 +26,7 @@ use url::Url;
 pub struct ClaudeUsageAdapter {
     transport: Arc<dyn UsageHttpTransport>,
     auth: Arc<dyn AccountAuthMaterialProvider>,
+    auth_material_store: Option<Arc<dyn AccountAuthMaterialStore>>,
     base_url: Url,
     oauth_base_url: Url,
     fetch_prepaid_credits: bool,
@@ -61,6 +63,7 @@ impl ClaudeUsageAdapter {
         Ok(Self {
             transport,
             auth,
+            auth_material_store: None,
             base_url: Url::parse("https://claude.ai/")
                 .map_err(|error| TransportError::InvalidUrl(error.to_string()))?,
             oauth_base_url: Url::parse("https://api.anthropic.com/")
@@ -81,6 +84,13 @@ impl ClaudeUsageAdapter {
     /// so a plain usage poll never adds a second identity request.
     pub fn with_account_identity(mut self, enabled: bool) -> Self {
         self.fetch_account_identity = enabled;
+        self
+    }
+
+    /// Persists a server-rotated Claude Web session only after the adapter has
+    /// verified the response identity against this account's recorded email.
+    pub fn with_auth_material_store(mut self, store: Arc<dyn AccountAuthMaterialStore>) -> Self {
+        self.auth_material_store = Some(store);
         self
     }
 
@@ -421,20 +431,24 @@ impl ClaudeUsageAdapter {
         account: &AccountRecord,
         session_key: &str,
     ) -> Result<UsageProbeResult, TransportError> {
-        let organizations = self.get("api/organizations", session_key).await?;
+        let initial_session_key = session_key.to_owned();
+        let mut session_key = initial_session_key.clone();
+        let organizations = self.get("api/organizations", &session_key).await?;
         if !organizations.is_success() {
             return Ok(map_claude_http_error(&organizations, "Claude"));
         }
+        update_session_key_from_response(&mut session_key, &organizations);
         let organization_id =
             select_organization(&organizations.body, account.provider_account_id.as_deref())
                 .ok_or_else(|| {
                     TransportError::Serialization("Claude organization id was not found".to_owned())
                 })?;
         let usage_path = format!("api/organizations/{organization_id}/usage");
-        let usage = self.get(&usage_path, session_key).await?;
+        let usage = self.get(&usage_path, &session_key).await?;
         if !usage.is_success() {
             return Ok(map_claude_http_error(&usage, "Claude"));
         }
+        update_session_key_from_response(&mut session_key, &usage);
         let root: Value = serde_json::from_str(&usage.body)
             .map_err(|error| TransportError::Serialization(error.to_string()))?;
         let now = Utc::now();
@@ -462,25 +476,35 @@ impl ClaudeUsageAdapter {
         let (mut spend, mut credits) = parse_extra_usage(&root);
         if self.fetch_prepaid_credits {
             let overage_path = format!("api/organizations/{organization_id}/overage_spend_limit");
-            if let Ok(response) = self.get(&overage_path, session_key).await {
+            if let Ok(response) = self.get(&overage_path, &session_key).await {
+                update_session_key_from_response(&mut session_key, &response);
                 if response.is_success() {
                     spend = parse_overage_spend(&response.body).or(spend);
                 }
             }
             let credits_path = format!("api/organizations/{organization_id}/prepaid/credits");
-            if let Ok(response) = self.get(&credits_path, session_key).await {
+            if let Ok(response) = self.get(&credits_path, &session_key).await {
+                update_session_key_from_response(&mut session_key, &response);
                 if response.is_success() {
                     credits = parse_prepaid_credits(&response.body).or(credits);
                 }
             }
         }
         let primary = usage_primary.or_else(|| spend.as_ref().and_then(spend_limit_window));
-        let account_info = if self.fetch_account_identity {
-            self.get("api/account", session_key)
-                .await
-                .ok()
-                .filter(|response| response.is_success())
-                .and_then(|response| parse_claude_web_account(&response.body, &organization_id))
+        // A response can rotate sessionKey while still returning valid usage.
+        // Fetch the account identity on that exceptional path even when
+        // optional identity enrichment is disabled; persistence must never be
+        // based only on an unverified usage payload.
+        let should_fetch_identity =
+            self.fetch_account_identity || session_key != initial_session_key;
+        let account_info = if should_fetch_identity {
+            match self.get("api/account", &session_key).await {
+                Ok(response) if response.is_success() => {
+                    update_session_key_from_response(&mut session_key, &response);
+                    parse_claude_web_account(&response.body, &organization_id)
+                }
+                _ => None,
+            }
         } else {
             None
         };
@@ -495,6 +519,14 @@ impl ClaudeUsageAdapter {
                 "Claude Web session belongs to another account",
             ));
         }
+        let identity_verified_for_rotation = account_info
+            .as_ref()
+            .and_then(|info| info.email.as_deref())
+            .is_some_and(|email| email.trim().eq_ignore_ascii_case(&account.email))
+            && account
+                .provider_account_id
+                .as_deref()
+                .is_none_or(|expected| expected == organization_id);
         let observed_email = account_info
             .as_ref()
             .and_then(|info| info.email.clone())
@@ -519,6 +551,40 @@ impl ClaudeUsageAdapter {
         {
             return Ok(invalid_payload("Claude", "no usage lanes were present"));
         }
+        let mut source_diagnostics = Vec::new();
+        let mut session_token_was_refreshed = false;
+        if session_key != initial_session_key {
+            if let Some(store) = self.auth_material_store.as_ref() {
+                if !identity_verified_for_rotation {
+                    source_diagnostics.push(UsageSourceDiagnostic {
+                        source: "auth.session-key".to_owned(),
+                        code: UsageAdapterErrorCode::Unknown,
+                        message: "Claude returned a renewed Web session, but its account identity could not be verified; the saved cookie was left unchanged".to_owned(),
+                        http_status_code: None,
+                        retry_after_seconds: None,
+                    });
+                } else {
+                    match store
+                        .replace_cookie_if_matches(
+                            account.id,
+                            "sessionKey",
+                            &initial_session_key,
+                            &session_key,
+                        )
+                        .await
+                    {
+                        Ok(replaced) => session_token_was_refreshed = replaced,
+                        Err(_) => source_diagnostics.push(UsageSourceDiagnostic {
+                            source: "auth.session-key".to_owned(),
+                            code: UsageAdapterErrorCode::Unknown,
+                            message: "Claude renewed its Web session but the updated cookie could not be saved securely".to_owned(),
+                            http_status_code: None,
+                            retry_after_seconds: None,
+                        }),
+                    }
+                }
+            }
+        }
         let primary_kind = primary_window_kind(primary.as_ref());
         let snapshot = UsageSnapshot {
             account_id: account.id,
@@ -538,19 +604,21 @@ impl ClaudeUsageAdapter {
             stale_reason: None,
             stale_at_utc: None,
             metrics,
-            source_diagnostics: Vec::new(),
+            source_diagnostics,
             provider_id: CLAUDE.to_owned(),
             source: Some("browser".to_owned()),
             data_confidence: "authoritative".to_owned(),
         };
-        Ok(UsageProbeResult::success(
+        let mut result = UsageProbeResult::success(
             snapshot,
             Some(VerifiedIdentity {
                 email: observed_email,
                 provider_account_id: Some(organization_id),
                 plan_type,
             }),
-        ))
+        );
+        result.session_token_was_refreshed = session_token_was_refreshed;
+        Ok(result)
     }
 
     async fn probe_admin(
@@ -900,6 +968,8 @@ impl ClaudeUsageAdapter {
             Ok(result) if result.succeeded() => result,
             Ok(_) | Err(_) => return oauth,
         };
+        let session_token_was_refreshed =
+            oauth.session_token_was_refreshed || web.session_token_was_refreshed;
         let Some(web_snapshot) = web.snapshot else {
             return oauth;
         };
@@ -929,7 +999,18 @@ impl ClaudeUsageAdapter {
                 snapshot.metrics.push(metric);
             }
         }
-        UsageProbeResult::success(snapshot, oauth.identity)
+        for diagnostic in web_snapshot.source_diagnostics {
+            if !snapshot
+                .source_diagnostics
+                .iter()
+                .any(|existing| existing.source == diagnostic.source)
+            {
+                snapshot.source_diagnostics.push(diagnostic);
+            }
+        }
+        let mut result = UsageProbeResult::success(snapshot, oauth.identity);
+        result.session_token_was_refreshed = session_token_was_refreshed;
+        result
     }
 }
 
@@ -1664,6 +1745,53 @@ fn claude_session_key(material: &crate::auth::AccountAuthMaterial) -> Option<Str
         .filter(|value| value.starts_with("sk-ant-") && value.len() > "sk-ant-".len())
 }
 
+fn update_session_key_from_response(
+    session_key: &mut String,
+    response: &crate::transport::UsageHttpResponse,
+) {
+    if let Some(renewed) = rotated_claude_session_key(response) {
+        *session_key = renewed;
+    }
+}
+
+fn rotated_claude_session_key(response: &crate::transport::UsageHttpResponse) -> Option<String> {
+    if response.status_code != 200 {
+        return None;
+    }
+    let set_cookie = response
+        .headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("set-cookie"))
+        .map(|(_, value)| value)?;
+
+    let mut latest_session_key = None;
+    for header_line in set_cookie.lines() {
+        let bytes = header_line.as_bytes();
+        let cookie_name = b"sessionKey=";
+        if bytes.len() < cookie_name.len() {
+            continue;
+        }
+        for start in 0..=bytes.len() - cookie_name.len() {
+            if !bytes[start..start + cookie_name.len()].eq_ignore_ascii_case(cookie_name) {
+                continue;
+            }
+            let boundary = header_line[..start].trim_end();
+            if !boundary.is_empty() && !boundary.ends_with(',') {
+                continue;
+            }
+            let value_start = start + cookie_name.len();
+            let value_end = header_line[value_start..]
+                .find([';', ',', '\r', '\n'])
+                .map_or(header_line.len(), |offset| value_start + offset);
+            let candidate = header_line[value_start..value_end].trim();
+            if candidate.starts_with("sk-ant-") && !candidate.chars().any(char::is_whitespace) {
+                latest_session_key = Some(candidate.to_owned());
+            }
+        }
+    }
+    latest_session_key
+}
+
 struct OAuthLimitWindow {
     key: String,
     name: String,
@@ -2178,6 +2306,30 @@ mod tests {
         assert_eq!(
             claude_session_key(&valid).as_deref(),
             Some("sk-ant-sid-test")
+        );
+    }
+
+    #[test]
+    fn rotated_web_session_key_requires_success_and_a_valid_cookie() {
+        let response = |status_code, set_cookie: &str| crate::transport::UsageHttpResponse {
+            status_code,
+            body: String::new(),
+            headers: [("Set-Cookie".to_owned(), set_cookie.to_owned())]
+                .into_iter()
+                .collect(),
+        };
+
+        let renewed = response(
+            200,
+            "__cf_bm=cloudflare; Expires=Wed, 21 Oct 2030 07:28:00 GMT\nsessionKey=sk-ant-sid-renewed; Path=/; HttpOnly",
+        );
+        assert_eq!(
+            rotated_claude_session_key(&renewed).as_deref(),
+            Some("sk-ant-sid-renewed")
+        );
+        assert!(rotated_claude_session_key(&response(401, "sessionKey=sk-ant-sid-new")).is_none());
+        assert!(
+            rotated_claude_session_key(&response(200, "sessionKey=not-a-claude-cookie")).is_none()
         );
     }
 

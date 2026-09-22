@@ -2,8 +2,9 @@ use async_trait::async_trait;
 use codex_usage_core::{
     accounts::{ANTIGRAVITY, AccountRecord, AccountStore, CLAUDE, OPENROUTER},
     auth::{
-        AccountAuthMaterial, AccountAuthMaterialProvider, AuthError, CookieValue,
-        OAuthCallbackListener, OAuthPkcePair,
+        AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore, AuthError,
+        CookieValue, InMemoryAuthMaterialStore, OAuthCallbackListener, OAuthPkcePair,
+        StoredAuthMaterialProvider,
     },
     oauth_loopback::LoopbackOAuthCallbackListener,
     providers::antigravity::AntigravityUsageAdapter,
@@ -11,6 +12,7 @@ use codex_usage_core::{
     providers::openai::WhamUsageAdapter,
     providers::opencode_go::OpenCodeGoUsageAdapter,
     providers::openrouter::OpenRouterUsageAdapter,
+    providers::registry::{ProviderRegistry, ProviderRegistryConfig},
     storage::SqliteStore,
     transport::{TransportError, UsageHttpRequest, UsageHttpResponse, UsageHttpTransport},
     usage::{
@@ -408,6 +410,228 @@ async fn claude_web_missing_five_hour_keeps_weekly_secondary_and_marks_placehold
 }
 
 #[tokio::test]
+async fn claude_rotated_session_cookie_is_persisted_per_verified_account() {
+    let transport = Arc::new(ClaudeRotationTransport::default());
+    let store = Arc::new(InMemoryAuthMaterialStore::default());
+    let account_a = AccountRecord::create(
+        "claude-a",
+        "a@example.com",
+        Some("org-a".to_owned()),
+        CLAUDE,
+        None,
+    )
+    .unwrap();
+    let account_b = AccountRecord::create(
+        "claude-b",
+        "b@example.com",
+        Some("org-b".to_owned()),
+        CLAUDE,
+        None,
+    )
+    .unwrap();
+    store
+        .save(
+            account_a.id,
+            &claude_auth_material("sk-ant-initial-a", "a-private-cookie"),
+        )
+        .await
+        .unwrap();
+    store
+        .save(
+            account_b.id,
+            &claude_auth_material("sk-ant-initial-b", "b-private-cookie"),
+        )
+        .await
+        .unwrap();
+
+    let auth_store: Arc<dyn AccountAuthMaterialStore> = store.clone();
+    let auth: Arc<dyn AccountAuthMaterialProvider> =
+        Arc::new(StoredAuthMaterialProvider::new(store.clone()));
+    let registry = ProviderRegistry::from_dependencies_with_auth_store(
+        transport.clone(),
+        auth,
+        auth_store,
+        ProviderRegistryConfig {
+            claude_source_mode: ClaudeSourceMode::Web,
+            fetch_claude_prepaid_credits: false,
+            fetch_claude_account_identity: false,
+            ..ProviderRegistryConfig::default()
+        },
+    )
+    .unwrap();
+    let adapter = registry.get(CLAUDE).unwrap();
+
+    let (result_a, result_b) = tokio::join!(adapter.probe(&account_a), adapter.probe(&account_b));
+    let result_a = result_a.unwrap();
+    let result_b = result_b.unwrap();
+    assert!(result_a.succeeded());
+    assert!(result_b.succeeded());
+    assert!(result_a.session_token_was_refreshed);
+    assert!(result_b.session_token_was_refreshed);
+
+    let material_a = store.get(account_a.id).await.unwrap().unwrap();
+    let material_b = store.get(account_b.id).await.unwrap().unwrap();
+    assert_eq!(claude_session_cookie(&material_a), Some("sk-ant-renewed-a"));
+    assert_eq!(claude_session_cookie(&material_b), Some("sk-ant-renewed-b"));
+    assert!(
+        material_a
+            .cookies
+            .iter()
+            .any(|cookie| { cookie.name == "extra" && cookie.value == "a-private-cookie" })
+    );
+    assert!(
+        material_b
+            .cookies
+            .iter()
+            .any(|cookie| { cookie.name == "extra" && cookie.value == "b-private-cookie" })
+    );
+    assert_eq!(
+        material_a.bearer_token.as_deref(),
+        Some("Bearer sk-ant-oat-test")
+    );
+    assert_eq!(
+        material_b.oauth_access_token.as_deref(),
+        Some("claude-preserved-oauth-token")
+    );
+
+    let requests = transport.requests.lock().unwrap();
+    for request in requests.iter().filter(|request| {
+        request.url.path().ends_with("/usage") || request.url.path() == "/api/account"
+    }) {
+        let cookie = request.headers.get("Cookie").unwrap();
+        if request.url.path().contains("org-a") || cookie.contains("renewed-a") {
+            assert_eq!(cookie, "sessionKey=sk-ant-renewed-a");
+        } else {
+            assert_eq!(cookie, "sessionKey=sk-ant-renewed-b");
+        }
+    }
+}
+
+#[tokio::test]
+async fn claude_rotated_session_cookie_is_not_saved_for_a_different_identity() {
+    let transport = Arc::new(ClaudeRotationTransport {
+        wrong_identity: true,
+        ..ClaudeRotationTransport::default()
+    });
+    let store = Arc::new(InMemoryAuthMaterialStore::default());
+    let account = AccountRecord::create(
+        "claude-mismatch",
+        "expected@example.com",
+        Some("org-a".to_owned()),
+        CLAUDE,
+        None,
+    )
+    .unwrap();
+    store
+        .save(
+            account.id,
+            &claude_auth_material("sk-ant-initial-a", "private-cookie"),
+        )
+        .await
+        .unwrap();
+    let auth_store: Arc<dyn AccountAuthMaterialStore> = store.clone();
+    let auth: Arc<dyn AccountAuthMaterialProvider> =
+        Arc::new(StoredAuthMaterialProvider::new(store.clone()));
+    let adapter = ClaudeUsageAdapter::new(transport, auth, false)
+        .unwrap()
+        .with_source_mode(ClaudeSourceMode::Web)
+        .with_auth_material_store(auth_store);
+
+    let result = adapter.probe(&account).await.unwrap();
+    assert_eq!(
+        result.error.as_ref().map(|error| error.code),
+        Some(codex_usage_core::usage::UsageAdapterErrorCode::AccountMismatch)
+    );
+    let material = store.get(account.id).await.unwrap().unwrap();
+    assert_eq!(claude_session_cookie(&material), Some("sk-ant-initial-a"));
+}
+
+#[tokio::test]
+async fn claude_rotated_session_cookie_is_not_saved_without_verified_email() {
+    let transport = Arc::new(ClaudeRotationTransport {
+        missing_identity: true,
+        ..ClaudeRotationTransport::default()
+    });
+    let store = Arc::new(InMemoryAuthMaterialStore::default());
+    let account = AccountRecord::create(
+        "claude-unverified",
+        "a@example.com",
+        Some("org-a".to_owned()),
+        CLAUDE,
+        None,
+    )
+    .unwrap();
+    store
+        .save(
+            account.id,
+            &claude_auth_material("sk-ant-initial-a", "private-cookie"),
+        )
+        .await
+        .unwrap();
+    let auth: Arc<dyn AccountAuthMaterialProvider> =
+        Arc::new(StoredAuthMaterialProvider::new(store.clone()));
+    let auth_store: Arc<dyn AccountAuthMaterialStore> = store.clone();
+    let adapter = ClaudeUsageAdapter::new(transport, auth, false)
+        .unwrap()
+        .with_source_mode(ClaudeSourceMode::Web)
+        .with_auth_material_store(auth_store);
+
+    let result = adapter.probe(&account).await.unwrap();
+    assert!(result.succeeded());
+    assert!(!result.session_token_was_refreshed);
+    assert!(
+        result
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .source_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.source == "auth.session-key"
+                && diagnostic.code == codex_usage_core::usage::UsageAdapterErrorCode::Unknown)
+    );
+    let material = store.get(account.id).await.unwrap().unwrap();
+    assert_eq!(claude_session_cookie(&material), Some("sk-ant-initial-a"));
+}
+
+#[tokio::test]
+async fn claude_web_session_rotation_is_reported_when_merged_into_oauth_usage() {
+    let transport = Arc::new(ClaudeRotationTransport::default());
+    let store = Arc::new(InMemoryAuthMaterialStore::default());
+    let account = AccountRecord::create(
+        "claude-oauth-web",
+        "a@example.com",
+        Some("org-a".to_owned()),
+        CLAUDE,
+        None,
+    )
+    .unwrap();
+    store
+        .save(
+            account.id,
+            &claude_auth_material("sk-ant-initial-a", "private-cookie"),
+        )
+        .await
+        .unwrap();
+    let auth: Arc<dyn AccountAuthMaterialProvider> =
+        Arc::new(StoredAuthMaterialProvider::new(store.clone()));
+    let auth_store: Arc<dyn AccountAuthMaterialStore> = store.clone();
+    let adapter = ClaudeUsageAdapter::new(transport, auth, false)
+        .unwrap()
+        .with_source_mode(ClaudeSourceMode::OAuth)
+        .with_auth_material_store(auth_store);
+
+    let result = adapter.probe(&account).await.unwrap();
+    assert!(result.succeeded());
+    assert_eq!(
+        result.snapshot.as_ref().unwrap().source.as_deref(),
+        Some("oauth")
+    );
+    assert!(result.session_token_was_refreshed);
+    let material = store.get(account.id).await.unwrap().unwrap();
+    assert_eq!(claude_session_cookie(&material), Some("sk-ant-renewed-a"));
+}
+
+#[tokio::test]
 async fn sqlite_store_round_trips_account_and_snapshot() {
     let directory = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(directory.path().join("accounts.db")).unwrap();
@@ -584,6 +808,116 @@ impl UsageHttpTransport for NoFiveHourTransport {
             headers: Default::default(),
         })
     }
+}
+
+#[derive(Default)]
+struct ClaudeRotationTransport {
+    requests: Mutex<Vec<UsageHttpRequest>>,
+    wrong_identity: bool,
+    missing_identity: bool,
+}
+
+#[async_trait]
+impl UsageHttpTransport for ClaudeRotationTransport {
+    async fn send(&self, request: UsageHttpRequest) -> Result<UsageHttpResponse, TransportError> {
+        self.requests.lock().unwrap().push(request.clone());
+        if request.url.path() == "/api/oauth/usage" {
+            return Ok(UsageHttpResponse {
+                status_code: 200,
+                body: r#"{"rate_limit_tier":"pro","five_hour":{"utilization":22,"resets_at":"2030-01-01T00:00:00Z"},"seven_day":{"utilization":11,"resets_at":"2030-01-02T00:00:00Z"}}"#.to_owned(),
+                headers: Default::default(),
+            });
+        }
+        let session_key = request
+            .headers
+            .get("Cookie")
+            .and_then(|header| {
+                header
+                    .split(';')
+                    .find_map(|pair| pair.trim().split_once('='))
+            })
+            .filter(|(name, _)| name.eq_ignore_ascii_case("sessionKey"))
+            .map(|(_, value)| value)
+            .ok_or_else(|| {
+                TransportError::InvalidUrl("Claude session cookie missing".to_owned())
+            })?;
+        let (organization_id, email, renewed_session_key) = match session_key {
+            "sk-ant-initial-a" | "sk-ant-renewed-a" => {
+                ("org-a", "a@example.com", "sk-ant-renewed-a")
+            }
+            "sk-ant-initial-b" | "sk-ant-renewed-b" => {
+                ("org-b", "b@example.com", "sk-ant-renewed-b")
+            }
+            _ => {
+                return Err(TransportError::InvalidUrl(
+                    "unexpected Claude session".to_owned(),
+                ));
+            }
+        };
+
+        let path = request.url.path();
+        let mut headers = std::collections::BTreeMap::new();
+        let body = if path == "/api/organizations" {
+            headers.insert(
+                "Set-Cookie".to_owned(),
+                format!(
+                    "__cf_bm=account-local; Path=/\nsessionKey={renewed_session_key}; Path=/; HttpOnly"
+                ),
+            );
+            format!(r#"[{{"uuid":"{organization_id}","has_chat_capability":true}}]"#)
+        } else if path == format!("/api/organizations/{organization_id}/usage") {
+            r#"{"five_hour":{"utilization":30,"resets_at":"2030-01-01T00:00:00Z"},"seven_day":{"utilization":15,"resets_at":"2030-01-02T00:00:00Z"}}"#.to_owned()
+        } else if path == "/api/account" {
+            if self.missing_identity {
+                format!(
+                    r#"{{"memberships":[{{"organization":{{"uuid":"{organization_id}","rate_limit_tier":"default_claude_pro"}}}}]}}"#
+                )
+            } else {
+                let email = if self.wrong_identity {
+                    "different@example.com"
+                } else {
+                    email
+                };
+                format!(
+                    r#"{{"email_address":"{email}","memberships":[{{"organization":{{"uuid":"{organization_id}","rate_limit_tier":"default_claude_pro"}}}}]}}"#
+                )
+            }
+        } else {
+            return Err(TransportError::InvalidUrl(request.url.to_string()));
+        };
+
+        Ok(UsageHttpResponse {
+            status_code: 200,
+            body,
+            headers,
+        })
+    }
+}
+
+fn claude_auth_material(session_key: &str, extra_cookie: &str) -> AccountAuthMaterial {
+    AccountAuthMaterial {
+        bearer_token: Some("Bearer sk-ant-oat-test".to_owned()),
+        cookies: vec![
+            CookieValue {
+                name: "sessionKey".to_owned(),
+                value: session_key.to_owned(),
+            },
+            CookieValue {
+                name: "extra".to_owned(),
+                value: extra_cookie.to_owned(),
+            },
+        ],
+        oauth_access_token: Some("claude-preserved-oauth-token".to_owned()),
+        ..AccountAuthMaterial::default()
+    }
+}
+
+fn claude_session_cookie(material: &AccountAuthMaterial) -> Option<&str> {
+    material
+        .cookies
+        .iter()
+        .find(|cookie| cookie.name.eq_ignore_ascii_case("sessionKey"))
+        .map(|cookie| cookie.value.as_str())
 }
 
 #[async_trait]

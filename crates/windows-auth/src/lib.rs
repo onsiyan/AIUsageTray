@@ -6,7 +6,12 @@ use codex_usage_core::{
         OAuthCredentialStore, StoredOAuthCredential,
     },
 };
-use std::{env, path::PathBuf, process::Command};
+use std::{
+    env,
+    path::PathBuf,
+    process::Command,
+    sync::{Mutex, MutexGuard, OnceLock},
+};
 use std::{ffi::c_void, ptr, slice};
 use url::Url;
 use windows_sys::Win32::{
@@ -25,6 +30,7 @@ const TARGET_PREFIX: &str = "CodexUsageMonitor-Rust/OAuth/";
 const AUTH_MATERIAL_TARGET_PREFIX: &str = "CodexUsageMonitor-Rust/Auth/";
 const MAX_BLOB_BYTES: usize = 5 * 1024;
 const MAX_AUTH_MATERIAL_BLOB_BYTES: usize = 64 * 1024;
+static AUTH_MATERIAL_STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub struct WindowsCredentialManagerStore;
 
@@ -78,19 +84,8 @@ pub struct WindowsCredentialManagerAuthMaterialStore;
 #[async_trait]
 impl AccountAuthMaterialStore for WindowsCredentialManagerAuthMaterialStore {
     async fn get(&self, account_id: AccountId) -> Result<Option<AccountAuthMaterial>, AuthError> {
-        load_blob(
-            AUTH_MATERIAL_TARGET_PREFIX,
-            account_id,
-            MAX_AUTH_MATERIAL_BLOB_BYTES,
-        )?
-        .map(|bytes| {
-            serde_json::from_slice(&bytes).map_err(|error| {
-                AuthError::CredentialStore(format!(
-                    "stored authentication material is invalid: {error}"
-                ))
-            })
-        })
-        .transpose()
+        let _guard = auth_material_store_lock()?;
+        load_auth_material(account_id)
     }
 
     async fn save(
@@ -98,27 +93,94 @@ impl AccountAuthMaterialStore for WindowsCredentialManagerAuthMaterialStore {
         account_id: AccountId,
         material: &AccountAuthMaterial,
     ) -> Result<(), AuthError> {
-        if material.is_empty() {
-            return Err(AuthError::CredentialStore(
-                "refusing to persist empty authentication material".to_owned(),
-            ));
-        }
-        let blob = serde_json::to_vec(material).map_err(|error| {
-            AuthError::CredentialStore(format!(
-                "could not serialize authentication material: {error}"
-            ))
-        })?;
-        save_blob(
-            AUTH_MATERIAL_TARGET_PREFIX,
-            account_id,
-            &blob,
-            MAX_AUTH_MATERIAL_BLOB_BYTES,
-        )
+        let _guard = auth_material_store_lock()?;
+        save_auth_material(account_id, material)
     }
 
     async fn remove(&self, account_id: AccountId) -> Result<(), AuthError> {
+        let _guard = auth_material_store_lock()?;
         remove_blob(AUTH_MATERIAL_TARGET_PREFIX, account_id)
     }
+
+    async fn replace_cookie_if_matches(
+        &self,
+        account_id: AccountId,
+        cookie_name: &str,
+        expected_value: &str,
+        replacement_value: &str,
+    ) -> Result<bool, AuthError> {
+        if cookie_name.trim().is_empty()
+            || expected_value.is_empty()
+            || replacement_value.trim().is_empty()
+        {
+            return Ok(false);
+        }
+
+        let _guard = auth_material_store_lock()?;
+        let Some(mut material) = load_auth_material(account_id)? else {
+            return Ok(false);
+        };
+        let Some(cookie) = material
+            .cookies
+            .iter_mut()
+            .find(|cookie| cookie.name.eq_ignore_ascii_case(cookie_name))
+        else {
+            return Ok(false);
+        };
+        if cookie.value != expected_value {
+            return Ok(false);
+        }
+        cookie.value = replacement_value.to_owned();
+        save_auth_material(account_id, &material)?;
+        Ok(true)
+    }
+}
+
+fn auth_material_store_lock() -> Result<MutexGuard<'static, ()>, AuthError> {
+    AUTH_MATERIAL_STORE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| {
+            AuthError::CredentialStore("authentication material store is unavailable".to_owned())
+        })
+}
+
+fn load_auth_material(account_id: AccountId) -> Result<Option<AccountAuthMaterial>, AuthError> {
+    load_blob(
+        AUTH_MATERIAL_TARGET_PREFIX,
+        account_id,
+        MAX_AUTH_MATERIAL_BLOB_BYTES,
+    )?
+    .map(|bytes| {
+        serde_json::from_slice(&bytes).map_err(|error| {
+            AuthError::CredentialStore(format!(
+                "stored authentication material is invalid: {error}"
+            ))
+        })
+    })
+    .transpose()
+}
+
+fn save_auth_material(
+    account_id: AccountId,
+    material: &AccountAuthMaterial,
+) -> Result<(), AuthError> {
+    if material.is_empty() {
+        return Err(AuthError::CredentialStore(
+            "refusing to persist empty authentication material".to_owned(),
+        ));
+    }
+    let blob = serde_json::to_vec(material).map_err(|error| {
+        AuthError::CredentialStore(format!(
+            "could not serialize authentication material: {error}"
+        ))
+    })?;
+    save_blob(
+        AUTH_MATERIAL_TARGET_PREFIX,
+        account_id,
+        &blob,
+        MAX_AUTH_MATERIAL_BLOB_BYTES,
+    )
 }
 
 fn target(prefix: &str, account_id: AccountId) -> Vec<u16> {
