@@ -186,65 +186,26 @@ impl AntigravityUsageAdapter {
             return None;
         }
 
+        let mut best_result = None;
         for endpoint in endpoints {
-            let summary = local_post(
+            let summary_groups = local_post(
                 transport,
                 &endpoint,
                 LOCAL_QUOTA_SUMMARY_PATH,
                 json!({ "forceRefresh": true }),
             )
             .await;
+            let summary_groups = summary_groups
+                .filter(UsageHttpResponse::is_success)
+                .and_then(|response| serde_json::from_str::<Value>(&response.body).ok())
+                .map(|root| parse_quota_summary(&root))
+                .filter(|groups| has_usable_quota_summary(groups));
 
             // CodexBar treats the quota summary as the richest local source,
             // but obtains identity from GetUserStatus before accepting it.
             // That account check is essential when several Google accounts
             // are registered in the monitor: a local language server is not
             // account-scoped by the request itself.
-            if let Some(summary) = summary.filter(UsageHttpResponse::is_success)
-                && let Ok(summary_root) = serde_json::from_str::<Value>(&summary.body)
-            {
-                let groups = parse_quota_summary(&summary_root);
-                if has_usable_quota_summary(&groups) {
-                    let status_root = local_post(
-                        transport,
-                        &endpoint,
-                        LOCAL_USER_STATUS_PATH,
-                        local_request_body(),
-                    )
-                    .await
-                    .filter(UsageHttpResponse::is_success)
-                    .and_then(|response| serde_json::from_str::<Value>(&response.body).ok());
-                    let email = status_root.as_ref().and_then(find_local_email);
-                    let plan_type = status_root.as_ref().and_then(find_local_plan_type);
-                    let models = status_root
-                        .as_ref()
-                        .map(parse_local_model_quotas)
-                        .unwrap_or_default();
-                    if local_identity_matches(account, email.as_deref()) {
-                        let snapshot = snapshot_from_quota_summary(
-                            account,
-                            &groups,
-                            &models,
-                            email.clone(),
-                            plan_type.clone(),
-                            "local",
-                        );
-                        return Some(UsageProbeResult::success(
-                            snapshot,
-                            Some(VerifiedIdentity {
-                                email,
-                                provider_account_id: None,
-                                plan_type,
-                            }),
-                        ));
-                    }
-                }
-            }
-
-            // IDE language servers commonly return 404 for the summary.  The
-            // proven fallback order is GetUserStatus, then
-            // GetCommandModelConfigs; neither path is allowed to win without
-            // a matching account identity.
             let status_root = local_post(
                 transport,
                 &endpoint,
@@ -254,30 +215,78 @@ impl AntigravityUsageAdapter {
             .await
             .filter(UsageHttpResponse::is_success)
             .and_then(|response| serde_json::from_str::<Value>(&response.body).ok());
-            let status_email = status_root.as_ref().and_then(find_local_email);
-            let status_plan = status_root.as_ref().and_then(find_local_plan_type);
+            let email = status_root.as_ref().and_then(find_local_email);
+            let plan_type = status_root.as_ref().and_then(find_local_plan_type);
             let status_models = status_root
                 .as_ref()
                 .map(parse_local_model_quotas)
                 .unwrap_or_default();
-            if local_identity_matches(account, status_email.as_deref()) {
+
+            if let Some(groups) = summary_groups
+                && local_identity_matches(account, email.as_deref())
+            {
+                let score = local_snapshot_score(
+                    Some(&groups),
+                    &status_models,
+                    email.as_deref(),
+                    plan_type.as_deref(),
+                );
+                let snapshot = snapshot_from_quota_summary(
+                    account,
+                    &groups,
+                    &status_models,
+                    email.clone(),
+                    plan_type.clone(),
+                    "local",
+                );
+                keep_best_candidate(
+                    &mut best_result,
+                    score,
+                    UsageProbeResult::success(
+                        snapshot,
+                        Some(VerifiedIdentity {
+                            email,
+                            provider_account_id: None,
+                            plan_type,
+                        }),
+                    ),
+                );
+                continue;
+            }
+
+            // IDE language servers commonly return 404 for the summary.  The
+            // proven fallback order is GetUserStatus, then
+            // GetCommandModelConfigs; neither path is allowed to win without
+            // a matching account identity.
+            if local_identity_matches(account, email.as_deref()) {
                 if !status_models.is_empty() {
+                    let score = local_snapshot_score(
+                        None,
+                        &status_models,
+                        email.as_deref(),
+                        plan_type.as_deref(),
+                    );
                     let snapshot = snapshot_from_model_quotas(
                         account,
                         &status_models,
-                        status_email.clone(),
-                        status_plan.clone(),
+                        email.clone(),
+                        plan_type.clone(),
                         "local-legacy",
                         "authoritative",
                     );
-                    return Some(UsageProbeResult::success(
-                        snapshot,
-                        Some(VerifiedIdentity {
-                            email: status_email,
-                            provider_account_id: None,
-                            plan_type: status_plan,
-                        }),
-                    ));
+                    keep_best_candidate(
+                        &mut best_result,
+                        score,
+                        UsageProbeResult::success(
+                            snapshot,
+                            Some(VerifiedIdentity {
+                                email,
+                                provider_account_id: None,
+                                plan_type,
+                            }),
+                        ),
+                    );
+                    continue;
                 }
 
                 let command_models = local_post(
@@ -292,27 +301,37 @@ impl AntigravityUsageAdapter {
                 .map(|root| parse_local_model_quotas(&root))
                 .unwrap_or_default();
                 if !command_models.is_empty() {
+                    let score = local_snapshot_score(
+                        None,
+                        &command_models,
+                        email.as_deref(),
+                        plan_type.as_deref(),
+                    );
                     let snapshot = snapshot_from_model_quotas(
                         account,
                         &command_models,
-                        status_email.clone(),
-                        status_plan.clone(),
+                        email.clone(),
+                        plan_type.clone(),
                         "local-command-models",
                         "authoritative",
                     );
-                    return Some(UsageProbeResult::success(
-                        snapshot,
-                        Some(VerifiedIdentity {
-                            email: status_email,
-                            provider_account_id: None,
-                            plan_type: status_plan,
-                        }),
-                    ));
+                    keep_best_candidate(
+                        &mut best_result,
+                        score,
+                        UsageProbeResult::success(
+                            snapshot,
+                            Some(VerifiedIdentity {
+                                email,
+                                provider_account_id: None,
+                                plan_type,
+                            }),
+                        ),
+                    );
                 }
             }
         }
 
-        None
+        best_result.map(|(_, result)| result)
     }
 
     async fn onboard_remote(
@@ -590,6 +609,53 @@ fn is_retryable_remote_status(status_code: u16) -> bool {
 struct LocalEndpoint {
     port: u16,
     csrf_token: String,
+}
+
+fn local_snapshot_score(
+    summary_groups: Option<&[LocalQuotaSummaryGroup]>,
+    model_quotas: &[Quota],
+    observed_email: Option<&str>,
+    plan_type: Option<&str>,
+) -> usize {
+    let mut score = if let Some(groups) = summary_groups {
+        let bucket_count = groups
+            .iter()
+            .map(|group| group.buckets.len())
+            .sum::<usize>();
+        let known_bucket_count = groups
+            .iter()
+            .flat_map(|group| &group.buckets)
+            .filter(|bucket| !bucket.disabled && bucket.remaining_fraction.is_some())
+            .count();
+        1_000usize
+            .saturating_add(groups.len().saturating_mul(10))
+            .saturating_add(bucket_count)
+            .saturating_add(known_bucket_count.saturating_mul(20))
+    } else {
+        let known_model_count = model_quotas
+            .iter()
+            .filter(|quota| quota.remaining_fraction.is_some())
+            .count();
+        model_quotas
+            .len()
+            .saturating_add(known_model_count.saturating_mul(10))
+    };
+    if observed_email.is_some() {
+        score = score.saturating_add(2);
+    }
+    if plan_type.is_some() {
+        score = score.saturating_add(1);
+    }
+    score
+}
+
+fn keep_best_candidate<T>(best: &mut Option<(usize, T)>, score: usize, candidate: T) {
+    if best
+        .as_ref()
+        .map_or(true, |(best_score, _)| score > *best_score)
+    {
+        *best = Some((score, candidate));
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1950,6 +2016,67 @@ mod tests {
         assert!(
             !pattern.is_match(r"C:\Program Files\notantigravity\resources\bin\language_server.exe")
         );
+    }
+
+    #[test]
+    fn local_snapshot_ranking_prefers_complete_quota_summaries() {
+        let complete = parse_quota_summary(&json!({
+            "groups": [
+                {
+                    "displayName": "Gemini Models",
+                    "buckets": [
+                        {"bucketId": "gemini-5h", "remainingFraction": 0.92},
+                        {"bucketId": "gemini-weekly", "remainingFraction": 0.71}
+                    ]
+                },
+                {
+                    "displayName": "Claude and GPT models",
+                    "buckets": [
+                        {"bucketId": "3p-5h", "remainingFraction": 0.83},
+                        {"bucketId": "3p-weekly", "remainingFraction": 0.64}
+                    ]
+                }
+            ]
+        }));
+        let sparse = parse_quota_summary(&json!({
+            "groups": [{
+                "displayName": "Gemini Models",
+                "buckets": [{"bucketId": "gemini-5h", "remainingFraction": 0.92}]
+            }]
+        }));
+        let model_fallback = vec![to_quota(
+            "gemini-pro",
+            "Gemini Pro".to_owned(),
+            Some(0.92),
+            None,
+        )];
+
+        let complete_score = local_snapshot_score(
+            Some(&complete),
+            &[],
+            Some("one@example.com"),
+            Some("Google AI Pro"),
+        );
+        let sparse_score = local_snapshot_score(Some(&sparse), &[], Some("one@example.com"), None);
+        let fallback_score = local_snapshot_score(
+            None,
+            &model_fallback,
+            Some("one@example.com"),
+            Some("Google AI Pro"),
+        );
+
+        assert!(complete_score > sparse_score);
+        assert!(sparse_score > fallback_score);
+    }
+
+    #[test]
+    fn local_probe_candidate_selection_keeps_the_highest_score() {
+        let mut best = None;
+        keep_best_candidate(&mut best, 14, "model-fallback");
+        keep_best_candidate(&mut best, 1_107, "complete-summary");
+        keep_best_candidate(&mut best, 1_033, "sparse-summary");
+
+        assert_eq!(best, Some((1_107, "complete-summary")));
     }
 
     #[test]
