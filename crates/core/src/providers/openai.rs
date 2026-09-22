@@ -281,6 +281,10 @@ impl UsageAdapter for WhamUsageAdapter {
                                         .as_ref()
                                         .and_then(|credits| credits.unlimited),
                                     balance: Some(balance),
+                                    currency_code: snapshot
+                                        .credits
+                                        .as_ref()
+                                        .and_then(|credits| credits.currency_code.clone()),
                                     approximate_message_cost: snapshot
                                         .credits
                                         .as_ref()
@@ -582,6 +586,7 @@ fn parse_credits(root: &Value) -> Option<CreditsSnapshot> {
         has_credits,
         unlimited,
         balance,
+        currency_code: None,
         approximate_message_cost: credits
             .and_then(|value| json_number(value, &["approximate_message_cost"])),
         limit: credit_limit,
@@ -668,6 +673,7 @@ fn parse_spend(root: &Value) -> Option<SpendSnapshot> {
             monthly_limit: limit.limit,
             used_percent: limit.used_percent,
             limit_enabled: Some(limit.limit.is_some()),
+            currency_code: None,
         });
     }
     let source = root
@@ -679,6 +685,7 @@ fn parse_spend(root: &Value) -> Option<SpendSnapshot> {
         monthly_limit: json_number(source, &["monthly_limit", "limit"]),
         used_percent: json_number(source, &["used_percent"]),
         limit_enabled: json_bool(source, &["limit_enabled"]),
+        currency_code: None,
     };
     (result.monthly_usage.is_some()
         || result.monthly_limit.is_some()
@@ -708,6 +715,7 @@ fn parse_monthly_usage(body: &str) -> Option<SpendSnapshot> {
             monthly_limit: limit,
             used_percent,
             limit_enabled,
+            currency_code: None,
         })
 }
 
@@ -770,19 +778,33 @@ fn epoch_or_rfc3339(value: &Value) -> Option<DateTime<Utc>> {
 }
 
 fn merge_spend(current: Option<SpendSnapshot>, enrichment: SpendSnapshot) -> SpendSnapshot {
+    let Some(current) = current else {
+        return enrichment;
+    };
+    let currencies_match = match (
+        current.currency_code.as_deref(),
+        enrichment.currency_code.as_deref(),
+    ) {
+        (Some(current), Some(enrichment)) => current.eq_ignore_ascii_case(enrichment),
+        (None, None) => true,
+        _ => false,
+    };
+    if !currencies_match {
+        return match (
+            current.currency_code.is_some(),
+            enrichment.currency_code.is_some(),
+        ) {
+            (true, false) => current,
+            _ => enrichment,
+        };
+    }
+
     SpendSnapshot {
-        monthly_usage: enrichment
-            .monthly_usage
-            .or(current.as_ref().and_then(|value| value.monthly_usage)),
-        monthly_limit: enrichment
-            .monthly_limit
-            .or(current.as_ref().and_then(|value| value.monthly_limit)),
-        used_percent: enrichment
-            .used_percent
-            .or(current.as_ref().and_then(|value| value.used_percent)),
-        limit_enabled: enrichment
-            .limit_enabled
-            .or(current.as_ref().and_then(|value| value.limit_enabled)),
+        monthly_usage: enrichment.monthly_usage.or(current.monthly_usage),
+        monthly_limit: enrichment.monthly_limit.or(current.monthly_limit),
+        used_percent: enrichment.used_percent.or(current.used_percent),
+        limit_enabled: enrichment.limit_enabled.or(current.limit_enabled),
+        currency_code: enrichment.currency_code.or(current.currency_code),
     }
 }
 
@@ -890,6 +912,29 @@ mod tests {
             snapshot.primary.unwrap().reset_at_utc.unwrap().timestamp(),
             4102444800
         );
+    }
+
+    #[test]
+    fn spend_enrichment_does_not_merge_amounts_with_different_currencies() {
+        let current = SpendSnapshot {
+            monthly_usage: Some(10.0),
+            monthly_limit: Some(100.0),
+            used_percent: Some(10.0),
+            limit_enabled: Some(true),
+            currency_code: Some("USD".to_owned()),
+        };
+        let enrichment = SpendSnapshot {
+            monthly_usage: Some(20.0),
+            monthly_limit: None,
+            used_percent: None,
+            limit_enabled: None,
+            currency_code: Some("EUR".to_owned()),
+        };
+
+        let merged = merge_spend(Some(current), enrichment);
+        assert_eq!(merged.monthly_usage, Some(20.0));
+        assert_eq!(merged.monthly_limit, None);
+        assert_eq!(merged.currency_code.as_deref(), Some("EUR"));
     }
 
     #[test]

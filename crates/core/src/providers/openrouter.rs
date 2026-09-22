@@ -469,6 +469,7 @@ impl UsageAdapter for OpenRouterUsageAdapter {
                 key_limit_used_percent(Some(value), explicit_remaining, monthly_usage, None)
             }),
             limit_enabled: Some(monthly_limit.is_some()),
+            currency_code: None,
         });
 
         if primary.is_none() && spend.is_none() && credits.is_none() && metrics.is_empty() {
@@ -837,6 +838,7 @@ fn parse_credits(body: &str) -> Result<CreditsSnapshot, String> {
         has_credits: Some(true),
         unlimited: Some(false),
         balance: Some(balance),
+        currency_code: None,
         approximate_message_cost: None,
         limit: None,
         balance_read_succeeded: Some(true),

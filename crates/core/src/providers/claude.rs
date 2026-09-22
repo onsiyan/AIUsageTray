@@ -650,6 +650,7 @@ impl ClaudeUsageAdapter {
             monthly_limit: None,
             used_percent: None,
             limit_enabled: Some(false),
+            currency_code: Some("USD".to_owned()),
         });
         let snapshot = UsageSnapshot {
             account_id: account.id,
@@ -1819,22 +1820,35 @@ fn parse_extra_usage(root: &Value) -> (Option<SpendSnapshot>, Option<CreditsSnap
     );
     // The provider's own implementation treats an incomplete pair as
     // unusable rather than displaying a misleading partial spend balance.
-    let (Some(used), Some(limit)) = (used, limit) else {
+    let (Some(used), Some(limit)) = (
+        used.filter(|value| value.is_finite() && *value >= 0.0),
+        limit.filter(|value| value.is_finite() && *value > 0.0),
+    ) else {
         return (None, None);
     };
     // Claude reports extra-usage amounts in cents. Normalize to major units
     // before exposing them through the provider-neutral spend contract.
     let used = used / 100.0;
     let limit = limit / 100.0;
+    if limit <= 0.0 {
+        return (None, None);
+    }
+    let currency_code = normalized_claude_currency(json_string(extra, &["currency"]))
+        .unwrap_or_else(|| "USD".to_owned());
     let percent = json_number(extra, &["utilization", "used_percent", "usedPercent"])
+        .filter(|value| value.is_finite())
         .map(normalize_percent)
-        .or_else(|| (limit > 0.0).then(|| normalize_percent(used / limit * 100.0)));
+        .or_else(|| {
+            let percent = used / limit * 100.0;
+            percent.is_finite().then(|| normalize_percent(percent))
+        });
     (
         Some(SpendSnapshot {
             monthly_usage: Some(used),
             monthly_limit: Some(limit),
             used_percent: percent,
             limit_enabled: Some(true),
+            currency_code: Some(currency_code),
         }),
         None,
     )
@@ -1842,45 +1856,59 @@ fn parse_extra_usage(root: &Value) -> (Option<SpendSnapshot>, Option<CreditsSnap
 
 fn parse_overage_spend(body: &str) -> Option<SpendSnapshot> {
     let root: Value = serde_json::from_str(body).ok()?;
-    if root
-        .get("is_enabled")
-        .and_then(Value::as_bool)
-        .is_some_and(|enabled| !enabled)
-    {
+    if root.get("is_enabled").and_then(Value::as_bool) != Some(true) {
         return None;
     }
-    let used = json_number(&root, &["used_credits", "usedCredits"])?;
+    let used = json_number(&root, &["used_credits", "usedCredits"])
+        .filter(|value| value.is_finite() && *value >= 0.0)?;
     let limit = json_number(
         &root,
         &["monthly_credit_limit", "monthly_limit", "monthlyLimit"],
-    )?;
+    )
+    .filter(|value| value.is_finite() && *value > 0.0)?;
+    let currency_code = normalized_claude_currency(json_string(&root, &["currency"]))?;
+    let used = used / 100.0;
+    let limit = limit / 100.0;
     if limit <= 0.0 {
         return None;
     }
-    let used = used / 100.0;
-    let limit = limit / 100.0;
+    let used_percent = json_number(&root, &["utilization", "used_percent", "usedPercent"])
+        .filter(|value| value.is_finite())
+        .map(normalize_percent)
+        .or_else(|| {
+            let percent = used / limit * 100.0;
+            percent.is_finite().then(|| normalize_percent(percent))
+        });
     Some(SpendSnapshot {
         monthly_usage: Some(used),
         monthly_limit: Some(limit),
-        used_percent: json_number(&root, &["utilization", "used_percent", "usedPercent"])
-            .map(normalize_percent)
-            .or_else(|| Some(normalize_percent(used / limit * 100.0))),
+        used_percent,
         limit_enabled: Some(true),
+        currency_code: Some(currency_code),
     })
 }
 
 fn parse_prepaid_credits(body: &str) -> Option<CreditsSnapshot> {
     let root: Value = serde_json::from_str(body).ok()?;
-    let amount = json_number(&root, &["amount", "balance", "remaining"])?;
+    let amount = json_number(&root, &["amount", "balance", "remaining"])
+        .filter(|value| value.is_finite() && *value >= 0.0)?;
+    let currency_code = normalized_claude_currency(json_string(&root, &["currency"]))?;
     Some(CreditsSnapshot {
         has_credits: Some(true),
         unlimited: Some(false),
         balance: Some(amount / 100.0),
+        currency_code: Some(currency_code),
         approximate_message_cost: None,
         limit: None,
         balance_read_succeeded: Some(true),
         credits_available: Some(amount > 0.0),
     })
+}
+
+fn normalized_claude_currency(value: Option<String>) -> Option<String> {
+    let value = value?;
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_ascii_uppercase())
 }
 
 fn add_metric(metrics: &mut Vec<UsageMetric>, key: &str, window: Option<&RateLimitWindow>) {
@@ -1985,6 +2013,75 @@ mod tests {
         assert_eq!(primary.name, "Spend limit");
         assert_eq!(primary.used_percent, 25.0);
         assert_eq!(spend.unwrap().monthly_usage, Some(2.5));
+    }
+
+    #[test]
+    fn extra_usage_rejects_disabled_or_invalid_values_and_preserves_currency() {
+        let root = serde_json::json!({
+            "extra_usage": {
+                "is_enabled": true,
+                "used_credits": 1250,
+                "monthly_limit": 5000,
+                "currency": " usd ",
+                "utilization": 25
+            }
+        });
+        let (spend, _) = parse_extra_usage(&root);
+        let spend = spend.unwrap();
+        assert_eq!(spend.monthly_usage, Some(12.5));
+        assert_eq!(spend.monthly_limit, Some(50.0));
+        assert_eq!(spend.currency_code.as_deref(), Some("USD"));
+
+        let disabled = serde_json::json!({
+            "extra_usage": { "is_enabled": false, "used_credits": 1, "monthly_limit": 100 }
+        });
+        assert!(parse_extra_usage(&disabled).0.is_none());
+
+        let invalid = serde_json::json!({
+            "extra_usage": { "used_credits": "NaN", "monthly_limit": 100 }
+        });
+        assert!(parse_extra_usage(&invalid).0.is_none());
+
+        let negative = serde_json::json!({
+            "extra_usage": { "used_credits": -1, "monthly_limit": 100 }
+        });
+        assert!(parse_extra_usage(&negative).0.is_none());
+    }
+
+    #[test]
+    fn overage_spend_requires_enabled_state_currency_and_finite_amounts() {
+        let valid = r#"{"is_enabled":true,"used_credits":125,"monthly_credit_limit":1000,"currency":"USD"}"#;
+        let spend = parse_overage_spend(valid).unwrap();
+        assert_eq!(spend.monthly_usage, Some(1.25));
+        assert_eq!(spend.monthly_limit, Some(10.0));
+        assert_eq!(spend.currency_code.as_deref(), Some("USD"));
+
+        assert!(parse_overage_spend(
+            r#"{"is_enabled":false,"used_credits":125,"monthly_credit_limit":1000,"currency":"USD"}"#
+        )
+        .is_none());
+        assert!(
+            parse_overage_spend(
+                r#"{"is_enabled":true,"used_credits":125,"monthly_credit_limit":1000}"#
+            )
+            .is_none()
+        );
+        assert!(parse_overage_spend(
+            r#"{"is_enabled":true,"used_credits":"NaN","monthly_credit_limit":1000,"currency":"USD"}"#
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn prepaid_credits_requires_a_valid_amount_and_currency() {
+        let credits = parse_prepaid_credits(r#"{"amount":0,"currency":"usd"}"#).unwrap();
+        assert_eq!(credits.balance, Some(0.0));
+        assert_eq!(credits.currency_code.as_deref(), Some("USD"));
+        assert_eq!(credits.credits_available, Some(false));
+
+        assert!(parse_prepaid_credits(r#"{"amount":100}"#).is_none());
+        assert!(parse_prepaid_credits(r#"{"amount":-1,"currency":"USD"}"#).is_none());
+        assert!(parse_prepaid_credits(r#"{"amount":"Infinity","currency":"USD"}"#).is_none());
     }
 
     #[test]

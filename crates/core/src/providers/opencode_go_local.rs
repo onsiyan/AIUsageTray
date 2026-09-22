@@ -419,6 +419,7 @@ fn build_snapshot(rows: &[UsageRow], now: DateTime<Utc>) -> OpenCodeGoLocalUsage
             monthly_limit: Some(MONTHLY_LIMIT_USD),
             used_percent: Some(percent(monthly_cost, MONTHLY_LIMIT_USD)),
             limit_enabled: Some(true),
+            currency_code: None,
         },
         metrics: {
             metrics.shrink_to_fit();

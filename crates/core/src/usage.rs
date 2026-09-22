@@ -65,6 +65,9 @@ pub struct CreditsSnapshot {
     pub has_credits: Option<bool>,
     pub unlimited: Option<bool>,
     pub balance: Option<f64>,
+    /// ISO 4217 currency for a monetary balance, when supplied by the provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency_code: Option<String>,
     pub approximate_message_cost: Option<f64>,
     /// The provider's monthly/individual credit cap when it is reported
     /// separately from the spend-control lane.
@@ -127,6 +130,9 @@ pub struct SpendSnapshot {
     pub monthly_limit: Option<f64>,
     pub used_percent: Option<f64>,
     pub limit_enabled: Option<bool>,
+    /// ISO 4217 currency for monetary amounts, when supplied by the provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency_code: Option<String>,
 }
 
 impl SpendSnapshot {
@@ -313,7 +319,7 @@ pub trait UsageSnapshotStore: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::{RateLimitWindow, SpendSnapshot, UsageMetric, UsageWindowKind};
+    use super::{CreditsSnapshot, RateLimitWindow, SpendSnapshot, UsageMetric, UsageWindowKind};
     use std::collections::HashMap;
 
     #[test]
@@ -346,8 +352,42 @@ mod tests {
             monthly_limit: None,
             used_percent: Some(76.0),
             limit_enabled: Some(true),
+            currency_code: None,
         };
         assert_eq!(spend.remaining_percent(), Some(24.0));
+    }
+
+    #[test]
+    fn currency_fields_are_backward_compatible_and_omitted_when_unknown() {
+        let spend: SpendSnapshot = serde_json::from_value(serde_json::json!({
+            "monthly_usage": 5.0,
+            "monthly_limit": 10.0,
+            "used_percent": 50.0,
+            "limit_enabled": true
+        }))
+        .unwrap();
+        assert_eq!(spend.currency_code, None);
+        assert!(
+            serde_json::to_value(spend)
+                .unwrap()
+                .get("currency_code")
+                .is_none()
+        );
+
+        let credits: CreditsSnapshot = serde_json::from_value(serde_json::json!({
+            "has_credits": true,
+            "unlimited": false,
+            "balance": 2.0,
+            "approximate_message_cost": null
+        }))
+        .unwrap();
+        assert_eq!(credits.currency_code, None);
+        assert!(
+            serde_json::to_value(credits)
+                .unwrap()
+                .get("currency_code")
+                .is_none()
+        );
     }
 }
 

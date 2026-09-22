@@ -1018,6 +1018,7 @@ mod tests {
                 has_credits: Some(true),
                 unlimited: Some(false),
                 balance: None,
+                currency_code: None,
                 approximate_message_cost: None,
                 limit: None,
                 balance_read_succeeded: None,

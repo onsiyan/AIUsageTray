@@ -994,11 +994,13 @@ fn build_snapshot(
             .zip(monthly_limit)
             .map(|(used, limit)| percent(used, limit)),
         limit_enabled: monthly_limit.map(|limit| limit > 0.0),
+        currency_code: None,
     });
     let credits = balance.map(|value| CreditsSnapshot {
         has_credits: Some(true),
         unlimited: Some(false),
         balance: Some(value),
+        currency_code: None,
         approximate_message_cost: None,
         limit: None,
         balance_read_succeeded: Some(true),
@@ -1092,6 +1094,7 @@ fn balance_only_snapshot(
             has_credits: Some(true),
             unlimited: Some(false),
             balance: Some(balance),
+            currency_code: None,
             approximate_message_cost: None,
             limit: None,
             balance_read_succeeded: Some(true),
@@ -1123,6 +1126,7 @@ fn enrich_balance(result: &mut UsageProbeResult, balance: Option<f64>, root: &Va
         has_credits: Some(true),
         unlimited: Some(false),
         balance: Some(balance),
+        currency_code: None,
         approximate_message_cost: None,
         limit: find_credit_limit(root),
         balance_read_succeeded: Some(true),
