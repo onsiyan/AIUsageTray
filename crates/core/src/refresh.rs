@@ -852,6 +852,7 @@ fn should_retain_stale(code: &UsageAdapterErrorCode) -> bool {
         code,
         UsageAdapterErrorCode::QuotaExhausted
             | UsageAdapterErrorCode::RateLimited
+            | UsageAdapterErrorCode::CloudflareChallenge
             | UsageAdapterErrorCode::TransientHttp
             | UsageAdapterErrorCode::HttpError
             | UsageAdapterErrorCode::NetworkFailure
@@ -981,6 +982,16 @@ mod tests {
             AdaptiveRefreshPolicy::decide(at, &signals).reason,
             AdaptiveRefreshReason::Constrained
         );
+    }
+
+    #[test]
+    fn cloudflare_challenge_retains_usage_without_invalidating_auth() {
+        assert!(should_retain_stale(
+            &UsageAdapterErrorCode::CloudflareChallenge
+        ));
+        assert!(!should_invalidate(
+            &UsageAdapterErrorCode::CloudflareChallenge
+        ));
     }
 
     #[test]

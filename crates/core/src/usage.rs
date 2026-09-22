@@ -233,6 +233,7 @@ pub enum UsageAdapterErrorCode {
     AuthenticationUnavailable,
     Unauthorized,
     Forbidden,
+    CloudflareChallenge,
     QuotaExhausted,
     RateLimited,
     TransientHttp,

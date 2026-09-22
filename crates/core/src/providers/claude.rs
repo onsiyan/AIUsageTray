@@ -1437,12 +1437,16 @@ fn map_claude_http_error(
             name.eq_ignore_ascii_case("cf-mitigated")
                 && value.trim().eq_ignore_ascii_case("challenge")
         }) || body.contains("just a moment"));
-    let code = match response.status_code {
-        401 => crate::usage::UsageAdapterErrorCode::Unauthorized,
-        403 => crate::usage::UsageAdapterErrorCode::Forbidden,
-        429 => crate::usage::UsageAdapterErrorCode::RateLimited,
-        500..=599 => crate::usage::UsageAdapterErrorCode::TransientHttp,
-        _ => crate::usage::UsageAdapterErrorCode::HttpError,
+    let code = if challenge {
+        crate::usage::UsageAdapterErrorCode::CloudflareChallenge
+    } else {
+        match response.status_code {
+            401 => crate::usage::UsageAdapterErrorCode::Unauthorized,
+            403 => crate::usage::UsageAdapterErrorCode::Forbidden,
+            429 => crate::usage::UsageAdapterErrorCode::RateLimited,
+            500..=599 => crate::usage::UsageAdapterErrorCode::TransientHttp,
+            _ => crate::usage::UsageAdapterErrorCode::HttpError,
+        }
     };
     let message = if challenge {
         format!("{source} is behind a Cloudflare challenge")
@@ -2182,6 +2186,33 @@ mod tests {
         assert_eq!(
             claude_plan_label(None, Some("default_claude_max_5x"), None, None).as_deref(),
             Some("Claude Max 5x")
+        );
+    }
+
+    #[test]
+    fn cloudflare_challenge_is_distinct_from_a_rejected_claude_session() {
+        let challenge = crate::transport::UsageHttpResponse {
+            status_code: 403,
+            body: "Just a moment...".to_owned(),
+            headers: std::collections::BTreeMap::new(),
+        };
+        let error = map_claude_http_error(&challenge, "Claude").error.unwrap();
+        assert_eq!(
+            error.code,
+            crate::usage::UsageAdapterErrorCode::CloudflareChallenge
+        );
+
+        let unauthorized = crate::transport::UsageHttpResponse {
+            status_code: 401,
+            body: String::new(),
+            headers: std::collections::BTreeMap::new(),
+        };
+        let error = map_claude_http_error(&unauthorized, "Claude")
+            .error
+            .unwrap();
+        assert_eq!(
+            error.code,
+            crate::usage::UsageAdapterErrorCode::Unauthorized
         );
     }
 }
