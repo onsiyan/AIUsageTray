@@ -1382,15 +1382,33 @@ fn snapshot_from_model_quotas(
             .then_with(|| left.key.cmp(&right.key))
     });
 
-    let primary = ordered.first().map(|quota| {
-        let mut window = quota.window.clone();
+    let gemini_index = model_quota_representative_index(&ordered, AntigravityQuotaPool::Gemini);
+    let claude_gpt_index =
+        model_quota_representative_index(&ordered, AntigravityQuotaPool::ClaudeGpt);
+    let local_unknown_fallback = if gemini_index.is_none()
+        && claude_gpt_index.is_none()
+        && matches!(source, "local-legacy" | "local-command-models")
+    {
+        local_unknown_model_representative_index(&ordered)
+    } else {
+        None
+    };
+    let primary_index = gemini_index.or(local_unknown_fallback);
+    let primary = primary_index.map(|index| {
+        let mut window = ordered[index].window.clone();
         window.kind = UsageWindowKind::Primary;
+        window
+    });
+    let secondary = claude_gpt_index.map(|index| {
+        let mut window = ordered[index].window.clone();
+        window.kind = UsageWindowKind::Secondary;
         window
     });
     let additional_windows = ordered
         .iter()
-        .skip(1)
-        .map(|quota| AdditionalRateLimitWindow {
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != primary_index && Some(*index) != claude_gpt_index)
+        .map(|(_, quota)| AdditionalRateLimitWindow {
             key: quota.key.clone(),
             name: quota.name.clone(),
             window: quota.window.clone(),
@@ -1406,7 +1424,7 @@ fn snapshot_from_model_quotas(
         primary,
         primary_window_kind: None,
         primary_window_is_synthetic: false,
-        secondary: None,
+        secondary,
         additional_windows,
         credits: None,
         credit_inventory: None,
@@ -1439,6 +1457,90 @@ struct Quota {
     remaining_fraction: Option<f64>,
     used_percent: f64,
     window: RateLimitWindow,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AntigravityQuotaPool {
+    Gemini,
+    ClaudeGpt,
+}
+
+fn model_is_summary_eligible(quota: &Quota) -> bool {
+    let model_id = quota.key.to_ascii_lowercase();
+    let label = quota.name.to_ascii_lowercase();
+    !model_id.starts_with("tab_")
+        && ![&model_id, &label].iter().any(|text| {
+            text.contains("lite") || text.contains("autocomplete") || text.contains("image")
+        })
+}
+
+fn model_quota_pool(quota: &Quota) -> Option<AntigravityQuotaPool> {
+    if !model_is_summary_eligible(quota) {
+        return None;
+    }
+    let model = format!("{} {}", quota.key, quota.name).to_ascii_lowercase();
+    if model.contains("claude") || model.contains("gpt") || model.contains("openai") {
+        Some(AntigravityQuotaPool::ClaudeGpt)
+    } else if model.contains("gemini") && (model.contains("pro") || model.contains("flash")) {
+        Some(AntigravityQuotaPool::Gemini)
+    } else {
+        None
+    }
+}
+
+fn known_remaining_fraction(quota: &Quota) -> Option<f64> {
+    quota
+        .remaining_fraction
+        .filter(|fraction| fraction.is_finite())
+        .map(|fraction| fraction.clamp(0.0, 1.0))
+}
+
+fn compare_quota_representatives(left: &Quota, right: &Quota) -> std::cmp::Ordering {
+    let remaining_order = known_remaining_fraction(left)
+        .unwrap_or(f64::INFINITY)
+        .total_cmp(&known_remaining_fraction(right).unwrap_or(f64::INFINITY));
+    if remaining_order != std::cmp::Ordering::Equal {
+        return remaining_order;
+    }
+    match (
+        left.window.reset_at_utc.as_ref(),
+        right.window.reset_at_utc.as_ref(),
+    ) {
+        (Some(left_reset), Some(right_reset)) if left_reset != right_reset => {
+            return left_reset.cmp(right_reset);
+        }
+        (Some(_), None) => return std::cmp::Ordering::Less,
+        (None, Some(_)) => return std::cmp::Ordering::Greater,
+        _ => {}
+    }
+    left.name
+        .to_ascii_lowercase()
+        .cmp(&right.name.to_ascii_lowercase())
+        .then_with(|| left.key.cmp(&right.key))
+}
+
+fn model_quota_representative_index(models: &[Quota], pool: AntigravityQuotaPool) -> Option<usize> {
+    models
+        .iter()
+        .enumerate()
+        .filter(|(_, quota)| {
+            model_quota_pool(quota) == Some(pool) && known_remaining_fraction(quota).is_some()
+        })
+        .min_by(|(_, left), (_, right)| compare_quota_representatives(left, right))
+        .map(|(index, _)| index)
+}
+
+fn local_unknown_model_representative_index(models: &[Quota]) -> Option<usize> {
+    models
+        .iter()
+        .enumerate()
+        .filter(|(_, quota)| {
+            model_is_summary_eligible(quota)
+                && model_quota_pool(quota).is_none()
+                && known_remaining_fraction(quota).is_some()
+        })
+        .min_by(|(_, left), (_, right)| compare_quota_representatives(left, right))
+        .map(|(index, _)| index)
 }
 
 fn apply_summary_quota(quota: &Quota, groups: &[LocalQuotaSummaryGroup]) -> Quota {
@@ -1991,6 +2093,98 @@ mod tests {
         assert_eq!(quotas.len(), 1);
         assert_eq!(quotas[0].key, "gemini-pro");
         assert_eq!(quotas[0].used_percent, 38.0);
+    }
+
+    #[test]
+    fn model_quota_snapshot_uses_constrained_gemini_and_claude_gpt_representatives() {
+        let account =
+            AccountRecord::create("one", "one@example.com", None, ANTIGRAVITY, None).unwrap();
+        let quotas = vec![
+            to_quota(
+                "gemini-pro",
+                "Gemini Pro".to_owned(),
+                Some(0.4),
+                Some(
+                    DateTime::parse_from_rfc3339("2030-01-01T05:00:00Z")
+                        .unwrap()
+                        .into(),
+                ),
+            ),
+            to_quota(
+                "gemini-flash",
+                "Gemini Flash".to_owned(),
+                Some(0.2),
+                Some(
+                    DateTime::parse_from_rfc3339("2030-01-01T06:00:00Z")
+                        .unwrap()
+                        .into(),
+                ),
+            ),
+            to_quota("claude-sonnet", "Claude Sonnet".to_owned(), Some(0.6), None),
+            to_quota("gpt-oss-120b", "GPT-OSS 120B".to_owned(), Some(0.3), None),
+            to_quota("gemini-image", "Gemini Image".to_owned(), Some(0.0), None),
+            to_quota(
+                "tab_gemini_autocomplete",
+                "Gemini autocomplete".to_owned(),
+                Some(0.0),
+                None,
+            ),
+        ];
+
+        let snapshot = snapshot_from_model_quotas(
+            &account,
+            &quotas,
+            Some(account.email.clone()),
+            None,
+            "local-legacy",
+            "authoritative",
+        );
+
+        let primary = snapshot.primary.as_ref().unwrap();
+        assert_eq!(primary.name, "Gemini Flash");
+        assert_eq!(primary.used_percent, 80.0);
+        assert_eq!(primary.reset_at_utc, quotas[1].window.reset_at_utc);
+        let secondary = snapshot.secondary.as_ref().unwrap();
+        assert_eq!(secondary.name, "GPT-OSS 120B");
+        assert_eq!(secondary.used_percent, 70.0);
+        assert_eq!(snapshot.additional_windows.len(), 4);
+        assert_eq!(snapshot.metrics.len(), quotas.len());
+    }
+
+    #[test]
+    fn unknown_model_fallback_is_local_only() {
+        let account =
+            AccountRecord::create("one", "one@example.com", None, ANTIGRAVITY, None).unwrap();
+        let quotas = vec![to_quota(
+            "experimental-text-model",
+            "Experimental text model".to_owned(),
+            Some(0.7),
+            None,
+        )];
+
+        let local = snapshot_from_model_quotas(
+            &account,
+            &quotas,
+            Some(account.email.clone()),
+            None,
+            "local-legacy",
+            "authoritative",
+        );
+        let remote = snapshot_from_model_quotas(
+            &account,
+            &quotas,
+            Some(account.email.clone()),
+            None,
+            "api-model-catalog",
+            "degraded",
+        );
+
+        assert_eq!(
+            local.primary.as_ref().map(|window| window.name.as_str()),
+            Some("Experimental text model")
+        );
+        assert!(remote.primary.is_none());
+        assert_eq!(remote.metrics.len(), 1);
     }
 
     #[test]

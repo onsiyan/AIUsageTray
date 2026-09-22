@@ -507,7 +507,7 @@ impl UsageHttpTransport for FakeTransport {
                 r#"{"cloudaicompanionProject":"project-1","planInfo":{"planType":"PAID"}}"#
             }
             "/v1internal:fetchAvailableModels" => {
-                r#"{"models":{"flash":{"displayName":"Flash","quotaInfo":{"remainingFraction":0.75,"resetTime":"2030-01-01T00:00:00Z"}},"pro":{"displayName":"Pro","quotaInfo":{"remainingFraction":0.50,"resetTime":"2030-01-01T00:00:00Z"}}}}"#
+                r#"{"models":{"gemini-flash":{"displayName":"Gemini Flash","quotaInfo":{"remainingFraction":0.75,"resetTime":"2030-01-01T00:00:00Z"}},"gemini-pro":{"displayName":"Gemini Pro","quotaInfo":{"remainingFraction":0.50,"resetTime":"2030-01-01T00:00:00Z"}}}}"#
             }
             "/api/v1/key" => {
                 r#"{"data":{"usage":433.286754736,"limit":500,"limit_remaining":454.542594979,"limit_reset":"monthly","workspace_id":"workspace-1","usage_daily":3.404645509,"usage_weekly":3.404645509,"usage_monthly":45.457405021,"is_free_tier":false,"is_management_key":false,"free_model_daily_requests":{"limit":50,"remaining":38,"used":12},"include_byok_in_limit":false,"expires_at":"2030-12-31T23:59:59Z"}}"#
