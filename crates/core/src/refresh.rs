@@ -917,6 +917,7 @@ fn placeholder_account(account_id: AccountId) -> AccountRecord {
         updated_at_utc: now,
         status: AccountStatus::Active,
         provider_id: "unknown".to_owned(),
+        browser_kind: None,
         browser_profile_id: None,
         workspace_id: None,
         codex_home: None,

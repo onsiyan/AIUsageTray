@@ -99,6 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|| format!("Codex — {}", session_identity.email));
         AccountRecord::create(label, &session_identity.email, None, OPENAI, None)?
     };
+    account.browser_kind = Some(login.imported.browser.as_str().to_owned());
     account.browser_profile_id = Some(login.imported.profile_id);
     account_store.upsert(&account).await?;
 

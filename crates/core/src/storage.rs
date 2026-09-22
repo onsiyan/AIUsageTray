@@ -32,6 +32,7 @@ impl SqliteStore {
                     email TEXT NOT NULL,
                     provider_id TEXT NOT NULL DEFAULT 'openai',
                     provider_account_id TEXT NULL,
+                    browser_kind TEXT NULL,
                     browser_profile_id TEXT NULL,
                     workspace_id TEXT NULL,
                     codex_home TEXT NULL,
@@ -92,6 +93,7 @@ impl SqliteStore {
             "TEXT NOT NULL DEFAULT 'openai'",
         )?;
         ensure_column(&connection, "accounts", "provider_account_id", "TEXT NULL")?;
+        ensure_column(&connection, "accounts", "browser_kind", "TEXT NULL")?;
         ensure_column(&connection, "accounts", "browser_profile_id", "TEXT NULL")?;
         ensure_column(&connection, "accounts", "workspace_id", "TEXT NULL")?;
         ensure_column(&connection, "accounts", "codex_home", "TEXT NULL")?;
@@ -127,7 +129,7 @@ impl AccountStore for SqliteStore {
         let connection = self.lock().map_err(account_error)?;
         let mut statement = connection
             .prepare(
-                "SELECT account_id, label, email, provider_id, provider_account_id, browser_profile_id, workspace_id, codex_home, status, created_at_utc, updated_at_utc FROM accounts ORDER BY lower(label), account_id",
+                "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, codex_home, status, created_at_utc, updated_at_utc FROM accounts ORDER BY lower(label), account_id",
             )
             .map_err(sqlite_account_error)?;
         let rows = statement
@@ -141,7 +143,7 @@ impl AccountStore for SqliteStore {
         let connection = self.lock().map_err(account_error)?;
         connection
             .query_row(
-                "SELECT account_id, label, email, provider_id, provider_account_id, browser_profile_id, workspace_id, codex_home, status, created_at_utc, updated_at_utc FROM accounts WHERE account_id = ?1",
+                "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, codex_home, status, created_at_utc, updated_at_utc FROM accounts WHERE account_id = ?1",
                 [account_id.to_string()],
                 read_account,
             )
@@ -156,14 +158,15 @@ impl AccountStore for SqliteStore {
                 r#"
                 INSERT INTO accounts (
                     account_id, label, email, provider_id, provider_account_id,
-                    browser_profile_id, workspace_id, codex_home, openai_account_id,
-                    status, created_at_utc, updated_at_utc)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                    browser_kind, browser_profile_id, workspace_id, codex_home,
+                    openai_account_id, status, created_at_utc, updated_at_utc)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                 ON CONFLICT(account_id) DO UPDATE SET
                     label = excluded.label,
                     email = excluded.email,
                     provider_id = excluded.provider_id,
                     provider_account_id = excluded.provider_account_id,
+                    browser_kind = excluded.browser_kind,
                     browser_profile_id = excluded.browser_profile_id,
                     workspace_id = excluded.workspace_id,
                     codex_home = excluded.codex_home,
@@ -177,6 +180,7 @@ impl AccountStore for SqliteStore {
                     account.email,
                     account.provider_id,
                     account.provider_account_id,
+                    account.browser_kind,
                     account.browser_profile_id,
                     account.workspace_id,
                     account.codex_home,
@@ -331,26 +335,26 @@ fn read_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRecord> {
     let id = AccountId::from_str(&row.get::<_, String>(0)?).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
     })?;
-    let status = match row.get::<_, i32>(8)? {
+    let status = match row.get::<_, i32>(9)? {
         0 => AccountStatus::Active,
         1 => AccountStatus::NeedsReauthentication,
         2 => AccountStatus::Paused,
         3 => AccountStatus::Disabled,
         value => {
             return Err(rusqlite::Error::FromSqlConversionFailure(
-                8,
+                9,
                 rusqlite::types::Type::Integer,
                 format!("unknown account status {value}").into(),
             ));
         }
     };
-    let created_at = row.get::<_, String>(9)?;
-    let updated_at = row.get::<_, String>(10)?;
+    let created_at = row.get::<_, String>(10)?;
+    let updated_at = row.get::<_, String>(11)?;
     let created_at_utc = parse_sql_datetime(&created_at).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(error))
+        rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(error))
     })?;
     let updated_at_utc = parse_sql_datetime(&updated_at).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(error))
+        rusqlite::Error::FromSqlConversionFailure(11, rusqlite::types::Type::Text, Box::new(error))
     })?;
     Ok(AccountRecord {
         id,
@@ -358,9 +362,10 @@ fn read_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRecord> {
         email: row.get(2)?,
         provider_id: row.get(3)?,
         provider_account_id: row.get(4)?,
-        browser_profile_id: row.get(5)?,
-        workspace_id: row.get(6)?,
-        codex_home: row.get(7)?,
+        browser_kind: row.get(5)?,
+        browser_profile_id: row.get(6)?,
+        workspace_id: row.get(7)?,
+        codex_home: row.get(8)?,
         status,
         created_at_utc,
         updated_at_utc,

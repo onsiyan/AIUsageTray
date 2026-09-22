@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let secure_material_store = Arc::new(WindowsCredentialManagerAuthMaterialStore);
     let transport = Arc::new(ReqwestUsageHttpTransport::new(Duration::from_secs(45))?);
 
-    let (identity, browser_material, imported_profile) = if arguments.login {
+    let (identity, browser_material, imported_browser) = if arguments.login {
         let importer = WindowsBrowserCookieImporter::from_process()?;
         let timeout = Duration::from_secs(arguments.timeout_seconds.max(1));
         let login_url = Url::parse("https://claude.ai/login")?;
@@ -98,7 +98,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             user_agent: result.imported.user_agent,
             ..AccountAuthMaterial::default()
         };
-        (identity, material, Some(result.imported.profile_id))
+        (
+            identity,
+            material,
+            Some((result.imported.browser, result.imported.profile_id)),
+        )
     } else {
         let account =
             find_existing_account(account_store.as_ref(), arguments.email.as_deref()).await?;
@@ -136,7 +140,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         find_existing_account(account_store.as_ref(), arguments.email.as_deref()).await?
     };
-    if let Some(profile_id) = imported_profile.as_deref() {
+    if let Some((browser, profile_id)) = imported_browser.as_ref() {
+        account.browser_kind = Some(browser.as_str().to_owned());
         account.browser_profile_id = Some(profile_id.to_owned());
     }
     account_store.upsert(&account).await?;

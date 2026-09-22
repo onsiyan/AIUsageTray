@@ -144,6 +144,11 @@ pub struct AccountRecord {
     pub updated_at_utc: DateTime<Utc>,
     pub status: AccountStatus,
     pub provider_id: String,
+    /// Browser family paired with `browser_profile_id` for account-scoped,
+    /// non-interactive session re-import. Stored as a stable id so core does
+    /// not depend on a platform-specific browser crate.
+    #[serde(default)]
+    pub browser_kind: Option<String>,
     pub browser_profile_id: Option<String>,
     pub workspace_id: Option<String>,
     /// Legacy metadata retained for SQLite compatibility. The Codex adapter
@@ -174,6 +179,7 @@ impl AccountRecord {
             updated_at_utc: now,
             status: AccountStatus::Active,
             provider_id,
+            browser_kind: None,
             browser_profile_id: None,
             workspace_id: normalize_optional(workspace_id),
             codex_home: None,

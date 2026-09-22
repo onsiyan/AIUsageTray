@@ -635,13 +635,17 @@ async fn claude_web_session_rotation_is_reported_when_merged_into_oauth_usage() 
 async fn sqlite_store_round_trips_account_and_snapshot() {
     let directory = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(directory.path().join("accounts.db")).unwrap();
-    let account = AccountRecord::create("Test", "Test@Example.com", None, ANTIGRAVITY, None)
+    let mut account = AccountRecord::create("Test", "Test@Example.com", None, ANTIGRAVITY, None)
         .unwrap()
         .with_codex_home(Some(r"C:\managed\codex"));
+    account.browser_kind = Some("chrome".to_owned());
+    account.browser_profile_id = Some("Profile 2".to_owned());
     store.upsert(&account).await.unwrap();
     let loaded = store.get(account.id).await.unwrap().unwrap();
     assert_eq!(loaded.email, "test@example.com");
     assert_eq!(loaded.provider_id, ANTIGRAVITY);
+    assert_eq!(loaded.browser_kind.as_deref(), Some("chrome"));
+    assert_eq!(loaded.browser_profile_id.as_deref(), Some("Profile 2"));
     assert_eq!(loaded.codex_home.as_deref(), Some(r"C:\managed\codex"));
 
     let snapshot = UsageSnapshot {
