@@ -8,8 +8,9 @@ use crate::{
     transport::{TransportError, UsageHttpRequest, UsageHttpResponse, UsageHttpTransport},
     usage::{
         CreditLimitSnapshot, CreditsSnapshot, RateLimitWindow, SpendSnapshot, UsageAdapter,
-        UsageCreditInventory, UsageCreditRecord, UsageMetric, UsagePrimaryWindowKind,
-        UsageProbeResult, UsageSnapshot, UsageWindowKind,
+        UsageAdapterErrorCode, UsageCreditInventory, UsageCreditRecord, UsageMetric,
+        UsagePrimaryWindowKind, UsageProbeResult, UsageSnapshot, UsageSourceDiagnostic,
+        UsageWindowKind,
     },
 };
 use async_trait::async_trait;
@@ -223,15 +224,26 @@ impl UsageAdapter for WhamUsageAdapter {
         };
         snapshot.observed_email = session_email.clone();
         snapshot.source = Some("browser-session".to_owned());
+        let mut source_diagnostics = Vec::new();
 
         if self.fetch_reset_credits {
-            if let Ok(response) = self
+            match self
                 .get(self.reset_credits_path(), Some(account), &material, true)
                 .await
             {
-                if response.is_success() {
-                    snapshot.credit_inventory = parse_credit_inventory(&response.body);
+                Ok(response) if response.is_success() => {
+                    if let Some(inventory) = parse_credit_inventory(&response.body) {
+                        snapshot.credit_inventory = Some(inventory);
+                    } else {
+                        source_diagnostics.push(optional_payload_diagnostic("wham.reset-credits"));
+                    }
                 }
+                Ok(response) => source_diagnostics.push(optional_response_diagnostic(
+                    "wham.reset-credits",
+                    &response,
+                )),
+                Err(error) => source_diagnostics
+                    .push(optional_transport_diagnostic("wham.reset-credits", &error)),
             }
         }
 
@@ -246,13 +258,24 @@ impl UsageAdapter for WhamUsageAdapter {
                         "/backend-api/accounts/{}/spend-controls/current-user/monthly-usage",
                         percent_encode(account_id)
                     );
-                    if let Ok(response) = self.get(&path, Some(account), &material, true).await {
-                        if response.is_success() {
+                    match self.get(&path, Some(account), &material, true).await {
+                        Ok(response) if response.is_success() => {
                             if let Some(enrichment) = parse_monthly_usage(&response.body) {
                                 snapshot.spend =
                                     Some(merge_spend(snapshot.spend.take(), enrichment));
+                            } else {
+                                source_diagnostics
+                                    .push(optional_payload_diagnostic("workspace.monthly-usage"));
                             }
                         }
+                        Ok(response) => source_diagnostics.push(optional_response_diagnostic(
+                            "workspace.monthly-usage",
+                            &response,
+                        )),
+                        Err(error) => source_diagnostics.push(optional_transport_diagnostic(
+                            "workspace.monthly-usage",
+                            &error,
+                        )),
                     }
                 }
             }
@@ -268,8 +291,8 @@ impl UsageAdapter for WhamUsageAdapter {
                         "/backend-api/accounts/{}/remaining_balance",
                         percent_encode(account_id)
                     );
-                    if let Ok(response) = self.get(&path, Some(account), &material, true).await {
-                        if response.is_success() {
+                    match self.get(&path, Some(account), &material, true).await {
+                        Ok(response) if response.is_success() => {
                             if let Some(balance) = parse_balance(&response.body) {
                                 snapshot.credits = Some(CreditsSnapshot {
                                     has_credits: snapshot
@@ -296,12 +319,25 @@ impl UsageAdapter for WhamUsageAdapter {
                                     balance_read_succeeded: Some(true),
                                     credits_available: Some(balance > 0.0),
                                 });
+                            } else {
+                                source_diagnostics.push(optional_payload_diagnostic(
+                                    "workspace.remaining-balance",
+                                ));
                             }
                         }
+                        Ok(response) => source_diagnostics.push(optional_response_diagnostic(
+                            "workspace.remaining-balance",
+                            &response,
+                        )),
+                        Err(error) => source_diagnostics.push(optional_transport_diagnostic(
+                            "workspace.remaining-balance",
+                            &error,
+                        )),
                     }
                 }
             }
         }
+        snapshot.source_diagnostics = source_diagnostics;
         let identity = VerifiedIdentity {
             email: session_email,
             provider_account_id: snapshot.response_account_id.clone(),
@@ -320,6 +356,75 @@ fn account_mismatch(message: &str) -> UsageProbeResult {
         http_status_code: None,
         retry_after_seconds: None,
     })
+}
+
+fn optional_payload_diagnostic(source: &str) -> UsageSourceDiagnostic {
+    UsageSourceDiagnostic {
+        source: source.to_owned(),
+        code: UsageAdapterErrorCode::InvalidPayload,
+        message: format!("OpenAI {source} response did not match the expected data shape"),
+        http_status_code: None,
+        retry_after_seconds: None,
+    }
+}
+
+fn optional_response_diagnostic(
+    source: &str,
+    response: &UsageHttpResponse,
+) -> UsageSourceDiagnostic {
+    let code = match response.status_code {
+        401 => UsageAdapterErrorCode::Unauthorized,
+        403 => UsageAdapterErrorCode::Forbidden,
+        429 => UsageAdapterErrorCode::RateLimited,
+        500..=599 => UsageAdapterErrorCode::TransientHttp,
+        _ => UsageAdapterErrorCode::HttpError,
+    };
+    UsageSourceDiagnostic {
+        source: source.to_owned(),
+        code,
+        message: format!(
+            "OpenAI {source} request returned HTTP {}",
+            response.status_code
+        ),
+        http_status_code: Some(response.status_code),
+        retry_after_seconds: response
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("retry-after"))
+            .and_then(|(_, value)| value.trim().parse::<u64>().ok()),
+    }
+}
+
+fn optional_transport_diagnostic(source: &str, error: &TransportError) -> UsageSourceDiagnostic {
+    let (code, message) = match error {
+        TransportError::Timeout(_) => (
+            UsageAdapterErrorCode::NetworkFailure,
+            format!("OpenAI {source} request timed out"),
+        ),
+        TransportError::Request(error) if error.is_timeout() => (
+            UsageAdapterErrorCode::NetworkFailure,
+            format!("OpenAI {source} request timed out"),
+        ),
+        TransportError::Request(_) => (
+            UsageAdapterErrorCode::NetworkFailure,
+            format!("OpenAI {source} request failed"),
+        ),
+        TransportError::Serialization(_) => (
+            UsageAdapterErrorCode::InvalidPayload,
+            format!("OpenAI {source} response could not be processed"),
+        ),
+        TransportError::InvalidUrl(_) | TransportError::InvalidHeader { .. } => (
+            UsageAdapterErrorCode::Unknown,
+            format!("OpenAI {source} request could not be built"),
+        ),
+    };
+    UsageSourceDiagnostic {
+        source: source.to_owned(),
+        code,
+        message,
+        http_status_code: None,
+        retry_after_seconds: None,
+    }
 }
 
 fn parse_wham_usage(
@@ -1078,6 +1183,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn optional_endpoint_failures_are_reported_without_failing_codex_usage() {
+        let transport = Arc::new(OptionalEndpointFailureTransport {
+            requests: Mutex::new(Vec::new()),
+        });
+        let auth = Arc::new(StaticBrowserAuth(browser_session_material()));
+        let adapter = WhamUsageAdapter::new(transport.clone(), auth, true, true).unwrap();
+        let account = AccountRecord::create(
+            "codex",
+            "codex@example.com",
+            Some("acct-1".to_owned()),
+            OPENAI,
+            None,
+        )
+        .unwrap();
+
+        let result = adapter.probe(&account).await.unwrap();
+
+        assert!(result.succeeded());
+        let snapshot = result.snapshot.unwrap();
+        assert_eq!(snapshot.primary.as_ref().unwrap().used_percent, 40.0);
+        assert_eq!(
+            snapshot
+                .source_diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.source.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "wham.reset-credits",
+                "workspace.monthly-usage",
+                "workspace.remaining-balance",
+            ]
+        );
+        for diagnostic in &snapshot.source_diagnostics {
+            assert_eq!(diagnostic.code, UsageAdapterErrorCode::Forbidden);
+            assert_eq!(diagnostic.http_status_code, Some(403));
+            assert_eq!(diagnostic.retry_after_seconds, Some(17));
+            assert!(!diagnostic.message.contains("private response body"));
+        }
+        assert_eq!(transport.requests.lock().unwrap().len(), 5);
+    }
+
+    #[tokio::test]
     async fn mismatched_browser_identity_is_rejected_before_usage_query() {
         let transport = Arc::new(BrowserSessionTransport::new(
             r#"{"user":{"email":"other@example.com"},"accessToken":"other-token"}"#,
@@ -1153,6 +1300,43 @@ mod tests {
                 session_body: session_body.to_owned(),
                 requests: Mutex::new(Vec::new()),
             }
+        }
+    }
+
+    struct OptionalEndpointFailureTransport {
+        requests: Mutex<Vec<UsageHttpRequest>>,
+    }
+
+    #[async_trait]
+    impl UsageHttpTransport for OptionalEndpointFailureTransport {
+        async fn send(
+            &self,
+            request: UsageHttpRequest,
+        ) -> Result<UsageHttpResponse, TransportError> {
+            let path = request.url.path().to_owned();
+            self.requests.lock().unwrap().push(request);
+            let (status_code, body, headers) = match path.as_str() {
+                "/api/auth/session" => (
+                    200,
+                    r#"{"user":{"email":"codex@example.com"}}"#.to_owned(),
+                    BTreeMap::new(),
+                ),
+                "/backend-api/wham/usage" => (
+                    200,
+                    r#"{"account_id":"acct-1","plan_type":"team","rate_limit":{"primary_window":{"used_percent":40,"reset_at":"2030-01-01T00:00:00Z","limit_window_seconds":18000}}}"#.to_owned(),
+                    BTreeMap::new(),
+                ),
+                _ => (
+                    403,
+                    "private response body".to_owned(),
+                    BTreeMap::from([("Retry-After".to_owned(), "17".to_owned())]),
+                ),
+            };
+            Ok(UsageHttpResponse {
+                status_code,
+                body,
+                headers,
+            })
         }
     }
 
