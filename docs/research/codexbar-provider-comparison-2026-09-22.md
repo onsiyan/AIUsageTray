@@ -1,7 +1,7 @@
 # مقارنة مزودي الاستخدام مع CodexBar
 
-تاريخ المراجعة: 2026-09-22  
-النطاق: نسخة Rust المنسوخة `outputs/CodexUsageMonitor-Rust/rust` فقط، ومقارنة مصدرية مع مشروع CodexBar واختباراته ووثائقه الحالية. نُفذت تحسينات مسار Codex الموضحة أدناه؛ بقية adapters لم تتغير في هذه الدفعة، ولم يُمس مشروع .NET الأصلي. هذه مراجعة لاستعلامات الاستخدام والهوية والحدود وإعادة التعيين والاسترداد من الأخطاء، لا مقارنة واجهات.
+تاريخ المراجعة: 2026-09-23
+النطاق: نسخة Rust المنسوخة `outputs/CodexUsageMonitor-Rust/rust` فقط، ومقارنة مصدرية مع مشروع CodexBar واختباراته ووثائقه الحالية. نُفذت تحسينات مساري Codex وAntigravity الموضحة أدناه؛ بقية adapters لم تتغير في هذه الدفعة، ولم يُمس مشروع .NET الأصلي. هذه مراجعة لاستعلامات الاستخدام والهوية والحدود وإعادة التعيين والاسترداد من الأخطاء، لا مقارنة واجهات.
 
 ## الخلاصة التنفيذية
 
@@ -9,7 +9,7 @@
 |---|---|---|
 | Codex | جلسة متصفح مستوردة، هوية موثقة، ثم WHAM | استبعاد متعمد لمصادر ملفات/CLI؛ إثراء لوحة الويب الاختياري غير منفذ |
 | Claude | تغطية واسعة لـ OAuth وWeb وCLI وAdmin؛ أُصلح عزل OAuth والمؤسسة والتحقق المالي | تدوير/إعادة استيراد Web session بعد انتهاء الجلسة غير منفذ بعد |
-| Antigravity | مسارا التطبيق وOAuth؛ الحالات المعطلة/المجهولة لا تتحول إلى صفر زائف | `agy` CLI مؤجل لأن مخرجاته لا تثبت هوية الحساب المراد تحديثه |
+| Antigravity | مسارا التطبيق وOAuth؛ الملخص والعناصر الإضافية تتبعان تقسيم العائلات وكبح التكرار في CodexBar | تطبيع بعض معرّفات Gemini Flash القديمة، وإسناد آمن لمصدر `agy` ما زالا مؤجلين |
 | OpenRouter | endpoint الأساسي والمفاتيح المعزولة متوافقان | تعطل `/key` يمنع رصيد `/credits`، وسجل النشاط وBYOK أقل اكتمالًا؛ قبول HTTP مخصص خطر أمني |
 | OpenCode Go | Console/API والـmeters الأساسية متوافقة | `endsAt` لا يدخل في إعادة تعيين الشهر، وسلوك التحويلات والـfallback أقل اكتمالًا |
 
@@ -54,7 +54,7 @@
 1. لا يوجد `agy` CLI source. CodexBar يجرّبه بعد تطبيق Antigravity المحلي وقبل IDE/OAuth، ويقرأ summary أغنى عند إغلاق التطبيق. لكن المصدر المرجعي نفسه يذكر أن إخراج `agy` لا يقدم هوية حساب؛ لذلك أُجّل إسناده إلى حساباتنا المتعددة إلى أن يوجد ربط موثق وآمن، بدل نسب quota لحساب نشط خطأً.
 2. تم تضييق اكتشاف Windows المحلي ليشترط مسارًا يحتوي مقطع Antigravity صريحًا، ثم يجمع منافذ الاستماع المملوكة للعملية؛ وبذلك لا يكفي `--app_data_dir` عام لضم عملية برنامج آخر. كما يقارن الآن snapshots المطابقة للحساب عبر endpoints وفق معيار اكتمال CodexBar (أفضلية summary، وعدد المجموعات والحصص المعروفة، والهوية والخطة)، ويجلب `GetUserStatus` مرة واحدة لكل endpoint. ما يزال لا يصنف app/IDE/CLI أو يميز منافذ خادم الإضافة كما يفعل المرجع؛ التحقق من الجاهزية يتم حاليًا بطلبات RPC نفسها، لا بمرحلة resolution مستقلة قبل جمع snapshot.
 3. فحص local يتطلب تطابق email من `GetUserStatus` قبل قبول summary؛ المرجع قد يحتفظ بحصة صحيحة عندما endpoint الهوية مفقود. بالمقابل، مسار OAuth المحلي يوسم البريد المحفوظ باعتباره هوية verified حتى لو لم يثبت رد الاستخدام ذلك؛ ينبغي توضيح مصدر الثقة وعدم عرض هوية مستنتجة كأنها مؤكدة.
-4. في مسارات model quotas أصبح `primary` ممثل Gemini الأكثر تقييدًا و`secondary` ممثل Claude/GPT الأكثر تقييدًا؛ صفوف lite/autocomplete/image لا تقود الملخص، وتبقى metrics الخام محفوظة. fallback مجهول العائلة محصور في ردود التطبيق المحلية. ما يزال ينقصنا تطبيع بعض معرّفات Gemini Flash القديمة، وكبح صف OAuth الإضافي فقط حين يطابق ممثل pool في قيمة quota وموعد reset معروف متطابق؛ الصفوف المحلية أو ذات reset المفقود/المختلف تبقى مستقلة كما في المرجع.
+4. في مسارات model quotas أصبح `primary` ممثل Gemini الأكثر تقييدًا و`secondary` ممثل Claude/GPT الأكثر تقييدًا؛ صفوف lite/autocomplete/image لا تقود الملخص، وتبقى metrics الخام محفوظة. fallback مجهول العائلة محصور في ردود التطبيق المحلية. صف OAuth الإضافي يُكبح الآن فقط حين يطابق ممثل pool في قيمة quota وموعد reset معروف متطابق؛ الصفوف المحلية أو ذات reset المفقود/المختلف تبقى مستقلة كما في المرجع. ما يزال ينقصنا تطبيع بعض معرّفات Gemini Flash القديمة.
 
 **مراجع محلية:** [Antigravity adapter](../../crates/core/src/providers/antigravity.rs)، [مصادر المصادقة](../../crates/core/src/auth_sources.rs).  
 **مرجع CodexBar:** [Antigravity provider](https://github.com/steipete/CodexBar/blob/main/docs/antigravity.md)، [local status probe](https://raw.githubusercontent.com/steipete/CodexBar/main/Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe.swift)، [OAuth quota parser](https://raw.githubusercontent.com/steipete/CodexBar/main/Sources/CodexBarCore/Providers/Antigravity/AntigravityQuotaSummaryParser.swift)، [تغيير كبح صفوف الـpool المكررة](https://github.com/steipete/CodexBar/pull/3583).
@@ -106,7 +106,7 @@ CodexBar يوثق نطاقًا تكيفيًا مماثلًا 2–30 دقيقة،
 
 ## التحقق وحدود المراجعة
 
-- أحدث تحقق للمستودع: `cargo test --workspace` نجح، بما فيه 89 اختبارًا وحدويًا و11 اختبار عقد لـ core، و12 اختبارًا لـ windows-auth، و3 اختبارات لـ Codex probe؛ كما نجح `cargo fmt --all -- --check`.
+- تحقق هذه الدفعة: `cargo test -p codex-usage-core` نجح (95 اختبارًا وحدويًا و11 اختبار عقد)، ونجح `cargo fmt --all -- --check` و`git diff --check`. لم تُعَد اختبارات الحزم الأخرى في هذه الدفعة.
 - بقية المزودين: مقارنة source/docs/tests فقط في هذه الجولة؛ لم يُشغّل تكامل حقيقي مع حسابات أو خدمات خارجية، ولم تُشغّل اختبارات Swift/CodexBar.
 - CodexBar source snapshot reported by the OpenRouter audit: `173afc88a4171f013c53f8c5167f64808565f913`; the upstream `main` can change after this review date.
 - لا تحتوي هذه المراجعة على بيانات اعتماد أو مفاتيح حسابات.
