@@ -8,9 +8,7 @@
 //! not keep a browser/WebView alive.
 
 use crate::{
-    accounts::{
-        ANTIGRAVITY, AccountId, AccountRecord, CLAUDE, OPENCODE_GO, OPENROUTER, VerifiedIdentity,
-    },
+    accounts::{ANTIGRAVITY, AccountId, AccountRecord, CLAUDE, OPENCODE_GO, OPENROUTER},
     auth::{AccountAuthMaterial, AccountAuthMaterialProvider, AuthError, CookieValue},
 };
 use async_trait::async_trait;
@@ -588,19 +586,16 @@ mod tests {
             r#"{"tokens":{"access_token":"must-not-be-read"}}"#,
         )
         .unwrap();
-        let account = AccountRecord::create(
-            "codex",
-            "user@example.com",
-            None,
-            OPENAI,
-            None,
-        )
-        .unwrap()
-        .with_codex_home(Some(native_home.to_string_lossy().as_ref()));
+        let account = AccountRecord::create("codex", "user@example.com", None, OPENAI, None)
+            .unwrap()
+            .with_codex_home(Some(native_home.to_string_lossy().as_ref()));
         let source = LocalFileAuthMaterialProvider::with_home_directory(
             account.id,
             directory.path(),
-            [("CODEX_HOME".to_owned(), native_home.to_string_lossy().into_owned())],
+            [(
+                "CODEX_HOME".to_owned(),
+                native_home.to_string_lossy().into_owned(),
+            )],
         );
         assert!(source.get(&account).await.unwrap().is_none());
     }

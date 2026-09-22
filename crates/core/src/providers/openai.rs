@@ -26,7 +26,6 @@ pub struct WhamUsageAdapter {
     transport: Arc<dyn UsageHttpTransport>,
     auth: Arc<dyn AccountAuthMaterialProvider>,
     base_url: Url,
-    environment: HashMap<String, String>,
     fetch_spend_controls: bool,
     fetch_workspace_balance: bool,
     fetch_reset_credits: bool,
@@ -83,7 +82,8 @@ impl WhamUsageAdapter {
         material: &AccountAuthMaterial,
         include_account_header: bool,
     ) -> Result<UsageHttpResponse, TransportError> {
-        let url = self.base_url
+        let url = self
+            .base_url
             .join(path.trim_start_matches('/'))
             .map_err(|error| TransportError::InvalidUrl(error.to_string()))?;
         let mut headers = bearer_headers(
@@ -94,7 +94,9 @@ impl WhamUsageAdapter {
                 .unwrap_or("CodexUsageMonitor/0.1"),
         );
         if include_account_header {
-            if let Some(account_id) = account.and_then(|account| account.provider_account_id.as_deref()) {
+            if let Some(account_id) =
+                account.and_then(|account| account.provider_account_id.as_deref())
+            {
                 headers.insert("ChatGPT-Account-Id".to_owned(), account_id.to_owned());
             }
         }
@@ -129,7 +131,10 @@ impl WhamUsageAdapter {
         cookie_material.oauth_access_token = None;
         let headers = bearer_headers(
             &cookie_material,
-            material.user_agent.as_deref().unwrap_or("CodexUsageMonitor/0.1"),
+            material
+                .user_agent
+                .as_deref()
+                .unwrap_or("CodexUsageMonitor/0.1"),
         );
         self.transport
             .send(UsageHttpRequest {
@@ -151,51 +156,49 @@ impl UsageAdapter for WhamUsageAdapter {
     async fn probe(&self, account: &AccountRecord) -> Result<UsageProbeResult, TransportError> {
         let mut material = match self.auth.get(account).await {
             Ok(Some(material)) => material,
-            Ok(None) | Err(AuthError::ReauthenticationRequired(_)) => return Ok(missing_auth("Codex")),
+            Ok(None) | Err(AuthError::ReauthenticationRequired(_)) => {
+                return Ok(missing_auth("Codex"));
+            }
             Err(error) => return Ok(invalid_payload("OpenAI", error.to_string())),
         };
-        if !material.has_bearer_token()
-            && material.cookies.is_empty()
-            && material
-                .oauth_access_token
-                .as_deref()
-                .is_none_or(|value| value.trim().is_empty())
-        {
-            return Ok(missing_auth("Codex"));
+        if material.cookies.is_empty() {
+            return Ok(missing_auth("Codex browser session"));
         }
-        let has_browser_session = !material.cookies.is_empty();
+
+        // Codex usage must belong to the browser account explicitly imported
+        // for this managed account. Never let an unrelated stored token bypass
+        // the session identity check or take precedence over the session token.
+        material.bearer_token = None;
+        material.secondary_bearer_token = None;
+        material.oauth_access_token = None;
         let mut token_refreshed = false;
-        let session_email = if has_browser_session {
-            let session = self.get_browser_session(&material).await?;
-            if !session.is_success() {
-                return Ok(map_http_error(&session, "OpenAI"));
-            }
-            let root: Value = match serde_json::from_str(&session.body) {
-                Ok(root) => root,
-                Err(error) => return Ok(invalid_payload("OpenAI session", error.to_string())),
-            };
-            let Some(email) = root
-                .get("user")
-                .and_then(|user| json_string(user, &["email"]))
-            else {
-                return Ok(invalid_payload(
-                    "OpenAI session",
-                    "session response did not include the signed-in user's email",
-                ));
-            };
-            if !email.eq_ignore_ascii_case(&account.email) {
-                return Ok(account_mismatch(
-                    "the browser session belongs to a different account",
-                ));
-            }
-            if let Some(access_token) = json_string(&root, &["accessToken", "access_token"]) {
-                material.bearer_token = Some(access_token);
-                token_refreshed = true;
-            }
-            Some(email)
-        } else {
-            None
+        let session = self.get_browser_session(&material).await?;
+        if !session.is_success() {
+            return Ok(map_http_error(&session, "OpenAI"));
+        }
+        let root: Value = match serde_json::from_str(&session.body) {
+            Ok(root) => root,
+            Err(error) => return Ok(invalid_payload("OpenAI session", error.to_string())),
         };
+        let Some(email) = root
+            .get("user")
+            .and_then(|user| json_string(user, &["email"]))
+        else {
+            return Ok(invalid_payload(
+                "OpenAI session",
+                "session response did not include the signed-in user's email",
+            ));
+        };
+        if !email.eq_ignore_ascii_case(&account.email) {
+            return Ok(account_mismatch(
+                "the browser session belongs to a different account",
+            ));
+        }
+        if let Some(access_token) = json_string(&root, &["accessToken", "access_token"]) {
+            material.bearer_token = Some(access_token);
+            token_refreshed = true;
+        }
+        let session_email = Some(email);
         let base_url = self.base_url.clone();
         let usage_response = self
             .get(
@@ -219,20 +222,11 @@ impl UsageAdapter for WhamUsageAdapter {
             Err(error) => return Ok(UsageProbeResult::failure(error)),
         };
         snapshot.observed_email = session_email.clone();
-        snapshot.source = Some(if has_browser_session {
-            "browser-session".to_owned()
-        } else {
-            "account-token".to_owned()
-        });
+        snapshot.source = Some("browser-session".to_owned());
 
         if self.fetch_reset_credits {
             if let Ok(response) = self
-                .get(
-                    self.reset_credits_path(),
-                    Some(account),
-                    &material,
-                    true,
-                )
+                .get(self.reset_credits_path(), Some(account), &material, true)
                 .await
             {
                 if response.is_success() {
@@ -252,10 +246,7 @@ impl UsageAdapter for WhamUsageAdapter {
                         "/backend-api/accounts/{}/spend-controls/current-user/monthly-usage",
                         percent_encode(account_id)
                     );
-                    if let Ok(response) = self
-                        .get(&path, Some(account), &material, true)
-                        .await
-                    {
+                    if let Ok(response) = self.get(&path, Some(account), &material, true).await {
                         if response.is_success() {
                             if let Some(enrichment) = parse_monthly_usage(&response.body) {
                                 snapshot.spend =
@@ -277,10 +268,7 @@ impl UsageAdapter for WhamUsageAdapter {
                         "/backend-api/accounts/{}/remaining_balance",
                         percent_encode(account_id)
                     );
-                    if let Ok(response) = self
-                        .get(&path, Some(account), &material, true)
-                        .await
-                    {
+                    if let Ok(response) = self.get(&path, Some(account), &material, true).await {
                         if response.is_success() {
                             if let Some(balance) = parse_balance(&response.body) {
                                 snapshot.credits = Some(CreditsSnapshot {
@@ -867,7 +855,12 @@ fn is_backend_api_base(url: &Url) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accounts::AccountRecord;
+    use crate::{
+        accounts::AccountRecord, auth::CookieValue, transport::UsageHttpRequest,
+        usage::UsageAdapterErrorCode,
+    };
+    use async_trait::async_trait;
+    use std::{collections::BTreeMap, sync::Mutex};
 
     #[test]
     fn parses_numeric_reset_and_stable_spark_windows() {
@@ -981,4 +974,164 @@ mod tests {
         assert!(is_backend_api_base(&backend));
     }
 
+    #[tokio::test]
+    async fn browser_session_is_validated_before_usage_and_owns_the_request_token() {
+        let transport = Arc::new(BrowserSessionTransport::new(
+            r#"{"user":{"email":"codex@example.com"},"accessToken":"session-access-token"}"#,
+        ));
+        let auth = Arc::new(StaticBrowserAuth(AccountAuthMaterial {
+            bearer_token: Some("unverified-stored-token".to_owned()),
+            secondary_bearer_token: Some("unverified-secondary-token".to_owned()),
+            oauth_access_token: Some("unverified-oauth-token".to_owned()),
+            cookies: vec![CookieValue {
+                name: "__Secure-next-auth.session-token".to_owned(),
+                value: "browser-session-cookie".to_owned(),
+            }],
+            ..AccountAuthMaterial::default()
+        }));
+        let adapter = WhamUsageAdapter::new(transport.clone(), auth, false, false)
+            .unwrap()
+            .with_reset_credits(false);
+        let account = AccountRecord::create(
+            "codex",
+            "codex@example.com",
+            Some("acct-1".to_owned()),
+            OPENAI,
+            None,
+        )
+        .unwrap();
+
+        let result = adapter.probe(&account).await.unwrap();
+
+        assert!(result.succeeded());
+        let snapshot = result.snapshot.unwrap();
+        assert_eq!(snapshot.source.as_deref(), Some("browser-session"));
+        assert_eq!(
+            snapshot.observed_email.as_deref(),
+            Some("codex@example.com")
+        );
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].url.path(), "/api/auth/session");
+        assert!(!requests[0].headers.contains_key("Authorization"));
+        assert_eq!(
+            requests[0].headers.get("Cookie").map(String::as_str),
+            Some("__Secure-next-auth.session-token=browser-session-cookie")
+        );
+        assert_eq!(requests[1].url.path(), "/backend-api/wham/usage");
+        assert_eq!(
+            requests[1].headers.get("Authorization").map(String::as_str),
+            Some("Bearer session-access-token")
+        );
+        assert_eq!(
+            requests[1]
+                .headers
+                .get("ChatGPT-Account-Id")
+                .map(String::as_str),
+            Some("acct-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn mismatched_browser_identity_is_rejected_before_usage_query() {
+        let transport = Arc::new(BrowserSessionTransport::new(
+            r#"{"user":{"email":"other@example.com"},"accessToken":"other-token"}"#,
+        ));
+        let auth = Arc::new(StaticBrowserAuth(browser_session_material()));
+        let adapter = WhamUsageAdapter::new(transport.clone(), auth, false, false).unwrap();
+        let account =
+            AccountRecord::create("codex", "codex@example.com", None, OPENAI, None).unwrap();
+
+        let result = adapter.probe(&account).await.unwrap();
+
+        assert_eq!(
+            result.error.unwrap().code,
+            UsageAdapterErrorCode::AccountMismatch
+        );
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/api/auth/session");
+    }
+
+    #[tokio::test]
+    async fn token_without_imported_browser_cookies_is_not_a_codex_usage_source() {
+        let transport = Arc::new(BrowserSessionTransport::new(
+            r#"{"user":{"email":"codex@example.com"}}"#,
+        ));
+        let auth = Arc::new(StaticBrowserAuth(AccountAuthMaterial {
+            bearer_token: Some("token-only".to_owned()),
+            ..AccountAuthMaterial::default()
+        }));
+        let adapter = WhamUsageAdapter::new(transport.clone(), auth, false, false).unwrap();
+        let account =
+            AccountRecord::create("codex", "codex@example.com", None, OPENAI, None).unwrap();
+
+        let result = adapter.probe(&account).await.unwrap();
+
+        assert_eq!(
+            result.error.unwrap().code,
+            UsageAdapterErrorCode::AuthenticationUnavailable
+        );
+        assert!(transport.requests.lock().unwrap().is_empty());
+    }
+
+    fn browser_session_material() -> AccountAuthMaterial {
+        AccountAuthMaterial {
+            cookies: vec![CookieValue {
+                name: "__Secure-next-auth.session-token".to_owned(),
+                value: "browser-session-cookie".to_owned(),
+            }],
+            ..AccountAuthMaterial::default()
+        }
+    }
+
+    struct StaticBrowserAuth(AccountAuthMaterial);
+
+    #[async_trait]
+    impl AccountAuthMaterialProvider for StaticBrowserAuth {
+        async fn get(
+            &self,
+            _account: &AccountRecord,
+        ) -> Result<Option<AccountAuthMaterial>, AuthError> {
+            Ok(Some(self.0.clone()))
+        }
+    }
+
+    struct BrowserSessionTransport {
+        session_body: String,
+        requests: Mutex<Vec<UsageHttpRequest>>,
+    }
+
+    impl BrowserSessionTransport {
+        fn new(session_body: &str) -> Self {
+            Self {
+                session_body: session_body.to_owned(),
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl UsageHttpTransport for BrowserSessionTransport {
+        async fn send(
+            &self,
+            request: UsageHttpRequest,
+        ) -> Result<UsageHttpResponse, TransportError> {
+            let path = request.url.path().to_owned();
+            self.requests.lock().unwrap().push(request);
+            let (status_code, body) = match path.as_str() {
+                "/api/auth/session" => (200, self.session_body.clone()),
+                "/backend-api/wham/usage" => (
+                    200,
+                    r#"{"account_id":"acct-1","plan_type":"plus","rate_limit":{"primary_window":{"used_percent":40,"reset_at":"2030-01-01T00:00:00Z","limit_window_seconds":18000}}}"#.to_owned(),
+                ),
+                _ => (404, String::new()),
+            };
+            Ok(UsageHttpResponse {
+                status_code,
+                body,
+                headers: BTreeMap::new(),
+            })
+        }
+    }
 }

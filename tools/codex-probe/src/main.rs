@@ -1,6 +1,9 @@
 use codex_usage_core::{
     accounts::{AccountRecord, AccountStore, OPENAI},
-    auth::{AccountAuthMaterial, AccountAuthMaterialProvider, StoredAuthMaterialProvider},
+    auth::{
+        AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
+        StoredAuthMaterialProvider,
+    },
     providers::registry::ProviderRegistryConfig,
     refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
     runtime::UsageRuntime,

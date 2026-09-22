@@ -209,9 +209,12 @@ dependencies = [
 name = "codex-usage-codex-probe"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "codex-usage-core",
+ "codex-usage-windows-auth",
+ "reqwest",
+ "serde_json",
  "tokio",
+ "url",
 ]
 
 [[package]]

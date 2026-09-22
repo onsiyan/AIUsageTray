@@ -298,6 +298,4 @@ mod tests {
         assert!(registry.contains(ANTIGRAVITY));
         assert!(registry.contains(OPENCODE_GO));
     }
-
-    #[test]
 }
