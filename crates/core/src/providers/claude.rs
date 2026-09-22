@@ -1059,16 +1059,29 @@ fn select_organization(body: &str, requested_id: Option<&str>) -> Option<String>
         .iter()
         .filter_map(|item| {
             let id = json_string(item, &["uuid", "id"])?;
-            Some((
-                id,
-                item.get("has_chat_capability")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                !item
-                    .get("is_api_only")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-            ))
+            let capabilities = item.get("capabilities").and_then(Value::as_array);
+            let (has_chat_capability, is_not_api_only) = if let Some(capabilities) = capabilities {
+                let capabilities = capabilities
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_ascii_lowercase)
+                    .collect::<Vec<_>>();
+                let has_chat_capability = capabilities.iter().any(|value| value == "chat");
+                let is_api_only =
+                    !capabilities.is_empty() && capabilities.iter().all(|value| value == "api");
+                (has_chat_capability, !is_api_only)
+            } else {
+                (
+                    item.get("has_chat_capability")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    !item
+                        .get("is_api_only")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                )
+            };
+            Some((id, has_chat_capability, is_not_api_only))
         })
         .collect::<Vec<_>>();
     requested_id
@@ -1972,6 +1985,34 @@ mod tests {
         assert_eq!(primary.name, "Spend limit");
         assert_eq!(primary.used_percent, 25.0);
         assert_eq!(spend.unwrap().monthly_usage, Some(2.5));
+    }
+
+    #[test]
+    fn organization_selection_prefers_chat_capability_arrays() {
+        let organizations = r#"[
+            {"uuid":"api-org","capabilities":["api"]},
+            {"uuid":"chat-org","capabilities":["chat"]}
+        ]"#;
+        assert_eq!(
+            select_organization(organizations, None).as_deref(),
+            Some("chat-org")
+        );
+    }
+
+    #[test]
+    fn organization_selection_honors_bound_org_and_supports_legacy_flags() {
+        let organizations = r#"[
+            {"uuid":"api-org","capabilities":["api"]},
+            {"uuid":"legacy-chat-org","has_chat_capability":true,"is_api_only":false}
+        ]"#;
+        assert_eq!(
+            select_organization(organizations, Some("api-org")).as_deref(),
+            Some("api-org")
+        );
+        assert_eq!(
+            select_organization(organizations, None).as_deref(),
+            Some("legacy-chat-org")
+        );
     }
 
     #[test]
