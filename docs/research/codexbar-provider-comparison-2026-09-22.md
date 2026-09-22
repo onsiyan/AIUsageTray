@@ -23,6 +23,8 @@
 
 **دقة الحدود:** يقبل parser الآن النسبة الخام `used_percent > 100` عند تجاوز الحصة، بينما تعرض `remaining_percent()` المتبقي بحد أدنى صفر. ويعرض مسار WHAM النوافذ الأساسية والإضافية ورصيد reset credits وتواريخ reset المطلقة.
 
+**فشل الإثراءات الاختيارية:** إذا فشلت استعلامات reset-credit inventory أو صرف مساحة العمل أو رصيدها، تبقى لقطة WHAM الأساسية صالحة ويضيف المحول تشخيصًا آمنًا لكل مصدر يوضح فئة HTTP/النقل/التحليل، مع `Retry-After` حين يرسله الخادم. لا تُنسخ أجسام الردود أو بيانات الطلب الحساسة إلى التشخيص. هذا يجعل نقص الإثراء ظاهرًا بدل إسقاطه بصمت أو تحويله إلى فشل للحساب.
+
 **اختبارات الانحدار:** تثبت أن session preflight يسبق WHAM، وأن الجلسة المطابقة وحدها تمد الطلب برمزها، وأن mismatch يوقف أي طلب usage، وأن رمزًا بلا Cookies لا يصدر أي استعلام. كما تتيح أداة الاختبار حصر الاستيراد في ملف متصفح بعينه عند تعدد الحسابات.
 **مراجع محلية:** [محول OpenAI/WHAM](../../crates/core/src/providers/openai.rs)، [مصادر المصادقة](../../crates/core/src/auth_sources.rs)، [مستورد Cookies](../../crates/windows-auth/src/browser_cookies.rs)، [أداة الاستيراد والاختبار](../../tools/codex-probe/src/main.rs).
 **مرجع CodexBar:** [Codex provider](https://github.com/steipete/CodexBar/blob/main/docs/codex.md)، [دليل OAuth](https://github.com/steipete/CodexBar/blob/main/docs/codex-oauth.md)، [Codex UsageFetcher](https://raw.githubusercontent.com/steipete/CodexBar/main/Sources/CodexBarCore/UsageFetcher.swift).
@@ -106,7 +108,7 @@ CodexBar يوثق نطاقًا تكيفيًا مماثلًا 2–30 دقيقة،
 
 ## التحقق وحدود المراجعة
 
-- تحقق هذه الدفعة: `cargo test -p codex-usage-core` نجح (96 اختبارًا وحدويًا و11 اختبار عقد)، ونجح `cargo fmt --all -- --check` و`git diff --check`. لم تُعَد اختبارات الحزم الأخرى في هذه الدفعة.
+- تحقق دفعة Codex: `cargo test -p codex-usage-core` نجح (97 اختبارًا وحدويًا و11 اختبار عقد)، ونجح `cargo fmt --all -- --check` و`git diff --check`. لم تُعَد اختبارات الحزم الأخرى في هذه الدفعة.
 - بقية المزودين: مقارنة source/docs/tests فقط في هذه الجولة؛ لم يُشغّل تكامل حقيقي مع حسابات أو خدمات خارجية، ولم تُشغّل اختبارات Swift/CodexBar.
 - CodexBar source snapshot reported by the OpenRouter audit: `173afc88a4171f013c53f8c5167f64808565f913`; the upstream `main` can change after this review date.
 - لا تحتوي هذه المراجعة على بيانات اعتماد أو مفاتيح حسابات.
