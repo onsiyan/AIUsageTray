@@ -41,7 +41,7 @@ sources are:
 - Antigravity OAuth refresh credentials,
 - provider-owned Antigravity `.gemini/oauth_creds.json` and OpenCode Go
   `auth.json` files,
-- provider-owned Codex `$CODEX_HOME/auth.json` OAuth material (read-only),
+- explicitly imported ChatGPT browser cookies for Codex, bound to one account,
 - provider-owned Claude `~/.claude/.credentials.json` OAuth/session material,
 - explicitly account-bound environment variables (`OPENROUTER_API_KEY`,
   `OPENROUTER_MANAGEMENT_API_KEY`, `OPENCODE_API_KEY`, or
@@ -71,30 +71,18 @@ keys are not treated as web session cookies. This prevents a generic API key or
 another account's ambient session from being mislabeled as the selected
 account.
 
-Codex usage is fetched from the account-scoped WHAM contract. The normalized
-snapshot includes primary/weekly/model-specific windows, reset-credit inventory,
-workspace spend/balance enrichments, and absolute reset timestamps. PAT material
-is resolved through the provider `whoami` contract first, then the returned
-account id is sent with the usage request; a generic `OPENAI_API_KEY` is never
-used. When the OAuth source is unavailable or unauthorized, the registry can
-fall back to the short-lived read-only `codex app-server` JSON-RPC path
-(`initialize`, `account/rateLimits/read`, `account/read`) without opening the
-interactive TUI.
-
-Managed Codex accounts persist an optional per-account `CODEX_HOME` through the
-SQLite migration. The read-only `auth.json` loader, account-scoped base URL, and
-native CLI/app-server probe use that home, so native sessions cannot cross
-between accounts. A shared launch gate suppresses repeated CLI launches for 30
-minutes after a launch failure. The planner is wired into the live Wham adapter
-and registry: App automatic mode is `PAT -> OAuth -> CLI`, explicit OAuth keeps
-native CLI recovery, and managed workspaces suppress unscoped CLI fallback.
-When one auth file contains both credentials, PAT is tried first and OAuth is
-retained for a controlled unauthorized retry. Individual/monthly limits are
-represented separately from a successfully-read balance, including remaining
-values and reset timestamps; malformed lanes lower `data_confidence` to
-`unknown` while valid sibling lanes remain visible. The Web dashboard remains a
-separate source until its cookie-owned endpoint strategy is verified; no
-endpoint is guessed and no WebView is kept alive.
+Codex usage is fetched from the account-scoped WHAM contract using only an
+imported ChatGPT browser session. Before every usage query, the adapter calls
+`/api/auth/session`, requires the returned email to match the selected account,
+and only then sends the optional session access token and account id to WHAM.
+The token extracted from the session response is used for that refresh only.
+Token-only material is rejected; Codex `auth.json`, CLI, and app-server are not
+usage or authentication sources. The normalized snapshot includes primary,
+weekly, and model-specific windows, reset-credit inventory, optional workspace
+spend/balance enrichments, and absolute reset timestamps. Over-quota percentages
+remain intact in the snapshot while remaining percentage is clamped to zero.
+The Web dashboard remains a separate, unimplemented enrichment source; no
+endpoint is guessed and no browser stays open during polling.
 
 The refresh coordinator follows the source-observed scheduling rules used by
 the reference implementation: timestamps are UTC, countdowns are derived from
@@ -202,44 +190,25 @@ HTTP rejection, or invalid response is retained as a source diagnostic without
 discarding valid `/key` data. Workspace filters are opt-in through the
 environment variables above.
 
-## Codex two-account live test
+## Codex browser-session test
 
-Keep each native Codex session in its own `CODEX_HOME`. This leaves the normal
-`%USERPROFILE%\\.codex` installation untouched and prevents one account from
-being silently reused for the other:
-
-```powershell
-$probeRoot = Join-Path $env:LOCALAPPDATA "CodexUsageMonitor-Rust\\codex-accounts"
-$account1Home = Join-Path $probeRoot "account-1"
-$account2Home = Join-Path $probeRoot "account-2"
-New-Item -ItemType Directory -Force $account1Home, $account2Home | Out-Null
-
-$env:CODEX_HOME = $account1Home
-codex.cmd login
-codex.cmd login status
-
-$env:CODEX_HOME = $account2Home
-codex.cmd login
-codex.cmd login status
-```
-
-When the browser opens for the second account, choose **Use another account**
-if the browser already has the first account selected. Do not run `codex.cmd
-logout` without `CODEX_HOME` set to one of these isolated directories.
-
-For a new account, the probe can own the login step as well. It opens the
-native browser login with `CODEX_HOME` scoped only to the child process, then
-probes both sessions automatically:
+First list the supported Chromium profiles. When more than one profile is
+signed in, pin the browser and profile id for each account; the probe verifies
+the session email before saving anything, then stores its cookies in Windows
+Credential Manager under that account id and queries WHAM:
 
 ```powershell
-cd "<path-to>\\CodexUsageMonitor-Rust\\rust"
-cargo run -p codex-usage-codex-probe -- `
-  --login `
-  --home $account2Home `
-  --home (Join-Path $env:USERPROFILE ".codex")
+cargo run -p codex-usage-codex-probe -- --list-profiles
+cargo run -p codex-usage-codex-probe -- --browser chrome --profile-id "Default" --label "Codex Personal"
+cargo run -p codex-usage-codex-probe -- --browser edge --profile-id "Profile 2" --label "Codex Work"
 ```
 
-The probe prints the plan, source actually used (`oauth`, `pat`, or native
-CLI), every quota window, absolute reset time, and credit information. It never
-prints access/refresh tokens. It uses the same account-scoped runtime that the
-future tray host will use; no browser or WebView remains running after login.
+Use the same database for accounts that should appear together, or pass
+`--database PATH` to select an explicit SQLite file. `--browser` accepts
+`chrome`, `edge`, `brave`, or `chromium`; `--profile-id` requires `--browser`.
+If the selected profile has no ChatGPT session, the tool opens ChatGPT in the
+default browser and waits for the session to appear in that profile. The email
+is checked again before every usage request, so a different browser session
+cannot silently refresh the selected account. The probe prints each quota
+window and its reset timestamp; it never prints session cookies or access
+tokens. It does not read Codex auth files or launch Codex CLI/app-server.

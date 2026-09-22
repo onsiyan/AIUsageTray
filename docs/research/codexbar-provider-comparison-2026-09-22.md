@@ -1,34 +1,30 @@
 # مقارنة مزودي الاستخدام مع CodexBar
 
 تاريخ المراجعة: 2026-09-22  
-النطاق: نسخة Rust المنسوخة `outputs/CodexUsageMonitor-Rust/rust` فقط، ومقارنة مصدرية مع مشروع CodexBar واختباراته ووثائقه الحالية. لم يتغير أي adapter أو كود تشغيل، ولم يُمس مشروع .NET الأصلي. هذه مراجعة لاستعلامات الاستخدام والهوية والحدود وإعادة التعيين والاسترداد من الأخطاء، لا مقارنة واجهات.
+النطاق: نسخة Rust المنسوخة `outputs/CodexUsageMonitor-Rust/rust` فقط، ومقارنة مصدرية مع مشروع CodexBar واختباراته ووثائقه الحالية. نُفذت تحسينات مسار Codex الموضحة أدناه؛ بقية adapters لم تتغير في هذه الدفعة، ولم يُمس مشروع .NET الأصلي. هذه مراجعة لاستعلامات الاستخدام والهوية والحدود وإعادة التعيين والاسترداد من الأخطاء، لا مقارنة واجهات.
 
 ## الخلاصة التنفيذية
 
 | المزود | حالة أساس الاستعلام | أعلى فرق ذي أثر |
 |---|---|---|
-| Codex | قوي في WHAM والاستخدام الأساسي | حدود parser/RPC ومصدر app-server؛ لوحة الويب إضافات اختيارية وليست فجوة في حد الاستخدام الأساسي |
+| Codex | جلسة متصفح مستوردة، هوية موثقة، ثم WHAM | استبعاد متعمد لمصادر ملفات/CLI؛ إثراء لوحة الويب الاختياري غير منفذ |
 | Claude | تغطية واسعة لـ OAuth وWeb وCLI وAdmin | اختيار OAuth الصريح قد يسقط إلى CLI، وفك organizations وبيانات الجلسة أقل متانة |
 | Antigravity | مسار التطبيق وOAuth موجودان | لا يوجد مصدر `agy` CLI، وهو مسار CodexBar الأهم عند إغلاق التطبيق لإبقاء معلومات الحصص أغنى |
 | OpenRouter | endpoint الأساسي والمفاتيح المعزولة متوافقان | تعطل `/key` يمنع رصيد `/credits`، وسجل النشاط وBYOK أقل اكتمالًا؛ قبول HTTP مخصص خطر أمني |
 | OpenCode Go | Console/API والـmeters الأساسية متوافقة | `endsAt` لا يدخل في إعادة تعيين الشهر، وسلوك التحويلات والـfallback أقل اكتمالًا |
 
-التوصية العامة ليست إعادة كتابة المزودين؛ الأساس موجود. الأولوية هي تثبيت دلالات المصدر والحساب، ثم سدّ حالات الفشل التي قد تنتج بيانات ناقصة أو تنسبها للحساب الخطأ. وبما أن Codex هو الأهم، يبدأ التنفيذ اللاحق منه مع احترام قيد تعدد الحسابات أدناه.
+التوصية العامة ليست إعادة كتابة المزودين؛ الأساس موجود. الأولوية هي تثبيت دلالات المصدر والحساب، ثم سدّ حالات الفشل التي قد تنتج بيانات ناقصة أو تنسبها للحساب الخطأ. عولج Codex أولًا مع الحفاظ على قيد الجلسة المستوردة من المتصفح وتعدد الحسابات.
 
 ## Codex
 
-**المتوافق:** محول WHAM المحلي يطلب `wham/usage` ورصيد إعادة التعيين، مع سياق Bearer/Cookie ومعرّف الحساب والرؤوس اللازمة. كما يوجد fallback عبر Codex app-server، ومحلل لنوافذ الحد والائتمانات والنوافذ الإضافية. هذه هي عائلة المصادر الأساسية التي توثقها CodexBar.
+**مسارنا المنفذ:** تُستورد Cookies الحساب من ملف متصفح Chromium عبر مسار الإضافة الصريح. قبل WHAM يطلب المحول `/api/auth/session` ويشترط تطابق البريد مع الحساب المحدد؛ عند الاختلاف يتوقف قبل استعلام الاستخدام. لا تُقبل بيانات Bearer/OAuth المنفردة، ولا تُستخدم ملفات Codex أو CLI أو app-server. أي `accessToken` يعيده endpoint الجلسة يُستخدم في الذاكرة لطلب WHAM فقط، مع `ChatGPT-Account-Id` عند توفره.
 
-**الفروق المؤثرة:**
+**المقارنة مع CodexBar:** CodexBar يملك مسارات OAuth وCLI إضافية، ولوحة الويب enrichment اختياري. لم ننسخ مسارات الملفات/CLI لأن سياسة الحسابات هنا تشترط جلسة المتصفح التي اختارها المستخدم وتحقق هويتها؛ هذا فرق مقصود لا فجوة في WHAM أو في نافذتي الاستخدام. لوحة الويب غير منفذة، وهي enrichment منفصل وليست شرطًا لعرض حد الخمس ساعات والأسبوع.
 
-1. محليًا، Auto يرتب المصادر PAT ثم OAuth ثم CLI؛ CodexBar يرتب OAuth ثم CLI، ويجعل لوحة الويب enrichment منفصلًا اختياريًا. المحول المحلي لا ينفذ Web Dashboard أصلًا. لوحة الويب في المرجع اختيارية وتضيف أمورًا مثل سجل الائتمانات وتجديد الاشتراك وتفصيل الاستخدام؛ لا ينبغي خلط غيابها مع غياب WHAM أو حدّ الخمس ساعات/الأسبوع.
-2. محليا، parser يرفض `usedPercent > 100`. CodexBar يحتفظ بنسبة الاستهلاك الخام عندما تتجاوز الحصة، ثم يقيّد العرض فقط. الرفض قد يحول حصة مستهلكة بالكامل أو متجاوزة إلى خطأ parsing بدل عرضها.
-3. أخطاء RPC المحلية تتحول إلى خطأ عام ولا تستخرج usage/credits القابلة للاسترداد من جسم خطأ RPC. كما أن `requiresOpenaiAuth` وحالة `account: null` ليستا ممثلتين كحالة تسجيل دخول مميزة.
-4. اختبارات المصدر المحلي لا تثبت بعد عقود النقل والرؤوس، واسترداد JSON من أخطاء RPC، وقيم over-quota، وحالة `requiresOpenaiAuth`.
+**دقة الحدود:** يقبل parser الآن النسبة الخام `used_percent > 100` عند تجاوز الحصة، بينما تعرض `remaining_percent()` المتبقي بحد أدنى صفر. ويعرض مسار WHAM النوافذ الأساسية والإضافية ورصيد reset credits وتواريخ reset المطلقة.
 
-**قيد الحسابات:** توجد في النسخة الحالية قراءة بيانات Codex المحلية واستخدام app-server كمسار usage. هذا يشبه CodexBar، لكنه لا يثبت وحده عزلًا صحيحًا لحسابات المستخدم إذا لم تكن كل قراءة/عملية مربوطة بملف الحساب المقصود. وبالنظر إلى شرطك السابق لتعدد حسابات Codex وعدم الاعتماد على مصدر CLI/ملفات المصادقة كمرجع الاستخدام، يجب حسم هذا الحد قبل اعتبار fallback المحلي مكافئًا مقبولًا؛ لا نوسّعه تلقائيًا لمجرد أن المرجع يفعله.
-
-**مراجع محلية:** [محول OpenAI/WHAM](../../crates/core/src/providers/openai.rs)، [مخطط المصادر](../../crates/core/src/providers/codex_planner.rs)، [Codex app-server](../../crates/core/src/providers/codex_cli.rs).  
+**اختبارات الانحدار:** تثبت أن session preflight يسبق WHAM، وأن الجلسة المطابقة وحدها تمد الطلب برمزها، وأن mismatch يوقف أي طلب usage، وأن رمزًا بلا Cookies لا يصدر أي استعلام. كما تتيح أداة الاختبار حصر الاستيراد في ملف متصفح بعينه عند تعدد الحسابات.
+**مراجع محلية:** [محول OpenAI/WHAM](../../crates/core/src/providers/openai.rs)، [مصادر المصادقة](../../crates/core/src/auth_sources.rs)، [مستورد Cookies](../../crates/windows-auth/src/browser_cookies.rs)، [أداة الاستيراد والاختبار](../../tools/codex-probe/src/main.rs).
 **مرجع CodexBar:** [Codex provider](https://github.com/steipete/CodexBar/blob/main/docs/codex.md)، [دليل OAuth](https://github.com/steipete/CodexBar/blob/main/docs/codex-oauth.md)، [Codex UsageFetcher](https://raw.githubusercontent.com/steipete/CodexBar/main/Sources/CodexBarCore/UsageFetcher.swift).
 
 ## Claude
@@ -99,17 +95,16 @@ CodexBar يوثق نطاقًا تكيفيًا مماثلًا 2–30 دقيقة،
 
 ## ترتيب العمل المقترح
 
-1. **Codex أولًا:** حسم حدّ مصادر المصادقة لكل حساب، ثم إصلاح قبول over-quota وحالات RPC/auth، وإضافة tests لعقود الخطأ. لا تبدأ بـ Web Dashboard؛ هي enrichment اختيارية.
-2. **Antigravity:** تصميم مصدر `agy` مناسب لـ Windows مع readiness/account identity/ownership آمنة، ثم تقوية اكتشاف `language_server` ومطابقة الحساب.
-3. **Claude:** اجعل اختيار OAuth الصريح نهائيًا، حدّث parsing للـorganizations، ثم عالج cookie rotation وتصنيف Cloudflare/401 وقواعد صلاحية spend/credits.
-4. **OpenRouter:** افصل فشل key عن credits، ثم أصلح activity آخر يوم/التحقق/dedup وBYOK، وارفض HTTP.
-5. **OpenCode Go:** ابدأ بـ `endsAt` وحقول reset، ثم redirect HTTPS المحدود وفصل الرؤوس، وبعدها مصفوفة fallback/balance.
+1. **Antigravity:** تصميم مصدر `agy` مناسب لـ Windows مع readiness/account identity/ownership آمنة، ثم تقوية اكتشاف `language_server` ومطابقة الحساب.
+2. **Claude:** اجعل اختيار OAuth الصريح نهائيًا، حدّث parsing للـorganizations، ثم عالج cookie rotation وتصنيف Cloudflare/401 وقواعد صلاحية spend/credits.
+3. **OpenRouter:** افصل فشل key عن credits، ثم أصلح activity آخر يوم/التحقق/dedup وBYOK، وارفض HTTP.
+4. **OpenCode Go:** ابدأ بـ `endsAt` وحقول reset، ثم redirect HTTPS المحدود وفصل الرؤوس، وبعدها مصفوفة fallback/balance.
 
-هذه الترتيبات نتائج المقارنة وليست تغييرات منفذة. قبل كل تغيير، تُراجع نسخة CodexBar من المصدر والاختبارات المقابلة مرة أخرى لأن فرع `main` متغير، ثم تُكيّف الفكرة مع Windows وعزل الحسابات بدل نسخ تنفيذ macOS حرفيًا.
+هذه البنود تخص adapters التي لم تُحدّث بعد. قبل كل تغيير، تُراجع نسخة CodexBar من المصدر والاختبارات المقابلة لأن فرع `main` متغير، ثم تُكيّف الفكرة مع Windows وعزل الحسابات بدل نسخ تنفيذ macOS حرفيًا.
 
 ## التحقق وحدود المراجعة
 
-- شغّل المراجعون محليًا: `cargo test -p codex-usage-core claude -- --nocapture` — 24 اختبارًا ناجحًا؛ و`cargo test -p codex-usage-core openrouter` — 9 اختبارات ناجحة.
+- تحقق Codex بعد التغيير: `cargo test -p codex-usage-core` — 78 اختبارًا وحدويًا و11 اختبار عقد ناجحة؛ `cargo test -p codex-usage-codex-probe` — 3 اختبارات؛ و`cargo check -p codex-usage-codex-probe` نجح.
 - بقية المزودين: مقارنة source/docs/tests فقط في هذه الجولة؛ لم يُشغّل تكامل حقيقي مع حسابات أو خدمات خارجية، ولم تُشغّل اختبارات Swift/CodexBar.
 - CodexBar source snapshot reported by the OpenRouter audit: `173afc88a4171f013c53f8c5167f64808565f913`; the upstream `main` can change after this review date.
 - لا تحتوي هذه المراجعة على بيانات اعتماد أو مفاتيح حسابات.
