@@ -1085,19 +1085,17 @@ fn select_organization(body: &str, requested_id: Option<&str>) -> Option<String>
             Some((id, has_chat_capability, is_not_api_only))
         })
         .collect::<Vec<_>>();
-    requested_id
-        .and_then(|requested| {
-            candidates
-                .iter()
-                .find(|(id, _, _)| id == requested)
-                .map(|(id, _, _)| id.clone())
-        })
-        .or_else(|| {
-            candidates
-                .iter()
-                .find(|(_, has_chat, _)| *has_chat)
-                .map(|(id, _, _)| id.clone())
-        })
+    if let Some(requested) = requested_id.map(str::trim).filter(|id| !id.is_empty()) {
+        return candidates
+            .iter()
+            .find(|(id, _, _)| id == requested)
+            .map(|(id, _, _)| id.clone());
+    }
+
+    candidates
+        .iter()
+        .find(|(_, has_chat, _)| *has_chat)
+        .map(|(id, _, _)| id.clone())
         .or_else(|| {
             candidates
                 .iter()
@@ -2109,6 +2107,21 @@ mod tests {
         assert_eq!(
             select_organization(organizations, None).as_deref(),
             Some("legacy-chat-org")
+        );
+    }
+
+    #[test]
+    fn organization_selection_does_not_fallback_when_bound_org_is_missing() {
+        let organizations = r#"[
+            {"uuid":"another-chat-org","capabilities":["chat"]}
+        ]"#;
+        assert_eq!(
+            select_organization(organizations, Some("missing-org")),
+            None
+        );
+        assert_eq!(
+            select_organization(organizations, Some(" another-chat-org ")).as_deref(),
+            Some("another-chat-org")
         );
     }
 
