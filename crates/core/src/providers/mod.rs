@@ -1,0 +1,10 @@
+pub mod antigravity;
+pub mod claude;
+pub mod claude_cli;
+pub mod claude_planner;
+pub mod openai;
+pub mod opencode_go;
+pub mod opencode_go_local;
+pub mod openrouter;
+pub mod registry;
+pub mod shared;

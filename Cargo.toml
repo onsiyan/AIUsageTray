@@ -1,0 +1,11 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/windows-auth",
+    "tools/codex-probe",
+    "tools/claude-probe",
+    "tools/opencode-go-probe",
+    "tools/openrouter-probe",
+    "tools/oauth-probe",
+]

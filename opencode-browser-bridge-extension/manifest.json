@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "OpenCode account bridge",
+  "version": "0.1.0",
+  "description": "Explicitly transfers the current OpenCode browser session to the local usage monitor.",
+  "permissions": ["cookies", "storage"],
+  "host_permissions": [
+    "https://opencode.ai/*",
+    "https://app.opencode.ai/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "action": {
+    "default_title": "Connect OpenCode account",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://127.0.0.1/*", "http://localhost/*"],
+      "js": ["pairing.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

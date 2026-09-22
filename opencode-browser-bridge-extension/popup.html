@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ربط حساب OpenCode</title>
+    <style>
+      body { min-width: 320px; margin: 16px; font: 14px system-ui, sans-serif; color: #1f2937; }
+      h1 { font-size: 16px; margin: 0 0 12px; }
+      label { display: block; margin: 10px 0 4px; }
+      input { box-sizing: border-box; width: 100%; padding: 7px; }
+      button { width: 100%; margin-top: 14px; padding: 8px; cursor: pointer; }
+      #status { min-height: 36px; margin-top: 12px; white-space: pre-wrap; }
+      .hint { color: #6b7280; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>ربط حساب OpenCode Go</h1>
+    <div class="hint">اضغط الزر مرة واحدة بعد إكمال تسجيل الدخول في هذه النافذة.</div>
+    <label for="endpoint">Bridge endpoint</label>
+    <input id="endpoint" autocomplete="off" placeholder="http://127.0.0.1:PORT/v1/browser-bridge" />
+    <label for="pairing">رمز الاقتران لمرة واحدة</label>
+    <input id="pairing" autocomplete="off" spellcheck="false" />
+    <button id="connect" type="button">Connect this account</button>
+    <div id="status" role="status"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>

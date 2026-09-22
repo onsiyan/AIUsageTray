@@ -1,0 +1,11 @@
+[package]
+name = "codex-usage-opencode-go-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+codex-usage-core = { path = "../../crates/core" }
+codex-usage-windows-auth = { path = "../../crates/windows-auth" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+url = "2"
