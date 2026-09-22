@@ -1364,6 +1364,55 @@ fn snapshot_from_quota_summary(
     }
 }
 
+fn canonical_model_id(model_id: &str) -> String {
+    let normalized = model_id.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "gemini-3.6-flash"
+        | "gemini-3.6-flash-low"
+        | "gemini-3.6-flash-medium"
+        | "gemini-3.6-flash-high"
+        | "gemini-3.5-flash-extra-low"
+        | "gemini-3.5-flash-low"
+        | "gemini-3.5-flash-mid"
+        | "gemini-3.5-flash-high"
+        | "gemini-3-flash-agent" => "gemini-3.7-flash".to_owned(),
+        _ => model_id.to_owned(),
+    }
+}
+
+fn compare_canonical_quota_candidates(left: &Quota, right: &Quota) -> std::cmp::Ordering {
+    let usage_order = match (
+        known_remaining_fraction(left),
+        known_remaining_fraction(right),
+    ) {
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (Some(left), Some(right)) => left.total_cmp(&right),
+        (None, None) => std::cmp::Ordering::Equal,
+    };
+    usage_order
+        .then_with(|| left.name.cmp(&right.name))
+        .then_with(|| left.key.cmp(&right.key))
+}
+
+fn canonicalize_and_deduplicate_model_quotas(models: &[Quota]) -> Vec<Quota> {
+    let mut by_canonical_id = BTreeMap::<String, Quota>::new();
+    for model in models {
+        let mut canonical = model.clone();
+        canonical.key = canonical_model_id(&model.key);
+        let canonical_key = canonical.key.to_ascii_lowercase();
+        match by_canonical_id.get(&canonical_key) {
+            Some(existing)
+                if compare_canonical_quota_candidates(&canonical, existing)
+                    != std::cmp::Ordering::Less => {}
+            _ => {
+                by_canonical_id.insert(canonical_key, canonical);
+            }
+        }
+    }
+    by_canonical_id.into_values().collect()
+}
+
 fn snapshot_from_model_quotas(
     account: &AccountRecord,
     models: &[Quota],
@@ -1380,6 +1429,17 @@ fn snapshot_from_model_quotas(
             .cmp(&left.remaining_fraction.is_some())
             .then_with(|| right.used_percent.total_cmp(&left.used_percent))
             .then_with(|| left.key.cmp(&right.key))
+    });
+    let metrics = ordered.iter().map(quota_metric).collect::<Vec<_>>();
+    let mut ordered = canonicalize_and_deduplicate_model_quotas(&ordered);
+    ordered.sort_by(|left, right| {
+        right
+            .remaining_fraction
+            .is_some()
+            .cmp(&left.remaining_fraction.is_some())
+            .then_with(|| right.used_percent.total_cmp(&left.used_percent))
+            .then_with(|| left.key.cmp(&right.key))
+            .then_with(|| left.name.cmp(&right.name))
     });
 
     let gemini_index = model_quota_representative_index(&ordered, AntigravityQuotaPool::Gemini);
@@ -1425,8 +1485,6 @@ fn snapshot_from_model_quotas(
             window: quota.window.clone(),
         })
         .collect::<Vec<_>>();
-    let metrics = ordered.iter().map(quota_metric).collect::<Vec<_>>();
-
     UsageSnapshot {
         account_id: account.id,
         observed_at_utc: Utc::now(),
@@ -2227,6 +2285,94 @@ mod tests {
         additional_keys.sort_unstable();
         assert_eq!(additional_keys, ["gemini-image", "tab_gemini_autocomplete"]);
         assert_eq!(snapshot.metrics.len(), quotas.len());
+    }
+
+    #[test]
+    fn retired_gemini_flash_ids_canonicalize_and_keep_best_known_duplicate() {
+        let retired_ids = [
+            "gemini-3.6-flash",
+            "gemini-3.6-flash-low",
+            "gemini-3.6-flash-medium",
+            "gemini-3.6-flash-high",
+            "gemini-3.5-flash-extra-low",
+            "gemini-3.5-flash-low",
+            "gemini-3.5-flash-mid",
+            "gemini-3.5-flash-high",
+            "gemini-3-flash-agent",
+        ];
+        for retired_id in retired_ids {
+            assert_eq!(canonical_model_id(retired_id), "gemini-3.7-flash");
+        }
+        assert_eq!(canonical_model_id(" GEMINI-3.6-FLASH "), "gemini-3.7-flash");
+        assert_eq!(canonical_model_id("gemini-3.6-pro"), "gemini-3.6-pro");
+
+        let reset = Some(
+            DateTime::parse_from_rfc3339("2030-01-01T05:00:00Z")
+                .unwrap()
+                .into(),
+        );
+        let flash_variants = vec![
+            to_quota(
+                "gemini-3.6-flash",
+                "Gemini 3.6 Flash".to_owned(),
+                Some(0.5),
+                reset,
+            ),
+            to_quota(
+                "gemini-3.5-flash-high",
+                "Gemini 3.5 Flash High".to_owned(),
+                Some(0.2),
+                reset,
+            ),
+            to_quota(
+                "gemini-3.5-flash-extra-low",
+                "Gemini 3.5 Flash Extra Low".to_owned(),
+                None,
+                reset,
+            ),
+        ];
+        let deduplicated = canonicalize_and_deduplicate_model_quotas(&flash_variants);
+        assert_eq!(deduplicated.len(), 1);
+        assert_eq!(deduplicated[0].key, "gemini-3.7-flash");
+        assert_eq!(deduplicated[0].name, "Gemini 3.5 Flash High");
+        assert_eq!(deduplicated[0].remaining_fraction, Some(0.2));
+
+        let account =
+            AccountRecord::create("one", "one@example.com", None, ANTIGRAVITY, None).unwrap();
+        let quotas = [
+            flash_variants,
+            vec![to_quota(
+                "gpt-oss-120b",
+                "GPT-OSS 120B".to_owned(),
+                Some(0.3),
+                reset,
+            )],
+        ]
+        .concat();
+        let snapshot = snapshot_from_model_quotas(
+            &account,
+            &quotas,
+            Some(account.email.clone()),
+            None,
+            "api-model-catalog",
+            "authoritative",
+        );
+        let primary = snapshot.primary.as_ref().unwrap();
+        assert_eq!(primary.name, "Gemini 3.5 Flash High");
+        assert_eq!(primary.used_percent, 80.0);
+        assert_eq!(snapshot.metrics.len(), quotas.len());
+        for retired_id in [
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-high",
+            "gemini-3.5-flash-extra-low",
+        ] {
+            assert!(
+                snapshot
+                    .metrics
+                    .iter()
+                    .any(|metric| metric.key == retired_id)
+            );
+        }
     }
 
     #[test]
