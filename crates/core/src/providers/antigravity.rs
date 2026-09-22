@@ -574,6 +574,8 @@ const LOCAL_QUOTA_SUMMARY_PATH: &str =
 const LOCAL_USER_STATUS_PATH: &str = "/exa.language_server_pb.LanguageServerService/GetUserStatus";
 const LOCAL_COMMAND_MODEL_CONFIGS_PATH: &str =
     "/exa.language_server_pb.LanguageServerService/GetCommandModelConfigs";
+const ANTIGRAVITY_PROCESS_PATH_PATTERN: &str =
+    r"(?i)[\\/](?:antigravity|antigravity-ide)(?:[\\/]|$)";
 const REMOTE_BASE_URLS: [&str; 3] = [
     "https://daily-cloudcode-pa.sandbox.googleapis.com/",
     "https://daily-cloudcode-pa.googleapis.com/",
@@ -652,13 +654,19 @@ fn discover_local_endpoints() -> Vec<LocalEndpoint> {
     // Keep discovery constrained to the running language_server process. The
     // command returns only the PID-derived ports and CSRF value; the command
     // line itself is never returned or logged because it contains credentials.
+    // A generic --app_data_dir flag is not sufficient proof that another
+    // product's language_server belongs to Antigravity.
     let script = r#"
 $ErrorActionPreference = 'SilentlyContinue'
+$antigravityPathPattern = '__ANTIGRAVITY_PROCESS_PATH_PATTERN__'
 $rows = @(
   Get-CimInstance Win32_Process |
     Where-Object {
+      $executablePath = [string]$_.ExecutablePath
+      $commandLine = [string]$_.CommandLine
       $_.Name -ieq 'language_server.exe' -and
-      $_.CommandLine -match '(?i)antigravity|--app_data_dir'
+      ($executablePath -match $antigravityPathPattern -or
+       $commandLine -match $antigravityPathPattern)
     } |
     ForEach-Object {
       $command = [string]$_.CommandLine
@@ -678,10 +686,14 @@ $rows = @(
     }
 )
 ConvertTo-Json -Compress -Depth 4 -InputObject @($rows)
-"#;
+"#
+    .replace(
+        "__ANTIGRAVITY_PROCESS_PATH_PATTERN__",
+        ANTIGRAVITY_PROCESS_PATH_PATTERN,
+    );
 
     let output = match Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .output()
     {
         Ok(output) if output.status.success() => output,
@@ -1922,6 +1934,22 @@ mod tests {
         assert!(local_identity_matches(&account, Some("ONE@example.com")));
         assert!(!local_identity_matches(&account, Some("two@example.com")));
         assert!(!local_identity_matches(&account, None));
+    }
+
+    #[test]
+    fn local_process_filter_requires_an_antigravity_path_segment() {
+        let pattern = regex::Regex::new(ANTIGRAVITY_PROCESS_PATH_PATTERN).unwrap();
+
+        assert!(pattern.is_match(
+            r"C:\Users\user\AppData\Local\Programs\antigravity\resources\bin\language_server.exe"
+        ));
+        assert!(pattern.is_match(r"--app_data_dir=C:\Users\user\AppData\Roaming\Antigravity-IDE"));
+        assert!(!pattern.is_match(
+            r"C:\Program Files\OtherEditor\resources\bin\language_server.exe --app_data_dir C:\Users\user\OtherEditor"
+        ));
+        assert!(
+            !pattern.is_match(r"C:\Program Files\notantigravity\resources\bin\language_server.exe")
+        );
     }
 
     #[test]
