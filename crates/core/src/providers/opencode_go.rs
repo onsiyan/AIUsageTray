@@ -30,7 +30,8 @@ use regex::Regex;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::HashMap, env, sync::Arc};
+use std::{collections::HashMap, env, sync::Arc, time::Duration as StdDuration};
+use tokio::task::JoinHandle;
 use url::Url;
 
 const API_USAGE_PATH: &str = "zen/go/v1/usage";
@@ -45,6 +46,10 @@ const BILLING_SERVER_ID: &str = "c83b78a614689c38ebee981f9b39a8b377716db85c1fd7d
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 const LOCAL_SOURCE: &str = "local-estimate";
 const MAX_OPEN_CODE_REDIRECTS: usize = 10;
+const CONSOLE_BILLING_OPTIONAL_JOIN_TIMEOUT: StdDuration = StdDuration::from_millis(250);
+const CONSOLE_BILLING_REQUIRED_TIMEOUT: StdDuration = StdDuration::from_secs(5);
+
+type ConsoleBillingTask = JoinHandle<Result<UsageHttpResponse, TransportError>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OpenCodeGoSourceMode {
@@ -184,6 +189,16 @@ impl OpenCodeGoUsageAdapter {
         material: &AccountAuthMaterial,
         extra_headers: impl IntoIterator<Item = (String, String)>,
     ) -> Result<UsageHttpResponse, TransportError> {
+        let request = self.build_request(path, material, extra_headers)?;
+        send_with_guarded_redirects(self.transport.as_ref(), request).await
+    }
+
+    fn build_request(
+        &self,
+        path: &str,
+        material: &AccountAuthMaterial,
+        extra_headers: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<UsageHttpRequest, TransportError> {
         let url = self
             .base_url
             .join(path)
@@ -192,16 +207,42 @@ impl OpenCodeGoUsageAdapter {
         for (name, value) in extra_headers {
             headers.insert(name, value);
         }
-        send_with_guarded_redirects(
-            self.transport.as_ref(),
-            UsageHttpRequest {
-                method: Method::GET,
-                url,
-                headers,
-                body: None,
-            },
-        )
-        .await
+        Ok(UsageHttpRequest {
+            method: Method::GET,
+            url,
+            headers,
+            body: None,
+        })
+    }
+
+    fn spawn_console_billing(
+        &self,
+        material: &AccountAuthMaterial,
+        workspace: &str,
+    ) -> Result<ConsoleBillingTask, TransportError> {
+        let request = self.build_request(
+            CONSOLE_BILLING_PATH,
+            material,
+            [("x-org-id".to_owned(), workspace.to_owned())],
+        )?;
+        let transport = Arc::clone(&self.transport);
+        Ok(tokio::spawn(async move {
+            send_with_guarded_redirects(transport.as_ref(), request).await
+        }))
+    }
+
+    async fn enrich_console_balance_if_ready(
+        &self,
+        result: &mut UsageProbeResult,
+        task: &mut Option<ConsoleBillingTask>,
+    ) {
+        if task.is_none() {
+            return;
+        }
+        match fetch_console_balance(task, CONSOLE_BILLING_OPTIONAL_JOIN_TIMEOUT).await {
+            Ok((balance, root)) => enrich_balance(result, Some(balance), &root),
+            Err(item) => add_snapshot_diagnostic(result, item),
+        }
     }
 
     async fn request_server(
@@ -337,6 +378,18 @@ impl OpenCodeGoUsageAdapter {
             }
         };
 
+        let mut billing_task = if let Some(workspace) = workspace.as_deref() {
+            match self.spawn_console_billing(material, workspace) {
+                Ok(task) => Some(task),
+                Err(error) => {
+                    diagnostics.push(transport_diagnostic("web.console.billing", &error));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let mut no_go_subscription = false;
         if let Some(workspace) = workspace.as_deref() {
             match self.fetch_console_status(material, workspace).await {
@@ -350,55 +403,27 @@ impl OpenCodeGoUsageAdapter {
                                 "OpenCode reports no active Go subscription",
                                 Some(response.status_code),
                             ));
-                            match self.fetch_console_billing(material, workspace).await {
-                                Ok(billing) if billing.is_success() => {
-                                    if let Ok(billing_root) = parse_json_document(&billing.body) {
-                                        if let Some(balance) =
-                                            find_console_billing_balance(&billing_root)
-                                                .or_else(|| find_balance(&billing_root))
-                                        {
-                                            let mut result = balance_only_snapshot(
-                                                account,
-                                                workspace,
-                                                balance,
-                                                "web-console",
-                                            );
-                                            if let Some(snapshot) = result.snapshot.as_mut() {
-                                                snapshot
-                                                    .source_diagnostics
-                                                    .append(&mut diagnostics);
-                                            }
-                                            return Ok(result);
+                            if billing_task.is_some() {
+                                match fetch_console_balance(
+                                    &mut billing_task,
+                                    CONSOLE_BILLING_REQUIRED_TIMEOUT,
+                                )
+                                .await
+                                {
+                                    Ok((balance, _)) => {
+                                        let mut result = balance_only_snapshot(
+                                            account,
+                                            workspace,
+                                            balance,
+                                            "web-console",
+                                        );
+                                        if let Some(snapshot) = result.snapshot.as_mut() {
+                                            snapshot.source_diagnostics.append(&mut diagnostics);
                                         }
-                                        diagnostics.push(diagnostic(
-                                            "web.console.billing",
-                                            UsageAdapterErrorCode::InvalidPayload,
-                                            format!(
-                                                "console billing had no recognized balance: {}",
-                                                json_shape_summary(&billing_root)
-                                            ),
-                                            Some(billing.status_code),
-                                        ));
-                                    } else {
-                                        diagnostics.push(diagnostic(
-                                            "web.console.billing",
-                                            UsageAdapterErrorCode::InvalidPayload,
-                                            "console billing response was not valid JSON",
-                                            Some(billing.status_code),
-                                        ));
+                                        return Ok(result);
                                     }
+                                    Err(item) => diagnostics.push(item),
                                 }
-                                Ok(billing) => diagnostics.push(diagnostic(
-                                    "web.console.billing",
-                                    http_error_code(billing.status_code),
-                                    format!(
-                                        "OpenCode console billing request failed (HTTP {})",
-                                        billing.status_code
-                                    ),
-                                    Some(billing.status_code),
-                                )),
-                                Err(error) => diagnostics
-                                    .push(transport_diagnostic("web.console.billing", &error)),
                             }
                         } else if let Some(mut result) =
                             parse_console_snapshot(&root, account, workspace)
@@ -406,48 +431,41 @@ impl OpenCodeGoUsageAdapter {
                             if let Some(snapshot) = result.snapshot.as_mut() {
                                 snapshot.source_diagnostics.append(&mut diagnostics);
                             }
-                            match self.fetch_console_billing(material, workspace).await {
-                                Ok(billing) if billing.is_success() => {
-                                    if let Ok(root) = parse_json_document(&billing.body) {
-                                        let balance = find_console_billing_balance(&root)
-                                            .or_else(|| find_balance(&root));
-                                        enrich_balance(&mut result, balance, &root);
-                                    } else {
-                                        add_snapshot_diagnostic(
-                                            &mut result,
-                                            diagnostic(
-                                                "web.console.billing",
-                                                UsageAdapterErrorCode::InvalidPayload,
-                                                "billing response was not valid JSON",
-                                                Some(billing.status_code),
-                                            ),
-                                        );
-                                    }
-                                }
-                                Ok(billing) => add_snapshot_diagnostic(
-                                    &mut result,
-                                    diagnostic(
-                                        "web.console.billing",
-                                        http_error_code(billing.status_code),
-                                        "OpenCode console billing request failed",
-                                        Some(billing.status_code),
-                                    ),
-                                ),
-                                Err(error) => add_snapshot_diagnostic(
-                                    &mut result,
-                                    transport_diagnostic("web.console.billing", &error),
-                                ),
-                            }
+                            self.enrich_console_balance_if_ready(&mut result, &mut billing_task)
+                                .await;
                             if result.succeeded() {
                                 return Ok(result);
                             }
                         } else {
+                            let missing_usage_fields = console_status_missing_usage_fields(&root);
                             diagnostics.push(diagnostic(
                                 "web.console.status",
                                 UsageAdapterErrorCode::InvalidPayload,
                                 console_status_shape_error(&root),
                                 Some(response.status_code),
                             ));
+                            if missing_usage_fields && billing_task.is_some() {
+                                match fetch_console_balance(
+                                    &mut billing_task,
+                                    CONSOLE_BILLING_REQUIRED_TIMEOUT,
+                                )
+                                .await
+                                {
+                                    Ok((balance, _)) => {
+                                        let mut result = balance_only_snapshot(
+                                            account,
+                                            workspace,
+                                            balance,
+                                            "web-console",
+                                        );
+                                        if let Some(snapshot) = result.snapshot.as_mut() {
+                                            snapshot.source_diagnostics.append(&mut diagnostics);
+                                        }
+                                        return Ok(result);
+                                    }
+                                    Err(item) => diagnostics.push(item),
+                                }
+                            }
                         }
                     } else {
                         diagnostics.push(diagnostic(
@@ -487,6 +505,11 @@ impl OpenCodeGoUsageAdapter {
                                 snapshot.source_diagnostics.extend(diagnostics.clone());
                             }
                             if result.succeeded() {
+                                self.enrich_console_balance_if_ready(
+                                    &mut result,
+                                    &mut billing_task,
+                                )
+                                .await;
                                 return Ok(result);
                             }
                         }
@@ -508,6 +531,10 @@ impl OpenCodeGoUsageAdapter {
                     )),
                     Err(error) => diagnostics.push(transport_diagnostic("web.dashboard", &error)),
                 }
+            }
+
+            if let Some(task) = billing_task.take() {
+                task.abort();
             }
 
             let args = serde_json::to_string(&[workspace]).unwrap_or_else(|_| "[]".to_owned());
@@ -585,19 +612,6 @@ impl OpenCodeGoUsageAdapter {
     ) -> Result<UsageHttpResponse, TransportError> {
         self.request(
             CONSOLE_STATUS_PATH,
-            material,
-            [("x-org-id".to_owned(), workspace.to_owned())],
-        )
-        .await
-    }
-
-    async fn fetch_console_billing(
-        &self,
-        material: &AccountAuthMaterial,
-        workspace: &str,
-    ) -> Result<UsageHttpResponse, TransportError> {
-        self.request(
-            CONSOLE_BILLING_PATH,
             material,
             [("x-org-id".to_owned(), workspace.to_owned())],
         )
@@ -1546,6 +1560,27 @@ fn is_console_workspace_id(value: &str) -> bool {
     })
 }
 
+fn console_status_missing_usage_fields(root: &Value) -> bool {
+    let Some(access) = root.get("access").filter(|value| value.is_object()) else {
+        return false;
+    };
+    let access_meters = access.get("meters");
+    if access_meters.is_some_and(|meters| !meters.is_object()) {
+        return false;
+    }
+    let root_meters = root.get("meters");
+    if access_meters.is_none() && root_meters.is_some_and(|meters| !meters.is_object()) {
+        return false;
+    }
+    let meters = access_meters.or(root_meters).unwrap_or(root);
+    if !meters.is_object() {
+        return false;
+    }
+
+    first_named(meters, &["fiveHour", "five_hour", "rolling", "session"]).is_none()
+        && find_window(root, WindowRole::Rolling).is_none()
+}
+
 fn console_status_shape_error(root: &Value) -> String {
     if root.is_null() || root.get("access").is_some_and(Value::is_null) {
         return "the signed-in account has no active OpenCode Go subscription".to_owned();
@@ -1704,6 +1739,76 @@ fn find_balance(value: &Value) -> Option<f64> {
 fn find_console_billing_balance(value: &Value) -> Option<f64> {
     json_number(value, &["balanceMicroCents", "balance_micro_cents"])
         .map(|micro_cents| micro_cents / MICRO_CENTS_PER_USD)
+}
+
+async fn fetch_console_balance(
+    task: &mut Option<ConsoleBillingTask>,
+    wait: StdDuration,
+) -> Result<(f64, Value), UsageSourceDiagnostic> {
+    let Some(mut task) = task.take() else {
+        return Err(diagnostic(
+            "web.console.billing",
+            UsageAdapterErrorCode::InvalidPayload,
+            "console billing request was not started",
+            None,
+        ));
+    };
+
+    let response = match tokio::time::timeout(wait, &mut task).await {
+        Ok(Ok(Ok(response))) => response,
+        Ok(Ok(Err(error))) => return Err(transport_diagnostic("web.console.billing", &error)),
+        Ok(Err(error)) => {
+            return Err(diagnostic(
+                "web.console.billing",
+                UsageAdapterErrorCode::TransientHttp,
+                format!("console billing task failed: {error}"),
+                None,
+            ));
+        }
+        Err(_) => {
+            task.abort();
+            return Err(diagnostic(
+                "web.console.billing",
+                UsageAdapterErrorCode::TransientHttp,
+                format!("console billing request exceeded its {wait:?} wait bound"),
+                None,
+            ));
+        }
+    };
+
+    if !response.is_success() {
+        return Err(diagnostic(
+            "web.console.billing",
+            http_error_code(response.status_code),
+            format!(
+                "OpenCode console billing request failed (HTTP {})",
+                response.status_code
+            ),
+            Some(response.status_code),
+        ));
+    }
+    let root = parse_json_document(&response.body).map_err(|_| {
+        diagnostic(
+            "web.console.billing",
+            UsageAdapterErrorCode::InvalidPayload,
+            "console billing response was not valid JSON",
+            Some(response.status_code),
+        )
+    })?;
+    let balance = find_console_billing_balance(&root)
+        .or_else(|| find_balance(&root))
+        .ok_or_else(|| {
+            diagnostic(
+                "web.console.billing",
+                UsageAdapterErrorCode::InvalidPayload,
+                format!(
+                    "console billing had no recognized balance: {}",
+                    json_shape_summary(&root)
+                ),
+                Some(response.status_code),
+            )
+        })?;
+    Ok((balance, root))
 }
 
 fn find_legacy_billing_balance(value: &Value) -> Option<f64> {
@@ -1927,6 +2032,215 @@ fn add_snapshot_diagnostic(result: &mut UsageProbeResult, item: UsageSourceDiagn
 mod tests {
     use super::*;
     use std::{collections::VecDeque, sync::Mutex};
+    use tokio::sync::Notify;
+
+    struct StaticAuthMaterialProvider(AccountAuthMaterial);
+
+    #[async_trait]
+    impl AccountAuthMaterialProvider for StaticAuthMaterialProvider {
+        async fn get(
+            &self,
+            _account: &AccountRecord,
+        ) -> Result<Option<AccountAuthMaterial>, AuthError> {
+            Ok(Some(self.0.clone()))
+        }
+    }
+
+    struct ConsoleBillingTransport {
+        status_body: String,
+        billing_body: String,
+        billing_delay: StdDuration,
+        wait_for_billing_before_status: bool,
+        billing_started: Notify,
+        requests: Mutex<Vec<UsageHttpRequest>>,
+    }
+
+    #[async_trait]
+    impl UsageHttpTransport for ConsoleBillingTransport {
+        async fn send(
+            &self,
+            request: UsageHttpRequest,
+        ) -> Result<UsageHttpResponse, TransportError> {
+            let path = request.url.path().to_owned();
+            self.requests.lock().unwrap().push(request);
+
+            if path.ends_with(CONSOLE_BILLING_PATH) {
+                self.billing_started.notify_one();
+                tokio::time::sleep(self.billing_delay).await;
+                return Ok(json_response(200, &self.billing_body));
+            }
+            if path.ends_with(CONSOLE_STATUS_PATH) {
+                if self.wait_for_billing_before_status {
+                    tokio::time::timeout(
+                        StdDuration::from_secs(1),
+                        self.billing_started.notified(),
+                    )
+                    .await
+                    .expect("billing request should start before status completes");
+                }
+                return Ok(json_response(200, &self.status_body));
+            }
+
+            Err(TransportError::InvalidUrl(format!(
+                "unexpected test request path: {path}"
+            )))
+        }
+    }
+
+    fn json_response(status_code: u16, body: &str) -> UsageHttpResponse {
+        UsageHttpResponse {
+            status_code,
+            body: body.to_owned(),
+            headers: Default::default(),
+        }
+    }
+
+    fn console_probe_adapter(transport: Arc<dyn UsageHttpTransport>) -> OpenCodeGoUsageAdapter {
+        OpenCodeGoUsageAdapter::new(
+            transport,
+            Arc::new(StaticAuthMaterialProvider(
+                AccountAuthMaterial::from_cookie_header("session=test-session", None),
+            )),
+        )
+        .unwrap()
+        .with_source_mode(OpenCodeGoSourceMode::Web)
+    }
+
+    fn console_probe_account() -> AccountRecord {
+        AccountRecord::create(
+            "go",
+            "go@example.com",
+            None,
+            OPENCODE_GO,
+            Some("wrk_123".to_owned()),
+        )
+        .unwrap()
+    }
+
+    fn active_go_status() -> String {
+        json!({
+            "access": {"meters": {
+                "fiveHour": {"usedMicroCents": 1_000_000, "limitMicroCents": 10_000_000},
+                "week": {"usedMicroCents": 3_000_000, "limitMicroCents": 10_000_000}
+            }}
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn console_balance_enrichment_is_parallel_and_bounded() {
+        let transport = Arc::new(ConsoleBillingTransport {
+            status_body: active_go_status(),
+            billing_body: json!({"balanceMicroCents": 125_000_000}).to_string(),
+            billing_delay: StdDuration::from_millis(500),
+            wait_for_billing_before_status: true,
+            billing_started: Notify::new(),
+            requests: Mutex::new(Vec::new()),
+        });
+        let adapter = console_probe_adapter(transport.clone());
+
+        let result = adapter.probe(&console_probe_account()).await.unwrap();
+        let snapshot = result.snapshot.unwrap();
+
+        assert!(snapshot.primary.is_some());
+        assert!(snapshot.credits.is_none());
+        assert!(snapshot.source_diagnostics.iter().any(|item| {
+            item.source == "web.console.billing" && item.message.contains("wait bound")
+        }));
+        let paths = transport
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request.url.path().to_owned())
+            .collect::<Vec<_>>();
+        assert!(paths.iter().any(|path| path.ends_with(CONSOLE_STATUS_PATH)));
+        assert!(
+            paths
+                .iter()
+                .any(|path| path.ends_with(CONSOLE_BILLING_PATH))
+        );
+        let requests = transport.requests.lock().unwrap();
+        for request in requests.iter() {
+            assert_eq!(
+                request.headers.get("Cookie").map(String::as_str),
+                Some("session=test-session")
+            );
+            assert_eq!(
+                request.headers.get("x-org-id").map(String::as_str),
+                Some("wrk_123")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn console_balance_is_required_when_account_has_no_go_subscription() {
+        let transport = Arc::new(ConsoleBillingTransport {
+            status_body: json!({"access": null}).to_string(),
+            billing_body: json!({"balanceMicroCents": 125_000_000}).to_string(),
+            billing_delay: StdDuration::ZERO,
+            wait_for_billing_before_status: true,
+            billing_started: Notify::new(),
+            requests: Mutex::new(Vec::new()),
+        });
+        let adapter = console_probe_adapter(transport);
+
+        let snapshot = adapter
+            .probe(&console_probe_account())
+            .await
+            .unwrap()
+            .snapshot
+            .unwrap();
+
+        assert_eq!(snapshot.source.as_deref(), Some("web-console"));
+        assert_eq!(
+            snapshot
+                .credits
+                .as_ref()
+                .and_then(|credits| credits.balance),
+            Some(1.25)
+        );
+        assert!(snapshot.primary.is_none());
+        assert!(snapshot.source_diagnostics.iter().any(|item| {
+            item.source == "web.console.status"
+                && item.code == UsageAdapterErrorCode::NoSubscription
+        }));
+    }
+
+    #[tokio::test]
+    async fn console_balance_is_required_when_subscription_usage_fields_are_missing() {
+        let transport = Arc::new(ConsoleBillingTransport {
+            status_body: json!({"access": {"meters": {"week": {"usagePercent": 35.0}}}})
+                .to_string(),
+            billing_body: json!({"balanceMicroCents": 125_000_000}).to_string(),
+            billing_delay: StdDuration::ZERO,
+            wait_for_billing_before_status: true,
+            billing_started: Notify::new(),
+            requests: Mutex::new(Vec::new()),
+        });
+        let adapter = console_probe_adapter(transport);
+
+        let snapshot = adapter
+            .probe(&console_probe_account())
+            .await
+            .unwrap()
+            .snapshot
+            .unwrap();
+
+        assert_eq!(snapshot.source.as_deref(), Some("web-console"));
+        assert_eq!(
+            snapshot
+                .credits
+                .as_ref()
+                .and_then(|credits| credits.balance),
+            Some(1.25)
+        );
+        assert!(snapshot.primary.is_none());
+        assert!(snapshot.source_diagnostics.iter().any(|item| {
+            item.source == "web.console.status"
+                && item.code == UsageAdapterErrorCode::InvalidPayload
+        }));
+    }
 
     struct RedirectSequenceTransport {
         responses: Mutex<VecDeque<UsageHttpResponse>>,
