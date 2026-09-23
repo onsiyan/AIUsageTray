@@ -511,9 +511,9 @@ impl UsageAdapter for OpenRouterUsageAdapter {
 fn normalize_api_base(raw: &str) -> Result<Url, TransportError> {
     let mut url =
         Url::parse(raw.trim()).map_err(|error| TransportError::InvalidUrl(error.to_string()))?;
-    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+    if url.scheme() != "https" || url.host_str().is_none() {
         return Err(TransportError::InvalidUrl(
-            "OpenRouter API URL must be an HTTP(S) URL with a host".to_owned(),
+            "OpenRouter API URL must be an HTTPS URL with a host".to_owned(),
         ));
     }
     let path = url.path().trim_end_matches('/');
@@ -965,6 +965,13 @@ mod tests {
         let custom = normalize_api_base("https://gateway.example.test").unwrap();
         assert!(is_official_api_base(&official));
         assert!(!is_official_api_base(&custom));
+    }
+
+    #[test]
+    fn api_base_requires_https_before_credentials_can_be_sent() {
+        assert!(normalize_api_base("https://gateway.example.test").is_ok());
+        assert!(normalize_api_base("http://gateway.example.test").is_err());
+        assert!(normalize_api_base("ftp://gateway.example.test").is_err());
     }
 
     #[test]
