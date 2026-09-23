@@ -12,7 +12,10 @@ use crate::{
         AccountId, AccountRecord, AccountStatus, AccountStore, AccountStoreError, OPENAI,
         VerifiedIdentity,
     },
-    providers::registry::ProviderRegistry,
+    providers::{
+        codex_reset::{confirms_weekly_reset, needs_weekly_reset_confirmation},
+        registry::ProviderRegistry,
+    },
     transport::TransportError,
     usage::{
         StorageError, UsageAdapter, UsageAdapterError, UsageAdapterErrorCode, UsageSnapshot,
@@ -647,7 +650,7 @@ impl UsageRefreshCoordinator {
         };
 
         if probe.succeeded() {
-            if let Some(snapshot) = probe.snapshot.clone() {
+            if let Some(mut snapshot) = probe.snapshot.clone() {
                 if snapshot.account_id != account.id
                     || !provider_ids_match(&account.provider_id, &snapshot.provider_id)
                 {
@@ -665,6 +668,7 @@ impl UsageRefreshCoordinator {
                         )
                         .await;
                 }
+                let mut identity = probe.identity.clone();
                 if prior
                     .as_ref()
                     .is_some_and(|previous| snapshot.observed_at_utc < previous.observed_at_utc)
@@ -685,7 +689,78 @@ impl UsageRefreshCoordinator {
                         )
                         .await;
                 }
-                let identity = probe.identity.clone();
+                if needs_weekly_reset_confirmation(&account, prior.as_ref(), &snapshot) {
+                    let confirmation = match adapter.probe(&account).await {
+                        Ok(confirmation) if confirmation.succeeded() => confirmation,
+                        Ok(confirmation) => {
+                            let error = confirmation.error.unwrap_or(UsageAdapterError {
+                                code: UsageAdapterErrorCode::InvalidPayload,
+                                message: "Codex weekly reset confirmation returned no snapshot"
+                                    .to_owned(),
+                                http_status_code: None,
+                                retry_after_seconds: None,
+                            });
+                            return self.finish_failure(&account, reason, prior, error).await;
+                        }
+                        Err(error) => {
+                            return self
+                                .finish_failure(
+                                    &account,
+                                    reason,
+                                    prior,
+                                    transport_as_adapter_error(error),
+                                )
+                                .await;
+                        }
+                    };
+                    let Some(confirmed_snapshot) = confirmation.snapshot else {
+                        return self
+                            .finish_failure(
+                                &account,
+                                reason,
+                                prior,
+                                UsageAdapterError {
+                                    code: UsageAdapterErrorCode::InvalidPayload,
+                                    message: "Codex weekly reset confirmation returned no snapshot"
+                                        .to_owned(),
+                                    http_status_code: None,
+                                    retry_after_seconds: None,
+                                },
+                            )
+                            .await;
+                    };
+                    let previous = prior
+                        .as_ref()
+                        .expect("confirmation requires a prior snapshot");
+                    if confirmed_snapshot.account_id != account.id
+                        || !provider_ids_match(
+                            &account.provider_id,
+                            &confirmed_snapshot.provider_id,
+                        )
+                        || !confirms_weekly_reset(
+                            &account,
+                            previous,
+                            &snapshot,
+                            &confirmed_snapshot,
+                        )
+                    {
+                        return self
+                            .finish_failure(
+                                &account,
+                                reason,
+                                prior,
+                                UsageAdapterError {
+                                    code: UsageAdapterErrorCode::InvalidPayload,
+                                    message: "Codex weekly reset was not corroborated by a matching browser-session observation".to_owned(),
+                                    http_status_code: None,
+                                    retry_after_seconds: None,
+                                },
+                            )
+                            .await;
+                    }
+                    snapshot = confirmed_snapshot;
+                    identity = confirmation.identity.or(identity);
+                }
                 let identity_storage_error = identity.as_ref().and_then(|identity| {
                     let updated = account
                         .with_identity(
@@ -1192,6 +1267,151 @@ mod tests {
         ) -> Result<UsageProbeResult, TransportError> {
             Ok(UsageProbeResult::success(self.0.clone(), None))
         }
+    }
+
+    struct SequencedSnapshotAdapter {
+        snapshots: std::sync::Mutex<VecDeque<UsageSnapshot>>,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl UsageAdapter for SequencedSnapshotAdapter {
+        fn adapter_id(&self) -> &str {
+            OPENAI
+        }
+
+        async fn probe(
+            &self,
+            _account: &AccountRecord,
+        ) -> Result<UsageProbeResult, TransportError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let snapshot = self
+                .snapshots
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("test adapter has a snapshot for each probe");
+            Ok(UsageProbeResult::success(snapshot, None))
+        }
+    }
+
+    fn codex_weekly_snapshot(
+        account_id: AccountId,
+        observed_at: DateTime<Utc>,
+        weekly_used: f64,
+        weekly_reset: DateTime<Utc>,
+    ) -> UsageSnapshot {
+        let mut snapshot = snapshot(
+            account_id,
+            observed_at,
+            observed_at + ChronoDuration::hours(4),
+        );
+        snapshot.plan_type = Some("plus".to_owned());
+        snapshot.secondary = Some(RateLimitWindow {
+            kind: UsageWindowKind::Secondary,
+            name: "weekly".to_owned(),
+            used_percent: weekly_used,
+            reset_at_utc: Some(weekly_reset),
+            limit_window_seconds: 7 * 24 * 60 * 60,
+        });
+        snapshot.observed_email = Some("codex@example.com".to_owned());
+        snapshot.source = Some("browser-session".to_owned());
+        snapshot
+    }
+
+    #[tokio::test]
+    async fn unconfirmed_weekly_reset_retains_prior_usage_for_the_same_account() {
+        let account =
+            AccountRecord::create("test", "codex@example.com", None, OPENAI, None).unwrap();
+        let accounts = Arc::new(InMemoryAccountStore::default());
+        accounts.upsert(&account).await.unwrap();
+        let store = Arc::new(crate::usage::InMemoryUsageSnapshotStore::default());
+        let prior = codex_weekly_snapshot(account.id, now(), 70.0, now() + ChronoDuration::days(3));
+        store.save(prior.clone()).await.unwrap();
+        let initial = codex_weekly_snapshot(
+            account.id,
+            now() + ChronoDuration::seconds(1),
+            0.2,
+            now() + ChronoDuration::days(10),
+        );
+        let confirmation = codex_weekly_snapshot(
+            account.id,
+            now() + ChronoDuration::seconds(2),
+            0.8,
+            now() + ChronoDuration::days(10),
+        );
+        let adapter = Arc::new(SequencedSnapshotAdapter {
+            snapshots: std::sync::Mutex::new(VecDeque::from([initial, confirmation])),
+            calls: AtomicUsize::new(0),
+        });
+        let coordinator = UsageRefreshCoordinator::new(
+            accounts,
+            store.clone(),
+            vec![adapter.clone() as Arc<dyn UsageAdapter>],
+            RefreshCoordinatorConfig::default(),
+        );
+
+        let outcome = coordinator
+            .refresh_account(account.clone(), RefreshReason::Manual)
+            .await;
+
+        assert_eq!(adapter.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(outcome.status, RefreshStatus::RetainedStale);
+        assert_eq!(
+            outcome.error.as_ref().map(|error| error.code),
+            Some(UsageAdapterErrorCode::InvalidPayload)
+        );
+        let retained = outcome.snapshot.unwrap();
+        assert!(retained.is_stale);
+        assert_eq!(retained.secondary.unwrap().used_percent, 70.0);
+        let persisted = store.get_latest(account.id).await.unwrap().unwrap();
+        assert_eq!(persisted.observed_at_utc, prior.observed_at_utc);
+    }
+
+    #[tokio::test]
+    async fn confirmed_weekly_reset_publishes_the_second_browser_observation() {
+        let account =
+            AccountRecord::create("test", "codex@example.com", None, OPENAI, None).unwrap();
+        let accounts = Arc::new(InMemoryAccountStore::default());
+        accounts.upsert(&account).await.unwrap();
+        let store = Arc::new(crate::usage::InMemoryUsageSnapshotStore::default());
+        let prior =
+            codex_weekly_snapshot(account.id, now(), 70.0, now() + ChronoDuration::minutes(1));
+        store.save(prior).await.unwrap();
+        let initial = codex_weekly_snapshot(
+            account.id,
+            now() + ChronoDuration::minutes(2),
+            0.2,
+            now() + ChronoDuration::days(7) + ChronoDuration::minutes(1),
+        );
+        let confirmation = codex_weekly_snapshot(
+            account.id,
+            now() + ChronoDuration::minutes(3),
+            0.4,
+            now() + ChronoDuration::days(7) + ChronoDuration::minutes(1),
+        );
+        let adapter = Arc::new(SequencedSnapshotAdapter {
+            snapshots: std::sync::Mutex::new(VecDeque::from([initial, confirmation.clone()])),
+            calls: AtomicUsize::new(0),
+        });
+        let coordinator = UsageRefreshCoordinator::new(
+            accounts,
+            store.clone(),
+            vec![adapter.clone() as Arc<dyn UsageAdapter>],
+            RefreshCoordinatorConfig::default(),
+        );
+
+        let outcome = coordinator
+            .refresh_account(account.clone(), RefreshReason::Manual)
+            .await;
+
+        assert_eq!(adapter.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(outcome.status, RefreshStatus::Updated);
+        let published = outcome.snapshot.unwrap();
+        assert_eq!(published.observed_at_utc, confirmation.observed_at_utc);
+        assert_eq!(published.secondary.unwrap().used_percent, 0.4);
+        let persisted = store.get_latest(account.id).await.unwrap().unwrap();
+        assert_eq!(persisted.observed_at_utc, confirmation.observed_at_utc);
     }
 
     #[tokio::test]
