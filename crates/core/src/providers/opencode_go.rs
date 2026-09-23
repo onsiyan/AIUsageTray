@@ -946,11 +946,12 @@ fn parse_console_snapshot(
         .get("access")
         .and_then(|access| access.get("endsAt"))
         .and_then(|value| parse_date_value(value, Utc::now()));
-    if let (Some(monthly), Some(renews_at)) = (monthly.as_mut(), renews_at) {
-        if monthly.window.reset_at_utc.is_none() {
+    match (monthly.as_mut(), renews_at) {
+        (Some(monthly), Some(renews_at)) if monthly.window.reset_at_utc.is_none() => {
             monthly.window.reset_at_utc = Some(renews_at);
             monthly.window.limit_window_seconds = (renews_at - Utc::now()).num_seconds().max(0);
         }
+        _ => {}
     }
     let mut identity_root = root.clone();
     if let Value::Object(object) = &mut identity_root {
