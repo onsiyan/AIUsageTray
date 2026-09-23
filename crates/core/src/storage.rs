@@ -38,6 +38,7 @@ impl SqliteStore {
                     workspace_name TEXT NULL,
                     codex_home TEXT NULL,
                     openai_account_id TEXT NULL,
+                    alias TEXT NULL,
                     status INTEGER NOT NULL,
                     created_at_utc TEXT NOT NULL,
                     updated_at_utc TEXT NOT NULL
@@ -99,6 +100,7 @@ impl SqliteStore {
         ensure_column(&connection, "accounts", "workspace_id", "TEXT NULL")?;
         ensure_column(&connection, "accounts", "workspace_name", "TEXT NULL")?;
         ensure_column(&connection, "accounts", "codex_home", "TEXT NULL")?;
+        ensure_column(&connection, "accounts", "alias", "TEXT NULL")?;
         ensure_column(
             &connection,
             "usage_snapshots",
@@ -167,7 +169,7 @@ impl AccountStore for SqliteStore {
         let connection = self.lock().map_err(account_error)?;
         let mut statement = connection
             .prepare(
-                "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, workspace_name, codex_home, status, created_at_utc, updated_at_utc FROM accounts ORDER BY lower(label), account_id",
+                "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, workspace_name, codex_home, status, created_at_utc, updated_at_utc, alias FROM accounts ORDER BY lower(COALESCE(NULLIF(TRIM(alias), ''), label)), account_id",
             )
             .map_err(sqlite_account_error)?;
         let rows = statement
@@ -181,7 +183,7 @@ impl AccountStore for SqliteStore {
         let connection = self.lock().map_err(account_error)?;
         connection
             .query_row(
-                "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, workspace_name, codex_home, status, created_at_utc, updated_at_utc FROM accounts WHERE account_id = ?1",
+                "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, workspace_name, codex_home, status, created_at_utc, updated_at_utc, alias FROM accounts WHERE account_id = ?1",
                 [account_id.to_string()],
                 read_account,
             )
@@ -206,7 +208,7 @@ impl AccountStore for SqliteStore {
         let existing = if let Some(provider_account_id) = account.provider_account_id.as_deref() {
             transaction
                 .query_row(
-                    "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, workspace_name, codex_home, status, created_at_utc, updated_at_utc FROM accounts WHERE provider_id = ?1 AND provider_account_id = ?2 AND workspace_id IS ?3 ORDER BY updated_at_utc DESC, created_at_utc, account_id LIMIT 1",
+                    "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, workspace_name, codex_home, status, created_at_utc, updated_at_utc, alias FROM accounts WHERE provider_id = ?1 AND provider_account_id = ?2 AND workspace_id IS ?3 ORDER BY updated_at_utc DESC, created_at_utc, account_id LIMIT 1",
                     params![account.provider_id, provider_account_id, account.workspace_id],
                     read_account,
                 )
@@ -218,7 +220,11 @@ impl AccountStore for SqliteStore {
 
         let resolved = if let Some(existing) = existing {
             if existing.id == account.id {
-                account.clone()
+                if account.alias.is_none() && existing.alias.is_some() {
+                    account.with_alias(existing.alias.as_deref())
+                } else {
+                    account.clone()
+                }
             } else {
                 existing
                     .with_identity(Some(&account.email), account.provider_account_id.as_deref())
@@ -231,6 +237,38 @@ impl AccountStore for SqliteStore {
         write_account(&transaction, &resolved).map_err(sqlite_account_error)?;
         transaction.commit().map_err(sqlite_account_error)?;
         Ok(resolved)
+    }
+
+    async fn set_alias(
+        &self,
+        account_id: AccountId,
+        alias: Option<&str>,
+    ) -> Result<Option<AccountRecord>, AccountStoreError> {
+        let connection = self.lock().map_err(account_error)?;
+        let Some(account) = connection
+            .query_row(
+                "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, workspace_name, codex_home, status, created_at_utc, updated_at_utc, alias FROM accounts WHERE account_id = ?1",
+                [account_id.to_string()],
+                read_account,
+            )
+            .optional()
+            .map_err(sqlite_account_error)?
+        else {
+            return Ok(None);
+        };
+
+        let updated = account.with_alias(alias);
+        connection
+            .execute(
+                "UPDATE accounts SET alias = ?1, updated_at_utc = ?2 WHERE account_id = ?3",
+                params![
+                    updated.alias,
+                    updated.updated_at_utc.to_rfc3339(),
+                    updated.id.to_string(),
+                ],
+            )
+            .map_err(sqlite_account_error)?;
+        Ok(Some(updated))
     }
 
     async fn remove(&self, account_id: AccountId) -> Result<(), AccountStoreError> {
@@ -251,8 +289,8 @@ fn write_account(connection: &Connection, account: &AccountRecord) -> Result<(),
         INSERT INTO accounts (
             account_id, label, email, provider_id, provider_account_id,
             browser_kind, browser_profile_id, workspace_id, workspace_name,
-            codex_home, openai_account_id, status, created_at_utc, updated_at_utc)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            codex_home, openai_account_id, status, created_at_utc, updated_at_utc, alias)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
         ON CONFLICT(account_id) DO UPDATE SET
             label = excluded.label,
             email = excluded.email,
@@ -265,7 +303,8 @@ fn write_account(connection: &Connection, account: &AccountRecord) -> Result<(),
             codex_home = excluded.codex_home,
             openai_account_id = excluded.openai_account_id,
             status = excluded.status,
-            updated_at_utc = excluded.updated_at_utc
+            updated_at_utc = excluded.updated_at_utc,
+            alias = COALESCE(excluded.alias, accounts.alias)
         "#,
         params![
             account.id.to_string(),
@@ -284,6 +323,7 @@ fn write_account(connection: &Connection, account: &AccountRecord) -> Result<(),
             account.status as i32,
             account.created_at_utc.to_rfc3339(),
             account.updated_at_utc.to_rfc3339(),
+            account.alias,
         ],
     )?;
     Ok(())
@@ -448,6 +488,7 @@ fn read_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRecord> {
         workspace_id: row.get(7)?,
         workspace_name: row.get(8)?,
         codex_home: row.get(9)?,
+        alias: row.get(13)?,
         status,
         created_at_utc,
         updated_at_utc,

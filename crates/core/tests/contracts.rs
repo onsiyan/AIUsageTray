@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use codex_usage_core::{
-    accounts::{ANTIGRAVITY, AccountRecord, AccountStore, CLAUDE, OPENAI, OPENROUTER},
+    accounts::{
+        ANTIGRAVITY, AccountId, AccountRecord, AccountStore, CLAUDE, InMemoryAccountStore, OPENAI,
+        OPENROUTER,
+    },
     auth::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
         AccountBrowserSessionRefresher, AuthError, CookieValue, InMemoryAuthMaterialStore,
@@ -1073,6 +1076,144 @@ async fn sqlite_account_identity_upsert_reuses_only_the_same_provider_and_worksp
         .unwrap();
     assert_eq!(saved_other_workspace.id, same_user_other_workspace.id);
     assert_eq!(store.list().await.unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn account_alias_is_optional_and_does_not_change_provider_identity() {
+    let store = InMemoryAccountStore::default();
+    let account = AccountRecord::create(
+        "Codex — user@example.com",
+        "user@example.com",
+        Some("provider-user-1".to_owned()),
+        OPENAI,
+        Some("workspace-1".to_owned()),
+    )
+    .unwrap()
+    .with_workspace_name(Some("Team North"));
+    store.upsert(&account).await.unwrap();
+
+    let renamed = store
+        .set_alias(account.id, Some("  Work  "))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(renamed.alias.as_deref(), Some("Work"));
+    assert_eq!(renamed.display_name(), "Work");
+    assert_eq!(renamed.label, "Codex — user@example.com");
+    assert_eq!(renamed.email, account.email);
+    assert_eq!(renamed.provider_account_id, account.provider_account_id);
+    assert_eq!(renamed.workspace_id, account.workspace_id);
+    assert_eq!(renamed.workspace_name, account.workspace_name);
+
+    store
+        .upsert(&account.with_workspace_name(Some("Team South")))
+        .await
+        .unwrap();
+    let after_metadata_update = store.get(account.id).await.unwrap().unwrap();
+    assert_eq!(after_metadata_update.alias.as_deref(), Some("Work"));
+    assert_eq!(
+        after_metadata_update.workspace_name.as_deref(),
+        Some("Team South")
+    );
+
+    let cleared = store
+        .set_alias(account.id, Some("  "))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(cleared.alias, None);
+    assert_eq!(cleared.display_name(), "Codex — user@example.com");
+    assert!(
+        store
+            .set_alias(AccountId::new(), Some("Missing account"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn sqlite_account_alias_persists_across_reopen_and_can_be_cleared() {
+    let directory = tempfile::tempdir().unwrap();
+    let database_path = directory.path().join("accounts.db");
+    let account = AccountRecord::create(
+        "Codex — user@example.com",
+        "user@example.com",
+        Some("provider-user-1".to_owned()),
+        OPENAI,
+        Some("workspace-1".to_owned()),
+    )
+    .unwrap()
+    .with_workspace_name(Some("Team North"));
+
+    let store = SqliteStore::open(&database_path).unwrap();
+    store.upsert(&account).await.unwrap();
+    let renamed = store
+        .set_alias(account.id, Some("Work"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(renamed.display_name(), "Work");
+    drop(store);
+
+    let reopened = SqliteStore::open(&database_path).unwrap();
+    let loaded = reopened.get(account.id).await.unwrap().unwrap();
+    assert_eq!(loaded.alias.as_deref(), Some("Work"));
+    assert_eq!(loaded.display_name(), "Work");
+    assert_eq!(loaded.label, account.label);
+    assert_eq!(loaded.email, account.email);
+    assert_eq!(loaded.provider_account_id, account.provider_account_id);
+    assert_eq!(loaded.workspace_id, account.workspace_id);
+    assert_eq!(loaded.workspace_name, account.workspace_name);
+
+    reopened
+        .upsert(&account.with_workspace_name(Some("Team South")))
+        .await
+        .unwrap();
+    let after_metadata_update = reopened.get(account.id).await.unwrap().unwrap();
+    assert_eq!(after_metadata_update.alias.as_deref(), Some("Work"));
+    assert_eq!(
+        after_metadata_update.workspace_name.as_deref(),
+        Some("Team South")
+    );
+
+    let cleared = reopened.set_alias(account.id, None).await.unwrap().unwrap();
+    assert_eq!(cleared.alias, None);
+    assert_eq!(cleared.display_name(), "Codex — user@example.com");
+}
+
+#[tokio::test]
+async fn sqlite_open_adds_alias_to_an_existing_accounts_table() {
+    let directory = tempfile::tempdir().unwrap();
+    let database_path = directory.path().join("accounts.db");
+    let store = SqliteStore::open(&database_path).unwrap();
+    let account = AccountRecord::create(
+        "Codex account",
+        "user@example.com",
+        Some("provider-user-1".to_owned()),
+        OPENAI,
+        None,
+    )
+    .unwrap();
+    store.upsert(&account).await.unwrap();
+    drop(store);
+
+    let legacy_connection = rusqlite::Connection::open(&database_path).unwrap();
+    legacy_connection
+        .execute("ALTER TABLE accounts DROP COLUMN alias", [])
+        .unwrap();
+    drop(legacy_connection);
+
+    let migrated_store = SqliteStore::open(&database_path).unwrap();
+    let migrated = migrated_store.get(account.id).await.unwrap().unwrap();
+    assert_eq!(migrated.alias, None);
+    assert_eq!(migrated.display_name(), "Codex account");
+    let renamed = migrated_store
+        .set_alias(account.id, Some("Work"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(renamed.display_name(), "Work");
 }
 
 #[tokio::test]

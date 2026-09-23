@@ -158,6 +158,10 @@ pub struct AccountRecord {
     /// does not read this path or use native Codex processes as a source.
     #[serde(default)]
     pub codex_home: Option<String>,
+    /// Optional user-defined display name. Provider labels and identity remain
+    /// unchanged when this is set or cleared.
+    #[serde(default)]
+    pub alias: Option<String>,
 }
 
 impl AccountRecord {
@@ -187,7 +191,12 @@ impl AccountRecord {
             workspace_id: normalize_optional(workspace_id),
             workspace_name: None,
             codex_home: None,
+            alias: None,
         })
+    }
+
+    pub fn display_name(&self) -> &str {
+        self.alias.as_deref().unwrap_or(&self.label)
     }
 
     pub fn with_identity(
@@ -236,6 +245,13 @@ impl AccountRecord {
         next.updated_at_utc = Utc::now();
         next
     }
+
+    pub fn with_alias(&self, alias: Option<&str>) -> Self {
+        let mut next = self.clone();
+        next.alias = normalize_optional(alias.map(str::to_owned));
+        next.updated_at_utc = Utc::now();
+        next
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,6 +274,13 @@ pub trait AccountStore: Send + Sync {
         &self,
         account: &AccountRecord,
     ) -> Result<AccountRecord, AccountStoreError>;
+    /// Sets or clears a user-defined display name without changing provider
+    /// identity or other account metadata. Whitespace-only values clear it.
+    async fn set_alias(
+        &self,
+        account_id: AccountId,
+        alias: Option<&str>,
+    ) -> Result<Option<AccountRecord>, AccountStoreError>;
     async fn remove(&self, account_id: AccountId) -> Result<(), AccountStoreError>;
 }
 
@@ -277,9 +300,9 @@ impl AccountStore for InMemoryAccountStore {
             .cloned()
             .collect::<Vec<_>>();
         accounts.sort_by(|left, right| {
-            left.label
+            left.display_name()
                 .to_ascii_lowercase()
-                .cmp(&right.label.to_ascii_lowercase())
+                .cmp(&right.display_name().to_ascii_lowercase())
         });
         Ok(accounts)
     }
@@ -304,7 +327,13 @@ impl AccountStore for InMemoryAccountStore {
         {
             return Err(AccountStoreError::DuplicateProviderIdentity);
         }
-        accounts.insert(account.id, account.clone());
+        let mut saved = account.clone();
+        if saved.alias.is_none() {
+            saved.alias = accounts
+                .get(&account.id)
+                .and_then(|existing| existing.alias.clone());
+        }
+        accounts.insert(account.id, saved);
         Ok(())
     }
 
@@ -331,7 +360,11 @@ impl AccountStore for InMemoryAccountStore {
 
         if let Some(existing) = existing {
             let resolved = if existing.id == account.id {
-                account.clone()
+                if account.alias.is_none() && existing.alias.is_some() {
+                    account.with_alias(existing.alias.as_deref())
+                } else {
+                    account.clone()
+                }
             } else {
                 existing
                     .with_identity(Some(&account.email), account.provider_account_id.as_deref())
@@ -343,6 +376,20 @@ impl AccountStore for InMemoryAccountStore {
 
         accounts.insert(account.id, account.clone());
         Ok(account.clone())
+    }
+
+    async fn set_alias(
+        &self,
+        account_id: AccountId,
+        alias: Option<&str>,
+    ) -> Result<Option<AccountRecord>, AccountStoreError> {
+        let mut accounts = self.accounts.write().await;
+        let Some(account) = accounts.get_mut(&account_id) else {
+            return Ok(None);
+        };
+        let updated = account.with_alias(alias);
+        *account = updated.clone();
+        Ok(Some(updated))
     }
 
     async fn remove(&self, account_id: AccountId) -> Result<(), AccountStoreError> {
