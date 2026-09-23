@@ -1,0 +1,440 @@
+component QuotaMeter inherits Rectangle {
+    in property <float> progress: 0.5;
+    in property <color> tint: #6ed8b9;
+
+    background: #2b3943;
+    border-radius: 3px;
+
+    Rectangle {
+        x: parent.width - (parent.width * root.progress);
+        width: parent.width * root.progress;
+        height: parent.height;
+        background: root.tint;
+        border-radius: 3px;
+    }
+}
+
+component QuotaLine inherits Rectangle {
+    in property <string> label;
+    in property <string> amount;
+    in property <string> reset;
+    in property <float> progress;
+    in property <color> accent;
+
+    height: 17px;
+
+    HorizontalLayout {
+        width: parent.width;
+        height: parent.height;
+        alignment: space-between;
+
+        Text {
+            width: 88px;
+            text: root.reset;
+            color: #91a1aa;
+            font-size: 10px;
+            horizontal-alignment: left;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        QuotaMeter {
+            width: 154px;
+            height: 5px;
+            progress: root.progress;
+            tint: root.accent;
+        }
+
+        Text {
+            width: 76px;
+            text: root.amount;
+            color: #dce7e8;
+            font-size: 10px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        Text {
+            width: 74px;
+            text: root.label;
+            color: #9eafb5;
+            font-size: 10px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+component ProviderCard inherits Rectangle {
+    in property <string> provider-name;
+    in property <string> account-name;
+    in property <color> accent;
+    in property <string> primary-label;
+    in property <string> primary-amount;
+    in property <string> primary-reset;
+    in property <float> primary-progress;
+    in property <string> secondary-label;
+    in property <string> secondary-amount;
+    in property <string> secondary-reset;
+    in property <float> secondary-progress;
+
+    height: 82px;
+    background: #19252e;
+    border-color: #2a3943;
+    border-width: 1px;
+    border-radius: 13px;
+
+    Rectangle {
+        x: 0px;
+        y: 13px;
+        width: 3px;
+        height: parent.height - 26px;
+        background: root.accent;
+        border-radius: 2px;
+    }
+
+    VerticalLayout {
+        padding-left: 13px;
+        padding-right: 13px;
+        padding-top: 8px;
+        padding-bottom: 7px;
+        spacing: 3px;
+
+        HorizontalLayout {
+            height: 19px;
+            alignment: space-between;
+
+            Text {
+                text: root.provider-name;
+                color: #edf3f3;
+                font-size: 13px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+
+            Text {
+                text: root.account-name;
+                color: #94a5ac;
+                font-size: 10px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        QuotaLine {
+            label: root.primary-label;
+            amount: root.primary-amount;
+            reset: root.primary-reset;
+            progress: root.primary-progress;
+            accent: root.accent;
+        }
+
+        QuotaLine {
+            label: root.secondary-label;
+            amount: root.secondary-amount;
+            reset: root.secondary-reset;
+            progress: root.secondary-progress;
+            accent: root.accent;
+        }
+    }
+}
+
+component ActionButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> emphasized: false;
+    callback clicked();
+
+    height: 34px;
+    width: 94px;
+    background: root.emphasized ? #6ed8b9 : #22313b;
+    border-color: root.emphasized ? #6ed8b9 : #344650;
+    border-width: 1px;
+    border-radius: 10px;
+
+    Text {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        text: root.label;
+        color: root.emphasized ? #10231f : #dce7e8;
+        font-size: 11px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    TouchArea {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component UsageWindow inherits Window {
+    title: "Usage Monitor — معاينة Slint";
+    width: 568px;
+    height: 760px;
+    background: #111a22;
+
+    in-out property <string> status-message: "القيم توضيحية فقط — لا يوجد اتصال بالحسابات";
+    callback dismiss-requested();
+    callback refresh-requested();
+    callback add-account-requested();
+
+    VerticalLayout {
+        padding: 17px;
+        spacing: 9px;
+
+        HorizontalLayout {
+            height: 42px;
+            spacing: 10px;
+
+            Rectangle {
+                width: 34px;
+                height: 34px;
+                background: #203b3b;
+                border-radius: 11px;
+
+                Rectangle { x: 9px; y: 18px; width: 4px; height: 8px; background: #6ed8b9; border-radius: 2px; }
+                Rectangle { x: 15px; y: 12px; width: 4px; height: 14px; background: #6ed8b9; border-radius: 2px; }
+                Rectangle { x: 21px; y: 8px; width: 4px; height: 18px; background: #6ed8b9; border-radius: 2px; }
+            }
+
+            VerticalLayout {
+                spacing: 1px;
+                Text {
+                    text: "مراقب الاستخدام";
+                    color: #edf3f3;
+                    font-size: 14px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "لوحة حسابات الذكاء الاصطناعي";
+                    color: #8fa1a8;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            Text {
+                text: "معاينة";
+                color: #83ddc2;
+                font-size: 10px;
+                vertical-alignment: center;
+            }
+
+            Rectangle {
+                width: 28px;
+                height: 28px;
+                background: #202d36;
+                border-radius: 8px;
+                Text {
+                    text: "×";
+                    color: #a8b7bb;
+                    font-size: 19px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: parent.width;
+                    height: parent.height;
+                }
+                TouchArea {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => { root.dismiss-requested(); }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            height: 43px;
+            alignment: space-between;
+
+            VerticalLayout {
+                spacing: 0px;
+                Text {
+                    text: "استخدام الحسابات";
+                    color: #edf3f3;
+                    font-size: 20px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "خمسة مزودات · نظرة سريعة";
+                    color: #8fa1a8;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 7px;
+                ActionButton {
+                    label: "تحديث";
+                    clicked => { root.refresh-requested(); }
+                }
+                ActionButton {
+                    label: "+ حساب";
+                    emphasized: true;
+                    clicked => { root.add-account-requested(); }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 31px;
+            background: #1b2e32;
+            border-color: #2a4546;
+            border-width: 1px;
+            border-radius: 9px;
+            HorizontalLayout {
+                padding-left: 11px;
+                padding-right: 11px;
+                spacing: 8px;
+                Rectangle {
+                    width: 6px;
+                    height: 6px;
+                    background: #e8b75d;
+                    border-radius: 3px;
+                }
+                Text {
+                    text: "وضع العرض — النسب وأوقات الإعادة بيانات افتراضية";
+                    color: #c8d1c7;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        VerticalLayout {
+            spacing: 7px;
+
+            ProviderCard {
+                provider-name: "Codex";
+                account-name: "الحساب الشخصي · Plus";
+                accent: #a99bff;
+                primary-label: "5 ساعات";
+                primary-amount: "متبقٍ 24%";
+                primary-reset: "بعد 4س 18د";
+                primary-progress: 0.24;
+                secondary-label: "أسبوعي";
+                secondary-amount: "متبقٍ 63%";
+                secondary-reset: "بعد يومين";
+                secondary-progress: 0.63;
+            }
+
+            ProviderCard {
+                provider-name: "Antigravity";
+                account-name: "Google · الحساب الأول";
+                accent: #78b5ff;
+                primary-label: "5 ساعات";
+                primary-amount: "متبقٍ 97%";
+                primary-reset: "بعد 4س 4د";
+                primary-progress: 0.97;
+                secondary-label: "أسبوعي";
+                secondary-amount: "متبقٍ 43%";
+                secondary-reset: "بعد يومين";
+                secondary-progress: 0.43;
+            }
+
+            ProviderCard {
+                provider-name: "Claude";
+                account-name: "Free · حساب تجريبي";
+                accent: #e6bd76;
+                primary-label: "الجلسة";
+                primary-amount: "متبقٍ 82%";
+                primary-reset: "بعد ساعتين";
+                primary-progress: 0.82;
+                secondary-label: "أسبوعي";
+                secondary-amount: "متبقٍ 57%";
+                secondary-reset: "بعد 6 أيام";
+                secondary-progress: 0.57;
+            }
+
+            ProviderCard {
+                provider-name: "OpenRouter";
+                account-name: "مفتاح تجريبي";
+                accent: #ff9d8c;
+                primary-label: "إنفاق الشهر";
+                primary-amount: "متبقٍ 42%";
+                primary-reset: "1 أكتوبر";
+                primary-progress: 0.42;
+                secondary-label: "الرصيد";
+                secondary-amount: "$12.40";
+                secondary-reset: "رصيد تجريبي";
+                secondary-progress: 0.68;
+            }
+
+            ProviderCard {
+                provider-name: "OpenCode Go";
+                account-name: "Workspace تجريبي";
+                accent: #6fd7d6;
+                primary-label: "نافذة الاستخدام";
+                primary-amount: "متبقٍ 71%";
+                primary-reset: "بعد 3س 20د";
+                primary-progress: 0.71;
+                secondary-label: "رصيد Zen";
+                secondary-amount: "$8.20";
+                secondary-reset: "تحديث توضيحي";
+                secondary-progress: 0.54;
+            }
+        }
+
+        Rectangle {
+            height: 29px;
+            background: #151f27;
+            border-radius: 8px;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                alignment: space-between;
+                Text {
+                    text: root.status-message;
+                    color: #91a4aa;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                Text {
+                    text: "محلي";
+                    color: #6ed8b9;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+export component UsageTray inherits SystemTrayIcon {
+    icon: @image-url("tray-mark.svg");
+    tooltip: "Usage Monitor — Slint prototype";
+
+    callback toggle-window();
+    callback show-window();
+    callback quit-app();
+
+    clicked => { toggle-window(); }
+
+    Menu {
+        MenuItem {
+            title: "إظهار لوحة الاستخدام";
+            activated => { show-window(); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "إنهاء النموذج";
+            activated => { quit-app(); }
+        }
+    }
+}
