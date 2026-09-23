@@ -11,7 +11,7 @@
 | Claude | تغطية OAuth وWeb وCLI وAdmin؛ تدوير Web session، واستعادة واحدة مربوطة بالحساب بعد 401 | سجلات الحساب القديمة التي لا تملك browser kind تحتاج ربطًا جديدًا؛ لم يُختبر مع خدمة حية |
 | Antigravity | مسارا التطبيق وOAuth؛ الملخص والعناصر الإضافية تتبعان تقسيم العائلات وكبح التكرار في CodexBar | إسناد آمن لمصدر `agy` مؤجل لغياب دليل هوية الحساب |
 | OpenRouter | `/key` و`/credits` وActivity مستقلة، مع HTTPS وسجل 30 يومًا مكتملًا وBYOK | لم يُختبر مع خدمة OpenRouter حية؛ الأدلة الحالية اختبارات اصطناعية ومقارنة مصدرية |
-| OpenCode Go | Console/API والـmeters و`endsAt` وحقول reset، مع redirects محدودة لنفس الأصل | إثراء الرصيد والـfallback ما زالا تسلسليين وأقل اكتمالًا من المرجع؛ لا يوجد اختبار حي |
+| OpenCode Go | Console/API والـmeters و`endsAt` وحقول reset، مع إثراء رصيد متوازٍ ومحدود | لا يوجد اختبار حي؛ مهلة الانتظار المطلوبة محليًا أطول من مسار الإثراء الاختياري |
 
 التوصية العامة ليست إعادة كتابة المزودين؛ الأساس موجود. الأولوية هي تثبيت دلالات المصدر والحساب، ثم سدّ حالات الفشل التي قد تنتج بيانات ناقصة أو تنسبها للحساب الخطأ. عولج Codex أولًا مع الحفاظ على قيد الجلسة المستوردة من المتصفح وتعدد الحسابات.
 
@@ -81,13 +81,13 @@
 
 ## OpenCode Go
 
-**المتوافق:** مسارات Console (`zen/go/v1/usage` و`console/api/...`) والـworkspace header، وmeters للـ5h/week/month، وتحويل micro-cent وfallbackات billing الأساسية ممثلة محليًا. أصبح `access.endsAt` موعد تجديد، ويملأ reset الشهر فقط عندما لا يرسل meter الشهر reset صالحًا؛ وتُقبل أسماء reset النسبية التي يستخدمها المرجع، ويُقرأ `usage.renewAt` قبل fallback إلى الجذر. التحويلات تُتبع حتى 10 مرات، فقط إلى HTTPS من الأصل نفسه، مع الحفاظ على دلالات 301/302/303 مقابل 307/308. هذه السياسة provider-specific ولا تغيّر النقل المشترك. استراتيجية المصدر account-scoped تتبع web/local/API، وSQLite المحلي معلّم كتقدير لا كقياس authoritative.
+**المتوافق:** مسارات Console (`zen/go/v1/usage` و`console/api/...`) والـworkspace header، وmeters للـ5h/week/month، وتحويل micro-cent وfallbackات billing الأساسية ممثلة محليًا. أصبح `access.endsAt` موعد تجديد، ويملأ reset الشهر فقط عندما لا يرسل meter الشهر reset صالحًا؛ وتُقبل أسماء reset النسبية التي يستخدمها المرجع، ويُقرأ `usage.renewAt` قبل fallback إلى الجذر. التحويلات تُتبع حتى 10 مرات، فقط إلى HTTPS من الأصل نفسه، مع الحفاظ على دلالات 301/302/303 مقابل 307/308. هذه السياسة provider-specific ولا تغيّر النقل المشترك. استراتيجية المصدر account-scoped تتبع web/local/API، وSQLite المحلي معلّم كتقدير لا كقياس authoritative. أصبح استعلام حالة الاشتراك ورصيد Console متوازيين، مع مهلة انضمام اختيارية 250ms لاستعمال الرصيد كإثراء؛ وعند غياب الاشتراك أو حقول rolling المطلوبة ينتظر الرصيد بحد أقصى 5 ثوانٍ كـfallback. الانتهاء بالمهلة يُسجل كتشخيص، وتُلغى المهمة غير المكتملة قبل الانتقال إلى fallback القديم.
 
 **الفروق المؤثرة:**
 
-1. إثراء رصيد Console المحلي ما زال بعد استعلام الاستخدام بالتتابع؛ CodexBar يبدأ طلب Zen balance اختياريًا بالتوازي مع استعلام الاشتراك ويضع مهلة محدودة للانضمام، ثم يجعله fallback إلزاميًا في حالات `noSubscription` أو payload usage المفقود فقط. يلزم بعد ذلك نقل قواعد التوازي والاسترداد مع الحفاظ على تشخيص المصدر وحدود الحساب.
+1. نُقلت قاعدة التوازي والاسترداد الأساسية من المرجع. الاختبارات تتحقق من بدء الطلبين بالتوازي، ربط Cookie و`x-org-id` بالجلسة ومساحة العمل نفسيهما، مهلة الإثراء، والـfallback عند غياب الاشتراك أو حقول rolling. أما أخطاء HTTP/JSON الأخرى فلا تُحوّل إلى fallback رصيد إلزامي؛ تستمر مسارات الصفحة والـlegacy الحالية.
 2. redirect المحلي أشد تقييدًا من المرجع عمدًا: يثبت scheme والـhost والـport معًا (HTTPS same-origin)، والمرجع يقارن الـhost ويشترط HTTPS. هذا يمنع إرسال Cookie/Bearer إلى منفذ مختلف، لكنه قد يرفض تحويلًا مشروعًا على منفذ بديل.
-3. لم يُجر اختبار بحساب OpenCode Go حي؛ قواعد النقل والتحليل مثبتة باختبارات اصطناعية ومقارنة مصدرية فقط.
+3. اختبارات الوحدة والعقود للحزمة نجحت بعد التغيير (123 + 21)، إضافة إلى اختبارات المسار الجديد؛ لم يُجر اختبار بحساب OpenCode Go حي، لذلك تبقى استجابة الخدمة الحقيقية وسلوك الجلسة غير مثبتين.
 
 **مراجع محلية:** [OpenCode Go adapter](../../crates/core/src/providers/opencode_go.rs)، [مصدر usage المحلي](../../crates/core/src/providers/opencode_go_local.rs)، [HTTP transport](../../crates/core/src/transport.rs).  
 **مرجع CodexBar:** [OpenCode provider notes](https://github.com/steipete/CodexBar/blob/main/docs/opencode.md)، [OpenCode Go fetcher](https://raw.githubusercontent.com/steipete/CodexBar/main/Sources/CodexBarCore/Providers/OpenCodeGo/OpenCodeGoUsageFetcher.swift)، [legacy fallback](https://raw.githubusercontent.com/steipete/CodexBar/main/Sources/CodexBarCore/Providers/OpenCodeGo/OpenCodeGoLegacyFallback.swift).
@@ -102,7 +102,7 @@ CodexBar يوثق نطاقًا تكيفيًا مماثلًا 2–30 دقيقة،
 
 ## ترتيب العمل المقترح
 
-1. **OpenCode Go:** استكمال إثراء الرصيد والـfallback المتوازي بعقود تغطي `noSubscription` وأخطاء الشبكة والتحليل؛ ثم اختبار الحساب الحي.
+1. **OpenCode Go:** اختبار الحساب الحي للتحقق من أن دلالات Console الحالية تطابق الخدمة الفعلية؛ التنفيذ المحلي للتوازي والـfallback الأساسي اكتمل.
 2. **Codex:** تقييم enrichment لوحة الويب الاختياري فقط إذا أضاف قيمة لازمة، وبعد التأكد من أنه لا يفرض WebView أو مصدر مصادقة خارج جلسة الحساب المستوردة؛ تظل مصادر `auth.json`/CLI مستبعدة. حارس reset الأسبوعي أصبح منفذًا.
 3. **Claude وOpenRouter:** التحقق الحي مع الحساب/المفتاح المخصص للاختبار عند توفرهما؛ الاختبارات الحالية اصطناعية.
 4. **Antigravity:** لا يُضاف مصدر `agy` قبل العثور على دليل موثوق يربطه بهوية الحساب، مع استمرار حفظ عزل الحسابات.
