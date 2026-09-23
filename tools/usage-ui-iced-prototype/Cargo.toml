@@ -8,3 +8,6 @@ publish = false
 async-channel = "2.5"
 iced = { version = "0.14.0", default-features = false, features = ["advanced-shaping", "thread-pool", "tiny-skia"] }
 tray-icon = { version = "0.25.1", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

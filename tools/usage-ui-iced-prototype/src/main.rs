@@ -191,9 +191,11 @@ impl App {
             window::scale_factor(window_id).then(move |scale_factor| {
                 window::monitor_size(window_id).then(move |monitor_size| {
                     let monitor_size = monitor_size.unwrap_or(Size::new(1920.0, 1080.0));
-                    let position = popup_position(tray_rect, scale_factor, monitor_size);
+                    let work_area = monitor_work_area(tray_rect)
+                        .unwrap_or_else(|| full_monitor_work_area(monitor_size, scale_factor));
+                    let position = popup_position(tray_rect, scale_factor, work_area);
                     preview_log(format!(
-                        "show popup: scale={scale_factor} monitor={monitor_size:?} position={position:?}"
+                        "show popup: scale={scale_factor} work_area={work_area:?} position={position:?}"
                     ));
                     window::move_to::<Message>(window_id, position)
                         .chain(window::set_mode::<Message>(
@@ -436,7 +438,143 @@ fn icon_pixels() -> Vec<u8> {
     pixels
 }
 
-fn popup_position(rect: tray_icon::Rect, scale_factor: f32, monitor: Size) -> Point {
+#[derive(Clone, Copy, Debug)]
+struct PhysicalWorkArea {
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+}
+
+#[derive(Clone, Copy)]
+enum MonitorEdge {
+    Left,
+    Top,
+    Right,
+    Bottom,
+}
+
+fn reserve_auto_hide_bar(
+    work_area: &mut PhysicalWorkArea,
+    monitor: PhysicalWorkArea,
+    edge: MonitorEdge,
+    thickness: f32,
+) {
+    match edge {
+        MonitorEdge::Left => work_area.left = work_area.left.max(monitor.left + thickness),
+        MonitorEdge::Top => work_area.top = work_area.top.max(monitor.top + thickness),
+        MonitorEdge::Right => work_area.right = work_area.right.min(monitor.right - thickness),
+        MonitorEdge::Bottom => work_area.bottom = work_area.bottom.min(monitor.bottom - thickness),
+    }
+}
+
+fn full_monitor_work_area(monitor: Size, scale_factor: f32) -> PhysicalWorkArea {
+    PhysicalWorkArea {
+        left: 0.0,
+        top: 0.0,
+        right: monitor.width * scale_factor,
+        bottom: monitor.height * scale_factor,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn monitor_work_area(rect: tray_icon::Rect) -> Option<PhysicalWorkArea> {
+    use std::mem::size_of;
+    use windows_sys::Win32::{
+        Foundation::POINT,
+        Graphics::Gdi::{
+            GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+        },
+        UI::{
+            Shell::{
+                ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETAUTOHIDEBAREX, APPBARDATA,
+                SHAppBarMessage,
+            },
+            WindowsAndMessaging::GetWindowRect,
+        },
+    };
+
+    let center = POINT {
+        x: (rect.position.x + f64::from(rect.size.width) / 2.0).round() as i32,
+        y: (rect.position.y + f64::from(rect.size.height) / 2.0).round() as i32,
+    };
+    let monitor = unsafe { MonitorFromPoint(center, MONITOR_DEFAULTTONEAREST) };
+    if monitor.is_null() {
+        return None;
+    }
+
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetMonitorInfoW(monitor, &mut info) } == 0 {
+        return None;
+    }
+
+    let monitor_bounds = PhysicalWorkArea {
+        left: info.rcMonitor.left as f32,
+        top: info.rcMonitor.top as f32,
+        right: info.rcMonitor.right as f32,
+        bottom: info.rcMonitor.bottom as f32,
+    };
+    let mut work_area = PhysicalWorkArea {
+        left: info.rcWork.left as f32,
+        top: info.rcWork.top as f32,
+        right: info.rcWork.right as f32,
+        bottom: info.rcWork.bottom as f32,
+    };
+
+    for (native_edge, edge) in [
+        (ABE_LEFT, MonitorEdge::Left),
+        (ABE_TOP, MonitorEdge::Top),
+        (ABE_RIGHT, MonitorEdge::Right),
+        (ABE_BOTTOM, MonitorEdge::Bottom),
+    ] {
+        let mut appbar_data = APPBARDATA {
+            cbSize: size_of::<APPBARDATA>() as u32,
+            uEdge: native_edge,
+            rc: info.rcMonitor,
+            ..Default::default()
+        };
+        let appbar = unsafe { SHAppBarMessage(ABM_GETAUTOHIDEBAREX, &mut appbar_data) }
+            as windows_sys::Win32::Foundation::HWND;
+        if appbar.is_null() {
+            continue;
+        }
+
+        let mut appbar_bounds = windows_sys::Win32::Foundation::RECT::default();
+        if unsafe { GetWindowRect(appbar, &mut appbar_bounds) } == 0 {
+            continue;
+        }
+
+        let thickness = match edge {
+            MonitorEdge::Left | MonitorEdge::Right => {
+                (appbar_bounds.right - appbar_bounds.left) as f32
+            }
+            MonitorEdge::Top | MonitorEdge::Bottom => {
+                (appbar_bounds.bottom - appbar_bounds.top) as f32
+            }
+        };
+        if thickness > 0.0 {
+            reserve_auto_hide_bar(&mut work_area, monitor_bounds, edge, thickness);
+            break;
+        }
+    }
+
+    (work_area.right > work_area.left && work_area.bottom > work_area.top)
+        .then_some(work_area)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn monitor_work_area(_: tray_icon::Rect) -> Option<PhysicalWorkArea> {
+    None
+}
+
+fn popup_position(
+    rect: tray_icon::Rect,
+    scale_factor: f32,
+    work_area: PhysicalWorkArea,
+) -> Point {
     let scale_factor = scale_factor.max(1.0);
     let icon_left = rect.position.x as f32;
     let icon_top = rect.position.y as f32;
@@ -444,16 +582,19 @@ fn popup_position(rect: tray_icon::Rect, scale_factor: f32, monitor: Size) -> Po
     let icon_height = rect.size.height as f32;
     let width = WINDOW_WIDTH * scale_factor;
     let height = WINDOW_HEIGHT * scale_factor;
-    let monitor_width = monitor.width * scale_factor;
-    let monitor_height = monitor.height * scale_factor;
-
-    let x =
-        (icon_left + icon_width / 2.0 - width / 2.0).clamp(0.0, (monitor_width - width).max(0.0));
+    let x = (icon_left + icon_width / 2.0 - width / 2.0)
+        .clamp(work_area.left, (work_area.right - width).max(work_area.left));
     let above = icon_top - height - GAP * scale_factor;
-    let y = if above >= 0.0 {
+    let below = icon_top + icon_height + GAP * scale_factor;
+    let y = if above >= work_area.top && above + height <= work_area.bottom {
         above
+    } else if below >= work_area.top && below + height <= work_area.bottom {
+        below
     } else {
-        (icon_top + icon_height + GAP * scale_factor).min((monitor_height - height).max(0.0))
+        above.clamp(
+            work_area.top,
+            (work_area.bottom - height).max(work_area.top),
+        )
     };
 
     Point::new(x / scale_factor, y / scale_factor)
@@ -645,32 +786,62 @@ mod tests {
     use tray_icon::menu::dpi::{PhysicalPosition, PhysicalSize};
 
     #[test]
-    fn popup_is_centered_on_tray_and_opens_above_bottom_taskbar() {
+    fn popup_stays_inside_work_area_above_bottom_taskbar() {
         let position = popup_position(
             tray_icon::Rect {
-                position: PhysicalPosition::new(1200.0, 1040.0),
-                size: PhysicalSize::new(24, 24),
+                position: PhysicalPosition::new(1608.0, 1200.0),
+                size: PhysicalSize::new(48, 87),
             },
-            1.0,
-            Size::new(1920.0, 1080.0),
+            1.5,
+            PhysicalWorkArea {
+                left: 0.0,
+                top: 0.0,
+                right: 1920.0,
+                bottom: 1102.0,
+            },
         );
 
-        assert!((position.x - (1200.0 + 12.0 - WINDOW_WIDTH / 2.0)).abs() < 0.01);
-        assert!(position.y < 1040.0);
+        assert!((position.x - 856.0).abs() < 0.01);
+        assert!((position.y - (1102.0 - WINDOW_HEIGHT * 1.5) / 1.5).abs() < 0.01);
+        assert!(position.x + WINDOW_WIDTH <= 1920.0 / 1.5);
+        assert!(position.y + WINDOW_HEIGHT <= 1102.0 / 1.5);
     }
 
     #[test]
-    fn popup_flips_below_top_taskbar_and_clamps_to_monitor_width() {
+    fn auto_hide_taskbar_is_reserved_even_when_monitor_work_area_includes_it() {
+        let monitor = PhysicalWorkArea {
+            left: 0.0,
+            top: 0.0,
+            right: 1920.0,
+            bottom: 1200.0,
+        };
+        let mut work_area = monitor;
+
+        reserve_auto_hide_bar(&mut work_area, monitor, MonitorEdge::Bottom, 98.0);
+        assert_eq!(work_area.bottom, 1102.0);
+
+        reserve_auto_hide_bar(&mut work_area, monitor, MonitorEdge::Bottom, 98.0);
+        assert_eq!(work_area.bottom, 1102.0);
+    }
+
+    #[test]
+    fn popup_flips_below_top_taskbar_and_clamps_to_work_area() {
         let position = popup_position(
             tray_icon::Rect {
                 position: PhysicalPosition::new(1900.0, 0.0),
                 size: PhysicalSize::new(24, 24),
             },
-            1.0,
-            Size::new(1920.0, 1080.0),
+            1.5,
+            PhysicalWorkArea {
+                left: 0.0,
+                top: 87.0,
+                right: 1920.0,
+                bottom: 1200.0,
+            },
         );
 
-        assert!(position.x + WINDOW_WIDTH <= 1920.0);
-        assert!(position.y > 24.0);
+        assert!(position.x + WINDOW_WIDTH <= 1920.0 / 1.5);
+        assert!(position.y >= 87.0 / 1.5);
+        assert!(position.y + WINDOW_HEIGHT <= 1200.0 / 1.5);
     }
 }
