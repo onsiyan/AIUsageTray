@@ -239,6 +239,13 @@ pub trait AccountStore: Send + Sync {
     async fn list(&self) -> Result<Vec<AccountRecord>, AccountStoreError>;
     async fn get(&self, account_id: AccountId) -> Result<Option<AccountRecord>, AccountStoreError>;
     async fn upsert(&self, account: &AccountRecord) -> Result<(), AccountStoreError>;
+    /// Saves a provider account without creating a second local row when that
+    /// provider's stable account identity is already linked. Providers that
+    /// do not supply a stable identity continue to use the local account id.
+    async fn upsert_or_get_by_provider_identity(
+        &self,
+        account: &AccountRecord,
+    ) -> Result<AccountRecord, AccountStoreError>;
     async fn remove(&self, account_id: AccountId) -> Result<(), AccountStoreError>;
 }
 
@@ -270,11 +277,58 @@ impl AccountStore for InMemoryAccountStore {
     }
 
     async fn upsert(&self, account: &AccountRecord) -> Result<(), AccountStoreError> {
-        self.accounts
-            .write()
-            .await
-            .insert(account.id, account.clone());
+        let mut accounts = self.accounts.write().await;
+        if account
+            .provider_account_id
+            .as_deref()
+            .is_some_and(|identity| {
+                accounts.values().any(|existing| {
+                    existing.id != account.id
+                        && existing.provider_id == account.provider_id
+                        && existing.provider_account_id.as_deref() == Some(identity)
+                })
+            })
+        {
+            return Err(AccountStoreError::DuplicateProviderIdentity);
+        }
+        accounts.insert(account.id, account.clone());
         Ok(())
+    }
+
+    async fn upsert_or_get_by_provider_identity(
+        &self,
+        account: &AccountRecord,
+    ) -> Result<AccountRecord, AccountStoreError> {
+        let mut accounts = self.accounts.write().await;
+        let existing = account.provider_account_id.as_deref().and_then(|identity| {
+            accounts
+                .values()
+                .filter(|existing| {
+                    existing.provider_id == account.provider_id
+                        && existing.provider_account_id.as_deref() == Some(identity)
+                })
+                .max_by(|left, right| {
+                    left.updated_at_utc
+                        .cmp(&right.updated_at_utc)
+                        .then_with(|| left.id.to_string().cmp(&right.id.to_string()))
+                })
+                .cloned()
+        });
+
+        if let Some(existing) = existing {
+            let resolved = if existing.id == account.id {
+                account.clone()
+            } else {
+                existing
+                    .with_identity(Some(&account.email), account.provider_account_id.as_deref())
+                    .map_err(|error| AccountStoreError::InvalidData(error.to_string()))?
+            };
+            accounts.insert(resolved.id, resolved.clone());
+            return Ok(resolved);
+        }
+
+        accounts.insert(account.id, account.clone());
+        Ok(account.clone())
     }
 
     async fn remove(&self, account_id: AccountId) -> Result<(), AccountStoreError> {
@@ -295,6 +349,8 @@ pub enum AccountError {
 pub enum AccountStoreError {
     #[error("account store failed: {0}")]
     Storage(String),
+    #[error("an account with this provider identity already exists")]
+    DuplicateProviderIdentity,
     #[error("invalid account data: {0}")]
     InvalidData(String),
 }

@@ -4,7 +4,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::{path::Path, str::FromStr, sync::Mutex};
 
 pub struct SqliteStore {
@@ -111,6 +111,37 @@ impl SqliteStore {
             "TEXT NOT NULL DEFAULT 'authoritative'",
         )?;
         ensure_column(&connection, "usage_snapshots", "metrics_json", "TEXT NULL")?;
+        connection
+            .execute_batch(
+                r#"
+                CREATE TRIGGER IF NOT EXISTS trg_accounts_provider_identity_unique_insert
+                BEFORE INSERT ON accounts
+                WHEN NEW.provider_account_id IS NOT NULL
+                    AND EXISTS (
+                        SELECT 1 FROM accounts
+                        WHERE provider_id = NEW.provider_id
+                            AND provider_account_id = NEW.provider_account_id
+                            AND account_id <> NEW.account_id
+                    )
+                BEGIN
+                    SELECT RAISE(ABORT, 'duplicate provider identity');
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS trg_accounts_provider_identity_unique_update
+                BEFORE UPDATE OF provider_id, provider_account_id ON accounts
+                WHEN NEW.provider_account_id IS NOT NULL
+                    AND EXISTS (
+                        SELECT 1 FROM accounts
+                        WHERE provider_id = NEW.provider_id
+                            AND provider_account_id = NEW.provider_account_id
+                            AND account_id <> NEW.account_id
+                    )
+                BEGIN
+                    SELECT RAISE(ABORT, 'duplicate provider identity');
+                END;
+                "#,
+            )
+            .map_err(sqlite_error)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -153,47 +184,46 @@ impl AccountStore for SqliteStore {
 
     async fn upsert(&self, account: &AccountRecord) -> Result<(), AccountStoreError> {
         let connection = self.lock().map_err(account_error)?;
-        connection
-            .execute(
-                r#"
-                INSERT INTO accounts (
-                    account_id, label, email, provider_id, provider_account_id,
-                    browser_kind, browser_profile_id, workspace_id, codex_home,
-                    openai_account_id, status, created_at_utc, updated_at_utc)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-                ON CONFLICT(account_id) DO UPDATE SET
-                    label = excluded.label,
-                    email = excluded.email,
-                    provider_id = excluded.provider_id,
-                    provider_account_id = excluded.provider_account_id,
-                    browser_kind = excluded.browser_kind,
-                    browser_profile_id = excluded.browser_profile_id,
-                    workspace_id = excluded.workspace_id,
-                    codex_home = excluded.codex_home,
-                    openai_account_id = excluded.openai_account_id,
-                    status = excluded.status,
-                    updated_at_utc = excluded.updated_at_utc
-                "#,
-                params![
-                    account.id.to_string(),
-                    account.label,
-                    account.email,
-                    account.provider_id,
-                    account.provider_account_id,
-                    account.browser_kind,
-                    account.browser_profile_id,
-                    account.workspace_id,
-                    account.codex_home,
-                    (account.provider_id == OPENAI)
-                        .then(|| account.provider_account_id.clone())
-                        .flatten(),
-                    account.status as i32,
-                    account.created_at_utc.to_rfc3339(),
-                    account.updated_at_utc.to_rfc3339(),
-                ],
-            )
-            .map(|_| ())
-            .map_err(sqlite_account_error)
+        write_account(&connection, account).map_err(sqlite_account_error)
+    }
+
+    async fn upsert_or_get_by_provider_identity(
+        &self,
+        account: &AccountRecord,
+    ) -> Result<AccountRecord, AccountStoreError> {
+        let mut connection = self.lock().map_err(account_error)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_account_error)?;
+
+        let existing = if let Some(provider_account_id) = account.provider_account_id.as_deref() {
+            transaction
+                .query_row(
+                    "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, codex_home, status, created_at_utc, updated_at_utc FROM accounts WHERE provider_id = ?1 AND provider_account_id = ?2 ORDER BY updated_at_utc DESC, created_at_utc, account_id LIMIT 1",
+                    params![account.provider_id, provider_account_id],
+                    read_account,
+                )
+                .optional()
+                .map_err(sqlite_account_error)?
+        } else {
+            None
+        };
+
+        let resolved = if let Some(existing) = existing {
+            if existing.id == account.id {
+                account.clone()
+            } else {
+                existing
+                    .with_identity(Some(&account.email), account.provider_account_id.as_deref())
+                    .map_err(|error| AccountStoreError::InvalidData(error.to_string()))?
+            }
+        } else {
+            account.clone()
+        };
+
+        write_account(&transaction, &resolved).map_err(sqlite_account_error)?;
+        transaction.commit().map_err(sqlite_account_error)?;
+        Ok(resolved)
     }
 
     async fn remove(&self, account_id: AccountId) -> Result<(), AccountStoreError> {
@@ -206,6 +236,48 @@ impl AccountStore for SqliteStore {
             .map(|_| ())
             .map_err(sqlite_account_error)
     }
+}
+
+fn write_account(connection: &Connection, account: &AccountRecord) -> Result<(), rusqlite::Error> {
+    connection.execute(
+        r#"
+        INSERT INTO accounts (
+            account_id, label, email, provider_id, provider_account_id,
+            browser_kind, browser_profile_id, workspace_id, codex_home,
+            openai_account_id, status, created_at_utc, updated_at_utc)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        ON CONFLICT(account_id) DO UPDATE SET
+            label = excluded.label,
+            email = excluded.email,
+            provider_id = excluded.provider_id,
+            provider_account_id = excluded.provider_account_id,
+            browser_kind = excluded.browser_kind,
+            browser_profile_id = excluded.browser_profile_id,
+            workspace_id = excluded.workspace_id,
+            codex_home = excluded.codex_home,
+            openai_account_id = excluded.openai_account_id,
+            status = excluded.status,
+            updated_at_utc = excluded.updated_at_utc
+        "#,
+        params![
+            account.id.to_string(),
+            account.label,
+            account.email,
+            account.provider_id,
+            account.provider_account_id,
+            account.browser_kind,
+            account.browser_profile_id,
+            account.workspace_id,
+            account.codex_home,
+            (account.provider_id == OPENAI)
+                .then(|| account.provider_account_id.clone())
+                .flatten(),
+            account.status as i32,
+            account.created_at_utc.to_rfc3339(),
+            account.updated_at_utc.to_rfc3339(),
+        ],
+    )?;
+    Ok(())
 }
 
 #[async_trait]
@@ -453,5 +525,13 @@ fn account_error(error: StorageError) -> AccountStoreError {
 }
 
 fn sqlite_account_error(error: rusqlite::Error) -> AccountStoreError {
-    AccountStoreError::Storage(error.to_string())
+    if matches!(
+        &error,
+        rusqlite::Error::SqliteFailure(_, Some(message))
+            if message.contains("duplicate provider identity")
+    ) {
+        AccountStoreError::DuplicateProviderIdentity
+    } else {
+        AccountStoreError::Storage(error.to_string())
+    }
 }

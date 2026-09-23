@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use codex_usage_core::{
-    accounts::{ANTIGRAVITY, AccountRecord, AccountStore, CLAUDE, OPENROUTER},
+    accounts::{ANTIGRAVITY, AccountRecord, AccountStore, CLAUDE, OPENAI, OPENROUTER},
     auth::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
         AccountBrowserSessionRefresher, AuthError, CookieValue, InMemoryAuthMaterialStore,
@@ -967,6 +967,74 @@ async fn sqlite_store_round_trips_account_and_snapshot() {
         snapshot.response_account_id
     );
     assert_eq!(loaded_snapshot.primary.unwrap().used_percent, 25.0);
+}
+
+#[tokio::test]
+async fn sqlite_account_identity_upsert_reuses_only_the_same_provider_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("accounts.db")).unwrap();
+    let first = AccountRecord::create(
+        "Antigravity personal",
+        "user@example.com",
+        Some("google-subject-1".to_owned()),
+        ANTIGRAVITY,
+        None,
+    )
+    .unwrap();
+    let saved_first = store
+        .upsert_or_get_by_provider_identity(&first)
+        .await
+        .unwrap();
+    assert_eq!(saved_first.id, first.id);
+
+    let duplicate = AccountRecord::create(
+        "Antigravity duplicate",
+        "user@example.com",
+        Some("google-subject-1".to_owned()),
+        ANTIGRAVITY,
+        None,
+    )
+    .unwrap();
+    let saved_duplicate = store
+        .upsert_or_get_by_provider_identity(&duplicate)
+        .await
+        .unwrap();
+    assert_eq!(saved_duplicate.id, first.id);
+    assert_eq!(saved_duplicate.label, "Antigravity personal");
+    assert_eq!(store.list().await.unwrap().len(), 1);
+    assert!(matches!(
+        store.upsert(&duplicate).await,
+        Err(codex_usage_core::accounts::AccountStoreError::DuplicateProviderIdentity)
+    ));
+
+    let second_antigravity_identity = AccountRecord::create(
+        "Antigravity second Google account",
+        "user@example.com",
+        Some("google-subject-2".to_owned()),
+        ANTIGRAVITY,
+        None,
+    )
+    .unwrap();
+    let saved_second = store
+        .upsert_or_get_by_provider_identity(&second_antigravity_identity)
+        .await
+        .unwrap();
+    assert_eq!(saved_second.id, second_antigravity_identity.id);
+
+    let other_provider_same_subject = AccountRecord::create(
+        "OpenAI account",
+        "user@example.com",
+        Some("google-subject-1".to_owned()),
+        OPENAI,
+        None,
+    )
+    .unwrap();
+    let saved_other_provider = store
+        .upsert_or_get_by_provider_identity(&other_provider_same_subject)
+        .await
+        .unwrap();
+    assert_eq!(saved_other_provider.id, other_provider_same_subject.id);
+    assert_eq!(store.list().await.unwrap().len(), 3);
 }
 
 #[derive(Default)]
