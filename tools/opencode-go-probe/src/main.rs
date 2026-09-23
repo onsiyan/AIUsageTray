@@ -117,7 +117,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         account
     };
 
-    println!("Account ID: {}", account.id);
+    let account = account_store
+        .get(account.id)
+        .await?
+        .ok_or("OpenCode Go account disappeared after its browser session was saved")?;
+    announce_cli_account_reference(&account);
 
     // Account addition must validate the captured session against the same
     // web source that will be used by the eventual tray refresh.  Do not let
@@ -144,16 +148,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .refresh_account(account.clone(), RefreshReason::Manual)
         .await;
     if outcome.status != RefreshStatus::Updated {
+        let account_ref = account.account_ref.as_deref().unwrap_or("the account");
         if let Some(error) = outcome.error {
             return Err(format!(
-                "OpenCode Go usage validation failed: {:?}: {}. The account and browser session were preserved; retry with --resume-account {}.",
-                error.code, error.message, account.id
+                "OpenCode Go usage validation failed: {:?}: {}. The account and browser session were preserved; retry with `codex-usage usage refresh {account_ref}`.",
+                error.code, error.message
             )
             .into());
         }
         return Err(format!(
-            "OpenCode Go usage validation failed: {:?}. The account and browser session were preserved; retry with --resume-account {}.",
-            outcome.status, account.id
+            "OpenCode Go usage validation failed: {:?}. The account and browser session were preserved; retry with `codex-usage usage refresh {account_ref}`.",
+            outcome.status
         )
         .into());
     }
@@ -281,6 +286,14 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
         }
     }
     Ok(arguments)
+}
+
+fn announce_cli_account_reference(account: &AccountRecord) {
+    if env::var_os("CODEX_USAGE_CLI_CHILD").is_some()
+        && let Some(account_ref) = account.account_ref.as_deref()
+    {
+        println!("CODEX_USAGE_ACCOUNT_REF={account_ref}");
+    }
 }
 
 fn extension_path() -> PathBuf {

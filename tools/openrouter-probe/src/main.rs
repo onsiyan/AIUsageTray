@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sqlite = Arc::new(SqliteStore::open(&database_path)?);
     let account_store: Arc<dyn AccountStore> = sqlite.clone();
-    let snapshot_store: Arc<dyn UsageSnapshotStore> = sqlite;
+    let snapshot_store: Arc<dyn UsageSnapshotStore> = sqlite.clone();
     let label = arguments
         .label
         .as_deref()
@@ -129,6 +129,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             refresh_config,
         )?
     };
+
+    if !arguments.ephemeral {
+        let account = sqlite
+            .get(account.id)
+            .await?
+            .ok_or("OpenRouter account disappeared after its key was saved")?;
+        announce_cli_account_reference(&account);
+    }
 
     println!("Database: {}", database_path.display());
     println!("Account: {}", account.label);
@@ -244,6 +252,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     Ok(())
+}
+
+fn announce_cli_account_reference(account: &AccountRecord) {
+    if std::env::var_os("CODEX_USAGE_CLI_CHILD").is_some()
+        && let Some(account_ref) = account.account_ref.as_deref()
+    {
+        println!("CODEX_USAGE_ACCOUNT_REF={account_ref}");
+    }
 }
 
 async fn find_or_create_account(

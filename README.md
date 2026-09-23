@@ -106,18 +106,38 @@ cargo check --workspace
 
 ## Shared usage CLI
 
-Build and run the unified command:
+Build the workspace so the CLI and its provider-specific account-login helpers
+are placed together, then run the unified command:
 
 ```powershell
-cargo run -p codex-usage-cli -- account list
-cargo run -p codex-usage-cli -- --json account list
-cargo run -p codex-usage-cli -- account get ch1
-cargo run -p codex-usage-cli -- usage get ch1 --json
-cargo run -p codex-usage-cli -- usage refresh ch1
-cargo run -p codex-usage-cli -- usage refresh --all --provider codex --json
-cargo run -p codex-usage-cli -- account alias set ch1 "Personal"
-cargo run -p codex-usage-cli -- status --json
+cargo build --workspace
+.\target\debug\codex-usage.exe account list
+.\target\debug\codex-usage.exe --json account list
+.\target\debug\codex-usage.exe account get ch1
+.\target\debug\codex-usage.exe usage get ch1 --json
+.\target\debug\codex-usage.exe usage refresh ch1
+.\target\debug\codex-usage.exe usage refresh --all --provider codex --json
+.\target\debug\codex-usage.exe account alias set ch1 "Personal"
+.\target\debug\codex-usage.exe status --json
 ```
+
+Add accounts through their existing provider-specific login flows:
+
+```powershell
+.\target\debug\codex-usage.exe account add codex --alias "Personal Codex"
+.\target\debug\codex-usage.exe account add claude --alias "Work Claude"
+.\target\debug\codex-usage.exe account add antigravity
+.\target\debug\codex-usage.exe account add opencode-go
+.\target\debug\codex-usage.exe account add openrouter --api-key-stdin
+```
+
+Codex, Claude, Antigravity, and OpenCode Go keep their existing browser and
+OAuth/session-capture behavior. OpenRouter reads its key from
+`OPENROUTER_API_KEY`, `--api-key-stdin`, or `--credentials-stdin` (primary key
+on line 1, optional management key on line 2); secrets are never accepted as
+command-line values. Interactive progress is sent to stderr when `--json` is
+selected, leaving one machine-readable result on stdout. Keep the CLI and all
+five provider-login helper executables together when packaging the command.
 
 Account references are stable selectors shared by people and agents: `chN`
 for Codex, `ccN` for Claude, `orN` for OpenRouter, `ocN` for OpenCode Go, and
@@ -143,9 +163,10 @@ is unavailable). Pass `--database PATH` to any CLI command to select another
 database. Account refresh uses credentials stored per account in Windows
 Credential Manager and the account-scoped Codex/Antigravity OAuth refresh
 credentials. It does not apply ambient environment API keys or the global
-Codex/Claude CLI session to every matching account. Account creation and
-credential removal remain in the provider-specific login flows so the CLI
-cannot orphan secure credentials.
+Codex/Claude CLI session to every matching account. The unified `account add`
+command delegates to the existing provider-specific login helpers so it does
+not implement a second authentication path; account deletion is not currently
+exposed by the CLI.
 
 To run the real Windows OAuth probe:
 

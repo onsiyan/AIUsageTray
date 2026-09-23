@@ -126,6 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &login.credential,
     )
     .await?;
+    announce_cli_account_reference(&account);
 
     println!("OpenAI OAuth account linked: {}", account.email);
     println!("Account: {}", account.email);
@@ -152,6 +153,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
     Ok(())
+}
+
+fn announce_cli_account_reference(account: &AccountRecord) {
+    if std::env::var_os("CODEX_USAGE_CLI_CHILD").is_some()
+        && let Some(account_ref) = account.account_ref.as_deref()
+    {
+        println!("CODEX_USAGE_ACCOUNT_REF={account_ref}");
+    }
 }
 
 async fn persist_oauth_login_account(

@@ -155,6 +155,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     secure_material_store
         .save(account.id, &material_to_store)
         .await?;
+    let account = account_store
+        .get(account.id)
+        .await?
+        .ok_or("Claude account disappeared after its browser session was saved")?;
+    announce_cli_account_reference(&account);
 
     let stored_material = Arc::new(StoredAuthMaterialProvider::new(
         secure_material_store.clone(),
@@ -222,6 +227,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Database: {}", database_path.display());
     Ok(())
+}
+
+fn announce_cli_account_reference(account: &AccountRecord) {
+    if env::var_os("CODEX_USAGE_CLI_CHILD").is_some()
+        && let Some(account_ref) = account.account_ref.as_deref()
+    {
+        println!("CODEX_USAGE_ACCOUNT_REF={account_ref}");
+    }
 }
 
 async fn find_or_create_account(

@@ -19,7 +19,7 @@ use codex_usage_windows_auth::{
     WindowsCredentialManagerAuthMaterialStore, WindowsCredentialManagerStore,
     WindowsDefaultBrowserLauncher,
 };
-use std::{sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 type Transport = ReqwestUsageHttpTransport;
 type CredentialStore = WindowsCredentialManagerStore;
@@ -28,17 +28,25 @@ type Browser = WindowsDefaultBrowserLauncher;
 type Authorization =
     OAuthAuthorizationService<Transport, CredentialStore, CallbackFactory, Browser>;
 
+#[derive(Debug, Default)]
+struct Arguments {
+    database: Option<PathBuf>,
+    label: Option<String>,
+    force_new_account: bool,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let force_new_account =
-        std::env::args().any(|argument| matches!(argument.as_str(), "--new" | "--login-new"));
-    let database_path = default_accounts_database_path();
+    let arguments = parse_arguments()?;
+    let database_path = arguments
+        .database
+        .unwrap_or_else(default_accounts_database_path);
     let account_store = Arc::new(SqliteStore::open(&database_path)?);
     let transport = Arc::new(ReqwestUsageHttpTransport::new(Duration::from_secs(45))?);
     let credential_store = Arc::new(WindowsCredentialManagerStore);
     let provider = oauth_definition();
 
-    let account = if let Some(account) = if !force_new_account {
+    let account = if let Some(account) = if !arguments.force_new_account {
         account_store
             .list()
             .await?
@@ -50,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Reusing the Rust-isolated Antigravity account.");
         account
     } else {
-        if force_new_account {
+        if arguments.force_new_account {
             println!("Opening a new isolated Antigravity account login.");
         }
         println!("The default browser will open for the Rust OAuth test.");
@@ -60,7 +68,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             credential_store.clone(),
         ));
         let pending = AccountRecord::create(
-            "Antigravity account",
+            arguments
+                .label
+                .as_deref()
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or("Antigravity account"),
             "pending@local.invalid",
             None,
             ANTIGRAVITY,
@@ -86,6 +98,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         account
     };
 
+    announce_cli_account_reference(&account);
+
     probe_and_print(
         &database_path,
         transport.clone(),
@@ -108,6 +122,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Rust OAuth probe completed successfully.");
     println!("Rust-local database: {}", database_path.display());
     Ok(())
+}
+
+fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
+    let mut arguments = Arguments::default();
+    let mut values = std::env::args_os().skip(1);
+    while let Some(argument) = values.next() {
+        match argument.to_string_lossy().as_ref() {
+            "--database" => {
+                arguments.database = Some(PathBuf::from(
+                    values.next().ok_or("--database requires a path")?,
+                ));
+            }
+            "--label" => {
+                arguments.label = Some(
+                    values
+                        .next()
+                        .ok_or("--label requires a value")?
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+            "--new" | "--login-new" => arguments.force_new_account = true,
+            "--help" | "-h" => {
+                println!(
+                    "Usage: codex-usage-oauth-probe [--database PATH] [--label LABEL] [--new]\n\nAdds an Antigravity account through Google OAuth in the default browser, then probes its account-scoped usage."
+                );
+                std::process::exit(0);
+            }
+            other => return Err(format!("unknown argument: {other}").into()),
+        }
+    }
+    Ok(arguments)
+}
+
+fn announce_cli_account_reference(account: &AccountRecord) {
+    if std::env::var_os("CODEX_USAGE_CLI_CHILD").is_some()
+        && let Some(account_ref) = account.account_ref.as_deref()
+    {
+        println!("CODEX_USAGE_ACCOUNT_REF={account_ref}");
+    }
 }
 
 async fn persist_oauth_login_account(
