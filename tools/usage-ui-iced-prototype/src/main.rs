@@ -9,13 +9,13 @@ use iced::{
     Alignment, Background, Border, Color, Element, Event, Fill, Length, Point, Shadow, Size,
     Subscription, Task, Theme, event,
     futures::{SinkExt, Stream},
-    widget::{column, container, progress_bar, row, text},
+    widget::{button, column, container, mouse_area, progress_bar, row, scrollable, text},
     window,
 };
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 const WINDOW_WIDTH: f32 = 424.0;
-const WINDOW_HEIGHT: f32 = 646.0;
+const WINDOW_HEIGHT: f32 = 690.0;
 const GAP: f32 = 8.0;
 
 thread_local! {
@@ -47,7 +47,8 @@ fn main() -> iced::Result {
         resizable: true,
         closeable: true,
         minimizable: true,
-        decorations: true,
+        decorations: false,
+        transparent: true,
         level: window::Level::Normal,
         exit_on_close_request: false,
         platform_specific: window::settings::PlatformSpecific {
@@ -171,6 +172,16 @@ impl App {
                 }
             }
             Message::RuntimeEvent(_) => Task::none(),
+            Message::DragWindow => self.window_id.map(window::drag).unwrap_or_else(Task::none),
+            Message::MinimizeWindow => self
+                .window_id
+                .map(|id| window::minimize(id, true))
+                .unwrap_or_else(Task::none),
+            Message::ToggleMaximize => self
+                .window_id
+                .map(window::toggle_maximize)
+                .unwrap_or_else(Task::none),
+            Message::CloseButton => self.hide_popup(),
         }
     }
 
@@ -224,6 +235,32 @@ impl App {
     }
 
     fn view(&self) -> Element<'_, Message> {
+        let title_bar = container(
+            row![
+                row![
+                    window_control_button("−", Message::MinimizeWindow, false),
+                    window_control_button("□", Message::ToggleMaximize, false),
+                    window_control_button("×", Message::CloseButton, true),
+                ]
+                .spacing(3)
+                .align_y(Alignment::Center),
+                mouse_area(
+                    container(text("Usage Monitor Preview").size(12).color(muted()))
+                        .width(Fill)
+                        .height(Length::Fill)
+                        .align_x(Alignment::End)
+                        .align_y(Alignment::Center),
+                )
+                .on_press(Message::DragWindow),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .width(Fill),
+        )
+        .width(Fill)
+        .height(40)
+        .padding([4, 8]);
+
         let header = row![
             column![
                 text("مراقبة الاستخدام").size(19).color(Color::WHITE),
@@ -234,7 +271,8 @@ impl App {
             container(text("U").size(15).color(Color::WHITE))
                 .width(34)
                 .height(34)
-                .center(Length::Fill)
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center)
                 .style(|_| surface_style(Color::from_rgb8(100, 86, 228))),
         ]
         .spacing(12)
@@ -312,21 +350,27 @@ impl App {
         ]
         .align_y(Alignment::Center);
 
-        let content = column![header, summary, accounts, footer]
-            .spacing(15)
-            .padding(18)
-            .width(Fill);
-
-        let content = if let Some(error) = &self.tray_error {
-            content.push(text(error).size(11).color(Color::from_rgb8(255, 160, 150)))
+        let provider_content = column![accounts, footer].spacing(15);
+        let provider_content = if let Some(error) = &self.tray_error {
+            provider_content.push(text(error).size(11).color(Color::from_rgb8(255, 160, 150)))
         } else {
-            content
+            provider_content
         };
+
+        let content = column![
+            title_bar,
+            header,
+            summary,
+            scrollable(provider_content).height(Fill),
+        ]
+        .spacing(15)
+        .padding(18)
+        .width(Fill);
 
         container(content)
             .width(Fill)
             .height(Fill)
-            .style(|_| surface_style(Color::from_rgb8(18, 20, 27)))
+            .style(|_| window_frame_style())
             .into()
     }
 }
@@ -341,6 +385,10 @@ enum Message {
     OpenPreview,
     PreviewRect(Option<tray_icon::Rect>),
     RuntimeEvent(Event),
+    DragWindow,
+    MinimizeWindow,
+    ToggleMaximize,
+    CloseButton,
 }
 
 fn install_tray(sender: Sender<TrayIconEvent>) -> Result<(), String> {
@@ -508,6 +556,49 @@ fn card_style() -> container::Style {
             color: Color::from_rgb8(45, 48, 59),
             width: 1.0,
             radius: 12.0.into(),
+        },
+        text_color: None,
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+fn window_control_button(
+    label: &'static str,
+    message: Message,
+    is_close: bool,
+) -> Element<'static, Message> {
+    button(text(label).size(15))
+        .on_press(message)
+        .width(30)
+        .height(27)
+        .style(move |theme, status| {
+            let mut style = button::text(theme, status);
+            let is_hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            let background = match (is_close, is_hovered) {
+                (true, true) => Color::from_rgb8(150, 50, 56),
+                (false, true) => Color::from_rgb8(51, 54, 66),
+                _ => Color::TRANSPARENT,
+            };
+            style.background = Some(Background::Color(background));
+            style.text_color = if is_close {
+                Color::from_rgb8(255, 185, 185)
+            } else {
+                Color::from_rgb8(230, 232, 238)
+            };
+            style.border = Border::default().rounded(6.0);
+            style
+        })
+        .into()
+}
+
+fn window_frame_style() -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color::from_rgb8(18, 20, 27))),
+        border: Border {
+            color: Color::WHITE,
+            width: 1.0,
+            radius: 16.0.into(),
         },
         text_color: None,
         shadow: Shadow::default(),
