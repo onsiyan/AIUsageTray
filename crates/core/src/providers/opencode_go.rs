@@ -875,11 +875,9 @@ fn parse_api_snapshot(root: &Value, account: &AccountRecord) -> UsageProbeResult
         .and_then(|value| parse_window(value, UsageWindowKind::Secondary, "Weekly", true, false));
     let monthly = find_window(usage, WindowRole::Monthly)
         .and_then(|value| parse_window(value, UsageWindowKind::Additional, "Monthly", true, false));
-    let renews_at = parse_reset_at(
-        root,
-        Utc::now(),
-        &["renewAt", "renew_at", "renewsAt", "renews_at"],
-    );
+    let renew_keys = ["renewAt", "renew_at", "renewsAt", "renews_at"];
+    let renews_at = parse_reset_at(usage, Utc::now(), &renew_keys)
+        .or_else(|| parse_reset_at(root, Utc::now(), &renew_keys));
     let Some(rolling) = rolling else {
         return invalid_payload("OpenCode Go API", "rolling usage was not found");
     };
@@ -1973,6 +1971,49 @@ mod tests {
         let parsed =
             parse_window(&value, UsageWindowKind::Primary, "Rolling", true, false).unwrap();
         assert_eq!(parsed.window.used_percent, 1.0);
+    }
+
+    #[test]
+    fn api_usage_renewal_precedes_root_and_root_remains_a_fallback() {
+        let nested_renewal = (Utc::now() + Duration::days(5)).to_rfc3339();
+        let root_renewal = (Utc::now() + Duration::days(10)).to_rfc3339();
+        let nested_root = json!({
+            "renewAt": root_renewal,
+            "usage": {
+                "renewAt": nested_renewal,
+                "rolling": {"usagePercent": 45.0}
+            }
+        });
+        let root_fallback = json!({
+            "renewAt": root_renewal,
+            "usage": {"rolling": {"usagePercent": 45.0}}
+        });
+        let account = AccountRecord::create(
+            "go",
+            "go@example.com",
+            None,
+            OPENCODE_GO,
+            Some("wrk_123".to_owned()),
+        )
+        .unwrap();
+        let renewal_for = |root: &Value| {
+            parse_api_snapshot(root, &account)
+                .snapshot
+                .unwrap()
+                .metrics
+                .into_iter()
+                .find(|metric| metric.key == "subscription-renewal")
+                .and_then(|metric| metric.reset_at_utc)
+        };
+
+        assert_eq!(
+            renewal_for(&nested_root),
+            parse_date_value(&json!(nested_renewal), Utc::now())
+        );
+        assert_eq!(
+            renewal_for(&root_fallback),
+            parse_date_value(&json!(root_renewal), Utc::now())
+        );
     }
 
     #[test]
