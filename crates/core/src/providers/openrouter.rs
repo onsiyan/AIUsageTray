@@ -453,12 +453,24 @@ impl UsageAdapter for OpenRouterUsageAdapter {
                 if self.activity_group_by_workspace {
                     query.push(("group_by", "workspace".to_owned()));
                 }
-                match self
-                    .get_with_query("activity", &material, activity_token, &query)
-                    .await
-                {
-                    Ok(response) if response.is_success() => {
-                        match parse_activity_report(&response.body) {
+                let latest_completed_date = now.date_naive() - Duration::days(1);
+                let cutoff_date = latest_completed_date - Duration::days(29);
+                let mut latest_query = query.clone();
+                latest_query.push(("date", latest_completed_date.format("%Y-%m-%d").to_string()));
+                let (history_result, latest_day_result) = tokio::join!(
+                    self.get_with_query("activity", &material, activity_token, &query),
+                    self.get_with_query("activity", &material, activity_token, &latest_query),
+                );
+                match (history_result, latest_day_result) {
+                    (Ok(history), Ok(latest_day))
+                        if history.is_success() && latest_day.is_success() =>
+                    {
+                        match parse_activity_report(
+                            &history.body,
+                            &latest_day.body,
+                            cutoff_date,
+                            latest_completed_date,
+                        ) {
                             Ok(report) => {
                                 metrics.extend(report.metrics);
                                 metrics.push(report.summary);
@@ -469,10 +481,15 @@ impl UsageAdapter for OpenRouterUsageAdapter {
                             }
                         }
                     }
-                    Ok(response) => {
-                        source_diagnostics.push(response_diagnostic("activity", &response));
+                    (Ok(history), Ok(latest_day)) => {
+                        let response = if history.is_success() {
+                            &latest_day
+                        } else {
+                            &history
+                        };
+                        source_diagnostics.push(response_diagnostic("activity", response));
                     }
-                    Err(error) => {
+                    (Err(error), _) | (_, Err(error)) => {
                         source_diagnostics.push(transport_diagnostic("activity", &error));
                     }
                 }
@@ -638,16 +655,78 @@ struct ActivityReport {
     summary: UsageMetric,
 }
 
-fn parse_activity_report(body: &str) -> Result<ActivityReport, String> {
-    let root = serde_json::from_str::<Value>(body)
-        .map_err(|error| format!("activity JSON could not be parsed: {error}"))?;
-    let rows = root
-        .get("data")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "activity response is missing data[]".to_owned())?;
+fn parse_activity_report(
+    history_body: &str,
+    latest_day_body: &str,
+    cutoff_date: NaiveDate,
+    latest_completed_date: NaiveDate,
+) -> Result<ActivityReport, String> {
+    let mut rows = Vec::new();
+    let mut seen = HashMap::<String, String>::new();
+    let mut total_source_rows = 0;
+    for body in [history_body, latest_day_body] {
+        let root = serde_json::from_str::<Value>(body)
+            .map_err(|error| format!("activity JSON could not be parsed: {error}"))?;
+        let response_rows = root
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "activity response is missing data[]".to_owned())?;
+        total_source_rows += response_rows.len();
+        if total_source_rows > 20_000 {
+            return Err("activity responses exceed 20000 rows".to_owned());
+        }
+
+        for (index, row) in response_rows.iter().enumerate() {
+            if !row.is_object() {
+                return Err(format!("activity row {index} must be an object"));
+            }
+            let date = parse_activity_date(row, index)?;
+            if date < cutoff_date || date > latest_completed_date {
+                continue;
+            }
+            let date = date.format("%Y-%m-%d").to_string();
+            let model =
+                json_string(row, &["model_permaslug"]).or_else(|| json_string(row, &["model"]));
+            if model.as_ref().is_some_and(|model| model.len() > 64) {
+                return Err(format!("activity row {index} model exceeds 64 characters"));
+            }
+            let identity = serde_json::to_string(&serde_json::json!([
+                date,
+                model,
+                json_string(row, &["endpoint_id"]),
+                json_string(row, &["provider_name"]),
+                json_string(row, &["workspace_id"]),
+            ]))
+            .map_err(|error| format!("activity identity could not be normalized: {error}"))?;
+            let signature = serde_json::to_string(&serde_json::json!([
+                row.get("prompt_tokens"),
+                row.get("completion_tokens"),
+                row.get("reasoning_tokens"),
+                row.get("requests"),
+                row.get("usage"),
+                row.get("byok_usage_inference"),
+            ]))
+            .map_err(|error| format!("activity row could not be normalized: {error}"))?;
+            if let Some(existing_signature) = seen.get(&identity) {
+                if existing_signature != &signature {
+                    return Err(format!(
+                        "activity row {index} conflicts with a duplicate row"
+                    ));
+                }
+                continue;
+            }
+            seen.insert(identity, signature);
+            rows.push(row.clone());
+            if rows.len() > 10_000 {
+                return Err("activity responses exceed 10000 distinct rows".to_owned());
+            }
+        }
+    }
 
     let mut metrics = Vec::with_capacity(rows.len());
     let mut total_usage = 0.0;
+    let mut total_metered_usage = 0.0;
+    let mut total_byok_usage = 0.0;
     let mut total_requests = 0_u64;
     let mut total_prompt_tokens = 0_u64;
     let mut total_completion_tokens = 0_u64;
@@ -655,22 +734,36 @@ fn parse_activity_report(body: &str) -> Result<ActivityReport, String> {
     let mut models = BTreeSet::new();
 
     for (index, row) in rows.iter().enumerate() {
-        let usage = non_negative(json_number(row, &["usage"]))
-            .ok_or_else(|| format!("activity row {index} has invalid usage"))?;
+        let metered_usage = activity_cost(row, "usage", index, false)?
+            .ok_or_else(|| format!("activity row {index} is missing usage"))?;
+        let byok_usage = activity_cost(row, "byok_usage_inference", index, true)?.unwrap_or(0.0);
+        let usage = metered_usage + byok_usage;
+        if !usage.is_finite() {
+            return Err("activity usage total is not finite".to_owned());
+        }
         total_usage += usage;
-        if !total_usage.is_finite() {
+        total_metered_usage += metered_usage;
+        total_byok_usage += byok_usage;
+        if !total_usage.is_finite()
+            || !total_metered_usage.is_finite()
+            || !total_byok_usage.is_finite()
+        {
             return Err("activity usage total is not finite".to_owned());
         }
 
-        let requests = activity_integer(row, "requests", index)?;
-        let prompt_tokens = activity_integer(row, "prompt_tokens", index)?;
-        let completion_tokens = activity_integer(row, "completion_tokens", index)?;
+        let requests = required_activity_integer(row, "requests", index)?;
+        let prompt_tokens = required_activity_integer(row, "prompt_tokens", index)?;
+        let completion_tokens = required_activity_integer(row, "completion_tokens", index)?;
         let reasoning_tokens = activity_integer(row, "reasoning_tokens", index)?;
-        add_safe_total(&mut total_requests, requests, "requests")?;
-        add_safe_total(&mut total_prompt_tokens, prompt_tokens, "prompt_tokens")?;
+        add_safe_total(&mut total_requests, Some(requests), "requests")?;
+        add_safe_total(
+            &mut total_prompt_tokens,
+            Some(prompt_tokens),
+            "prompt_tokens",
+        )?;
         add_safe_total(
             &mut total_completion_tokens,
-            completion_tokens,
+            Some(completion_tokens),
             "completion_tokens",
         )?;
         add_safe_total(
@@ -679,48 +772,51 @@ fn parse_activity_report(body: &str) -> Result<ActivityReport, String> {
             "reasoning_tokens",
         )?;
 
-        let date = json_string(row, &["date"]).unwrap_or_else(|| "unknown-date".to_owned());
-        let model = json_string(row, &["model", "model_permaslug"])
-            .unwrap_or_else(|| "unknown-model".to_owned());
+        let date = parse_activity_date(row, index)?
+            .format("%Y-%m-%d")
+            .to_string();
+        let model = json_string(row, &["model_permaslug"]).or_else(|| json_string(row, &["model"]));
+        if let Some(model) = model.as_ref() {
+            models.insert(model.clone());
+        }
+        let model_label = model.as_deref().unwrap_or("unknown-model");
         let endpoint = json_string(row, &["endpoint_id", "provider_name"])
             .unwrap_or_else(|| index.to_string());
-        models.insert(model.clone());
 
         let mut metadata = HashMap::new();
         for (property, key) in [
-            ("date", "date"),
             ("model", "model"),
             ("model_permaslug", "model_permaslug"),
             ("endpoint_id", "endpoint_id"),
             ("provider_name", "provider_name"),
+            ("workspace_id", "workspace_id"),
         ] {
             if let Some(value) = json_string(row, &[property]) {
                 metadata.insert(key.to_owned(), value);
             }
         }
-        for (property, key) in [
-            ("requests", "requests"),
-            ("prompt_tokens", "prompt_tokens"),
-            ("completion_tokens", "completion_tokens"),
-            ("reasoning_tokens", "reasoning_tokens"),
-        ] {
-            if let Some(value) = activity_integer(row, property, index)? {
-                metadata.insert(key.to_owned(), value.to_string());
-            }
+        metadata.insert("date".to_owned(), date.clone());
+        metadata.insert("metered_usage".to_owned(), metered_usage.to_string());
+        metadata.insert("requests".to_owned(), requests.to_string());
+        metadata.insert("prompt_tokens".to_owned(), prompt_tokens.to_string());
+        metadata.insert(
+            "completion_tokens".to_owned(),
+            completion_tokens.to_string(),
+        );
+        if let Some(reasoning_tokens) = reasoning_tokens {
+            metadata.insert("reasoning_tokens".to_owned(), reasoning_tokens.to_string());
         }
-        if let Some(value) = json_number(row, &["byok_usage_inference"]) {
-            if value.is_finite() && value >= 0.0 {
-                metadata.insert("byok_usage_inference".to_owned(), value.to_string());
-            }
+        if byok_usage > 0.0 {
+            metadata.insert("byok_usage_inference".to_owned(), byok_usage.to_string());
         }
         metrics.push(UsageMetric {
             key: format!(
                 "activity.{}.{}.{}",
                 metric_component(&date),
-                metric_component(&model),
+                metric_component(model_label),
                 metric_component(&endpoint)
             ),
-            name: format!("Activity — {model} ({date})"),
+            name: format!("Activity — {model_label} ({date})"),
             used_percent: None,
             used_amount: Some(usage),
             limit_amount: None,
@@ -735,6 +831,7 @@ fn parse_activity_report(body: &str) -> Result<ActivityReport, String> {
     let mut summary_metadata = HashMap::new();
     summary_metadata.insert("window".to_owned(), "last-30-completed-utc-days".to_owned());
     summary_metadata.insert("rows".to_owned(), rows.len().to_string());
+    summary_metadata.insert("metered_usage".to_owned(), total_metered_usage.to_string());
     summary_metadata.insert("requests".to_owned(), total_requests.to_string());
     summary_metadata.insert("prompt_tokens".to_owned(), total_prompt_tokens.to_string());
     summary_metadata.insert(
@@ -751,6 +848,10 @@ fn parse_activity_report(body: &str) -> Result<ActivityReport, String> {
     summary_metadata.insert(
         "reasoning_tokens".to_owned(),
         total_reasoning_tokens.to_string(),
+    );
+    summary_metadata.insert(
+        "byok_usage_inference".to_owned(),
+        total_byok_usage.to_string(),
     );
     summary_metadata.insert(
         "models".to_owned(),
@@ -773,6 +874,60 @@ fn parse_activity_report(body: &str) -> Result<ActivityReport, String> {
             metadata: summary_metadata,
         },
     })
+}
+
+fn parse_activity_date(row: &Value, index: usize) -> Result<NaiveDate, String> {
+    let raw = row
+        .get("date")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("activity row {index} is missing date"))?;
+    let date_part = raw
+        .get(..10)
+        .ok_or_else(|| format!("activity row {index} date is invalid"))?;
+    let date = NaiveDate::parse_from_str(date_part, "%Y-%m-%d")
+        .map_err(|_| format!("activity row {index} date must be a real calendar date"))?;
+    if date.format("%Y-%m-%d").to_string() != date_part {
+        return Err(format!("activity row {index} date is invalid"));
+    }
+    match raw.len() {
+        10 => {}
+        19 if raw.as_bytes().get(10) == Some(&b' ') => {
+            chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S")
+                .map_err(|_| format!("activity row {index} timestamp is invalid"))?;
+        }
+        _ => return Err(format!("activity row {index} date has an invalid format")),
+    }
+    Ok(date)
+}
+
+fn activity_cost(
+    row: &Value,
+    property: &str,
+    index: usize,
+    optional: bool,
+) -> Result<Option<f64>, String> {
+    let Some(raw) = row.get(property) else {
+        return if optional {
+            Ok(None)
+        } else {
+            Err(format!("activity row {index} is missing {property}"))
+        };
+    };
+    if optional && raw.is_null() {
+        return Ok(None);
+    }
+    let value = raw
+        .as_f64()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .ok_or_else(|| format!("activity row {index} has invalid {property}"))?;
+    Ok(Some(value))
+}
+
+fn required_activity_integer(row: &Value, property: &str, index: usize) -> Result<u64, String> {
+    activity_integer(row, property, index)?
+        .ok_or_else(|| format!("activity row {index} is missing {property}"))
 }
 
 fn activity_integer(row: &Value, property: &str, index: usize) -> Result<Option<u64>, String> {
@@ -1028,14 +1183,20 @@ mod tests {
     fn activity_report_adds_a_compact_summary_without_double_counting_reasoning() {
         let report = parse_activity_report(
             r#"{"data":[
-                {"date":"2030-01-02","endpoint_id":"endpoint-1","model":"openai/gpt-5","prompt_tokens":50,"completion_tokens":125,"reasoning_tokens":25,"requests":5,"usage":0.015},
+                {"date":"2030-01-02","endpoint_id":"endpoint-1","model":"openai/gpt-5","prompt_tokens":50,"completion_tokens":125,"reasoning_tokens":25,"requests":5,"usage":0.015,"byok_usage_inference":0.005},
+                {"date":"2029-12-01","endpoint_id":"old","model":"old-model","prompt_tokens":10,"completion_tokens":20,"requests":1,"usage":999}
+            ]}"#,
+            r#"{"data":[
+                {"date":"2030-01-02","endpoint_id":"endpoint-1","model":"openai/gpt-5","prompt_tokens":50,"completion_tokens":125,"reasoning_tokens":25,"requests":5,"usage":0.015,"byok_usage_inference":0.005},
                 {"date":"2030-01-03","endpoint_id":"endpoint-2","model":"anthropic/claude","prompt_tokens":10,"completion_tokens":20,"reasoning_tokens":30,"requests":2,"usage":0.025}
             ]}"#,
+            NaiveDate::from_ymd_opt(2030, 1, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2030, 1, 3).unwrap(),
         )
         .unwrap();
 
         assert_eq!(report.metrics.len(), 2);
-        assert!((report.summary.used_amount.unwrap() - 0.04).abs() < 1e-12);
+        assert!((report.summary.used_amount.unwrap() - 0.045).abs() < 1e-12);
         assert_eq!(
             report.summary.metadata.get("rows").map(String::as_str),
             Some("2")
@@ -1060,6 +1221,22 @@ mod tests {
             report
                 .summary
                 .metadata
+                .get("byok_usage_inference")
+                .map(String::as_str),
+            Some("0.005")
+        );
+        assert_eq!(
+            report
+                .summary
+                .metadata
+                .get("metered_usage")
+                .map(String::as_str),
+            Some("0.04")
+        );
+        assert_eq!(
+            report
+                .summary
+                .metadata
                 .get("model_count")
                 .map(String::as_str),
             Some("2")
@@ -1069,10 +1246,16 @@ mod tests {
     #[test]
     fn activity_report_rejects_token_counts_outside_safe_integer_range() {
         let body = format!(
-            r#"{{"data":[{{"date":"2030-01-02","model":"openai/gpt-5","usage":0.01,"prompt_tokens":{}}}]}}"#,
+            r#"{{"data":[{{"date":"2030-01-02","model":"openai/gpt-5","usage":0.01,"requests":1,"prompt_tokens":{},"completion_tokens":10}}]}}"#,
             MAX_SAFE_INTEGER + 1
         );
-        let error = parse_activity_report(&body).unwrap_err();
+        let error = parse_activity_report(
+            &body,
+            r#"{"data":[]}"#,
+            NaiveDate::from_ymd_opt(2030, 1, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2030, 1, 3).unwrap(),
+        )
+        .unwrap_err();
         assert!(error.contains("unsafe prompt_tokens"));
     }
 

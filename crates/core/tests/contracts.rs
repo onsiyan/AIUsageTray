@@ -220,6 +220,7 @@ async fn api_adapters_normalize_provider_specific_usage() {
             .map(String::as_str),
         Some("175")
     );
+    assert!((activity_summary.used_amount.unwrap() - 0.018).abs() < 1e-12);
     assert!(snapshot.source_diagnostics.is_empty());
     let free_requests = snapshot
         .metrics
@@ -262,6 +263,26 @@ async fn api_adapters_normalize_provider_specific_usage() {
             .find(|(name, _)| name == "group_by")
             .map(|(_, value)| value),
         Some("workspace".into())
+    );
+    let latest_activity_request = requests
+        .iter()
+        .find(|request| {
+            request.url.path() == "/api/v1/activity"
+                && request.url.query_pairs().any(|(name, _)| name == "date")
+        })
+        .unwrap();
+    assert_eq!(
+        latest_activity_request
+            .url
+            .query_pairs()
+            .find(|(name, _)| name == "date")
+            .map(|(_, value)| value),
+        Some(
+            (chrono::Utc::now().date_naive() - chrono::Duration::days(1))
+                .format("%Y-%m-%d")
+                .to_string()
+                .into()
+        )
     );
     drop(requests);
 
@@ -974,10 +995,17 @@ impl UsageHttpTransport for OptionalFailureTransport {
                 r#"{"data":{"limit":100,"limit_remaining":90,"limit_reset":"monthly","usage_monthly":10,"workspace_id":"workspace-1"}}"#,
             ),
             "/api/v1/credits" => (403, r#"{"error":{"code":403}}"#),
-            "/api/v1/activity" => (
-                200,
-                r#"{"data":[{"date":"2030-01-02","model":"openai/gpt-5","usage":0.01,"prompt_tokens":9007199254740992}]}"#,
-            ),
+            "/api/v1/activity" => {
+                let date = (chrono::Utc::now().date_naive() - chrono::Duration::days(1))
+                    .format("%Y-%m-%d");
+                return Ok(UsageHttpResponse {
+                    status_code: 200,
+                    body: format!(
+                        r#"{{"data":[{{"date":"{date}","model":"openai/gpt-5","usage":0.01,"requests":1,"prompt_tokens":9007199254740992,"completion_tokens":10}}]}}"#
+                    ),
+                    headers: Default::default(),
+                });
+            }
             _ => return Err(TransportError::InvalidUrl(request.url.to_string())),
         };
         Ok(UsageHttpResponse {
@@ -1022,7 +1050,15 @@ impl UsageHttpTransport for FakeTransport {
             }
             "/api/v1/credits" => r#"{"data":{"total_credits":100,"total_usage":25}}"#,
             "/api/v1/activity" => {
-                r#"{"data":[{"date":"2030-01-02","endpoint_id":"endpoint-1","model":"openai/gpt-5","model_permaslug":"openai/gpt-5-2029-01-01","provider_name":"OpenAI","prompt_tokens":50,"completion_tokens":125,"reasoning_tokens":25,"requests":5,"usage":0.015}]}"#
+                let date = (chrono::Utc::now().date_naive() - chrono::Duration::days(1))
+                    .format("%Y-%m-%d");
+                return Ok(UsageHttpResponse {
+                    status_code: 200,
+                    body: format!(
+                        r#"{{"data":[{{"date":"{date}","endpoint_id":"endpoint-1","model":"openai/gpt-5","model_permaslug":"openai/gpt-5-2029-01-01","provider_name":"OpenAI","prompt_tokens":50,"completion_tokens":125,"reasoning_tokens":25,"requests":5,"usage":0.015,"byok_usage_inference":0.003}}]}}"#
+                    ),
+                    headers: Default::default(),
+                });
             }
             "/zen/go/v1/usage" => {
                 r#"{"usage":{"rolling":{"usagePercent":20,"resetInSec":3600},"weekly":{"usagePercent":10,"resetInSec":7200},"monthly":{"usagePercent":5,"resetInSec":86400}}}"#
