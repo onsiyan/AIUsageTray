@@ -1,11 +1,14 @@
 use crate::{
-    accounts::{AccountId, AccountRecord, AccountStatus, AccountStore, AccountStoreError, OPENAI},
+    accounts::{
+        AccountId, AccountRecord, AccountStatus, AccountStore, AccountStoreError, OPENAI,
+        account_reference_prefix,
+    },
     usage::{StorageError, UsageSnapshot, UsageSnapshotStore},
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use std::{path::Path, str::FromStr, sync::Mutex};
+use std::{collections::HashSet, path::Path, str::FromStr, sync::Mutex};
 
 pub struct SqliteStore {
     connection: Mutex<Connection>,
@@ -18,7 +21,7 @@ impl SqliteStore {
             std::fs::create_dir_all(parent)
                 .map_err(|error| StorageError::Backend(error.to_string()))?;
         }
-        let connection = Connection::open(path).map_err(sqlite_error)?;
+        let mut connection = Connection::open(path).map_err(sqlite_error)?;
         connection
             .execute_batch(
                 r#"
@@ -39,6 +42,7 @@ impl SqliteStore {
                     codex_home TEXT NULL,
                     openai_account_id TEXT NULL,
                     alias TEXT NULL,
+                    account_ref TEXT NULL,
                     status INTEGER NOT NULL,
                     created_at_utc TEXT NOT NULL,
                     updated_at_utc TEXT NOT NULL
@@ -83,6 +87,11 @@ impl SqliteStore {
                     FOREIGN KEY(snapshot_id) REFERENCES usage_snapshots(snapshot_id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS account_ref_sequences (
+                    prefix TEXT PRIMARY KEY,
+                    next_value INTEGER NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS ix_usage_snapshots_account_observed
                     ON usage_snapshots(account_id, observed_at_utc DESC, snapshot_id DESC);
                 "#,
@@ -101,6 +110,7 @@ impl SqliteStore {
         ensure_column(&connection, "accounts", "workspace_name", "TEXT NULL")?;
         ensure_column(&connection, "accounts", "codex_home", "TEXT NULL")?;
         ensure_column(&connection, "accounts", "alias", "TEXT NULL")?;
+        ensure_column(&connection, "accounts", "account_ref", "TEXT NULL")?;
         ensure_column(
             &connection,
             "usage_snapshots",
@@ -115,6 +125,12 @@ impl SqliteStore {
             "TEXT NOT NULL DEFAULT 'authoritative'",
         )?;
         ensure_column(&connection, "usage_snapshots", "metrics_json", "TEXT NULL")?;
+        migrate_account_references(&mut connection)?;
+        connection
+            .execute_batch(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_accounts_account_ref ON accounts(account_ref) WHERE account_ref IS NOT NULL;",
+            )
+            .map_err(sqlite_error)?;
         connection
             .execute_batch(
                 r#"
@@ -169,7 +185,7 @@ impl AccountStore for SqliteStore {
         let connection = self.lock().map_err(account_error)?;
         let mut statement = connection
             .prepare(
-                "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, workspace_name, codex_home, status, created_at_utc, updated_at_utc, alias FROM accounts ORDER BY lower(COALESCE(NULLIF(TRIM(alias), ''), label)), account_id",
+                "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, workspace_name, codex_home, status, created_at_utc, updated_at_utc, alias, account_ref FROM accounts ORDER BY lower(COALESCE(NULLIF(TRIM(alias), ''), label)), account_id",
             )
             .map_err(sqlite_account_error)?;
         let rows = statement
@@ -183,7 +199,7 @@ impl AccountStore for SqliteStore {
         let connection = self.lock().map_err(account_error)?;
         connection
             .query_row(
-                "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, workspace_name, codex_home, status, created_at_utc, updated_at_utc, alias FROM accounts WHERE account_id = ?1",
+                "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, workspace_name, codex_home, status, created_at_utc, updated_at_utc, alias, account_ref FROM accounts WHERE account_id = ?1",
                 [account_id.to_string()],
                 read_account,
             )
@@ -192,8 +208,12 @@ impl AccountStore for SqliteStore {
     }
 
     async fn upsert(&self, account: &AccountRecord) -> Result<(), AccountStoreError> {
-        let connection = self.lock().map_err(account_error)?;
-        write_account(&connection, account).map_err(sqlite_account_error)
+        let mut connection = self.lock().map_err(account_error)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_account_error)?;
+        write_account(&transaction, account).map_err(sqlite_account_error)?;
+        transaction.commit().map_err(sqlite_account_error)
     }
 
     async fn upsert_or_get_by_provider_identity(
@@ -208,7 +228,7 @@ impl AccountStore for SqliteStore {
         let existing = if let Some(provider_account_id) = account.provider_account_id.as_deref() {
             transaction
                 .query_row(
-                    "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, workspace_name, codex_home, status, created_at_utc, updated_at_utc, alias FROM accounts WHERE provider_id = ?1 AND provider_account_id = ?2 AND workspace_id IS ?3 ORDER BY updated_at_utc DESC, created_at_utc, account_id LIMIT 1",
+                    "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, workspace_name, codex_home, status, created_at_utc, updated_at_utc, alias, account_ref FROM accounts WHERE provider_id = ?1 AND provider_account_id = ?2 AND workspace_id IS ?3 ORDER BY updated_at_utc DESC, created_at_utc, account_id LIMIT 1",
                     params![account.provider_id, provider_account_id, account.workspace_id],
                     read_account,
                 )
@@ -218,7 +238,7 @@ impl AccountStore for SqliteStore {
             None
         };
 
-        let resolved = if let Some(existing) = existing {
+        let mut resolved = if let Some(existing) = existing {
             if existing.id == account.id {
                 if account.alias.is_none() && existing.alias.is_some() {
                     account.with_alias(existing.alias.as_deref())
@@ -234,7 +254,8 @@ impl AccountStore for SqliteStore {
             account.clone()
         };
 
-        write_account(&transaction, &resolved).map_err(sqlite_account_error)?;
+        resolved.account_ref =
+            Some(write_account(&transaction, &resolved).map_err(sqlite_account_error)?);
         transaction.commit().map_err(sqlite_account_error)?;
         Ok(resolved)
     }
@@ -247,7 +268,7 @@ impl AccountStore for SqliteStore {
         let connection = self.lock().map_err(account_error)?;
         let Some(account) = connection
             .query_row(
-                "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, workspace_name, codex_home, status, created_at_utc, updated_at_utc, alias FROM accounts WHERE account_id = ?1",
+                "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, workspace_name, codex_home, status, created_at_utc, updated_at_utc, alias, account_ref FROM accounts WHERE account_id = ?1",
                 [account_id.to_string()],
                 read_account,
             )
@@ -283,14 +304,31 @@ impl AccountStore for SqliteStore {
     }
 }
 
-fn write_account(connection: &Connection, account: &AccountRecord) -> Result<(), rusqlite::Error> {
+fn write_account(
+    connection: &Connection,
+    account: &AccountRecord,
+) -> Result<String, rusqlite::Error> {
+    let persisted_reference = connection
+        .query_row(
+            "SELECT account_ref FROM accounts WHERE account_id = ?1",
+            [account.id.to_string()],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    let account_ref = match persisted_reference {
+        Some(account_ref) => account_ref,
+        None => {
+            allocate_account_reference(connection, account_reference_prefix(&account.provider_id))?
+        }
+    };
     connection.execute(
         r#"
         INSERT INTO accounts (
             account_id, label, email, provider_id, provider_account_id,
             browser_kind, browser_profile_id, workspace_id, workspace_name,
-            codex_home, openai_account_id, status, created_at_utc, updated_at_utc, alias)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            codex_home, openai_account_id, status, created_at_utc, updated_at_utc, alias, account_ref)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
         ON CONFLICT(account_id) DO UPDATE SET
             label = excluded.label,
             email = excluded.email,
@@ -304,7 +342,8 @@ fn write_account(connection: &Connection, account: &AccountRecord) -> Result<(),
             openai_account_id = excluded.openai_account_id,
             status = excluded.status,
             updated_at_utc = excluded.updated_at_utc,
-            alias = COALESCE(excluded.alias, accounts.alias)
+            alias = COALESCE(excluded.alias, accounts.alias),
+            account_ref = COALESCE(accounts.account_ref, excluded.account_ref)
         "#,
         params![
             account.id.to_string(),
@@ -324,9 +363,126 @@ fn write_account(connection: &Connection, account: &AccountRecord) -> Result<(),
             account.created_at_utc.to_rfc3339(),
             account.updated_at_utc.to_rfc3339(),
             account.alias,
+            account_ref,
         ],
     )?;
+    Ok(account_ref)
+}
+
+fn migrate_account_references(connection: &mut Connection) -> Result<(), StorageError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(sqlite_error)?;
+    let accounts = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT account_id, provider_id, account_ref FROM accounts ORDER BY created_at_utc, account_id",
+            )
+            .map_err(sqlite_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(sqlite_error)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_error)?
+    };
+
+    let existing_references = accounts
+        .iter()
+        .filter_map(|(_, _, account_ref)| account_ref.as_deref())
+        .collect::<Vec<_>>();
+    for account_ref in existing_references {
+        if let Some((prefix, number)) = reference_components(account_ref) {
+            if number == i64::MAX {
+                return Err(StorageError::InvalidData(format!(
+                    "account reference sequence is exhausted for {prefix}"
+                )));
+            }
+            reserve_reference_sequence(&transaction, prefix, number + 1).map_err(sqlite_error)?;
+        }
+    }
+
+    let mut assigned = HashSet::new();
+    for (account_id, provider_id, account_ref) in accounts {
+        let has_unique_reference = account_ref
+            .as_deref()
+            .filter(|value| reference_components(value).is_some())
+            .is_some_and(|value| assigned.insert(value.to_owned()));
+        if has_unique_reference {
+            continue;
+        }
+
+        let prefix = account_reference_prefix(&provider_id);
+        let account_ref = loop {
+            let candidate =
+                allocate_account_reference(&transaction, prefix).map_err(sqlite_error)?;
+            if assigned.insert(candidate.clone()) {
+                break candidate;
+            }
+        };
+        transaction
+            .execute(
+                "UPDATE accounts SET account_ref = ?1 WHERE account_id = ?2",
+                rusqlite::params![account_ref, account_id],
+            )
+            .map_err(sqlite_error)?;
+    }
+
+    transaction.commit().map_err(sqlite_error)
+}
+
+fn allocate_account_reference(
+    connection: &Connection,
+    prefix: &str,
+) -> Result<String, rusqlite::Error> {
+    let next = connection
+        .query_row(
+            "SELECT next_value FROM account_ref_sequences WHERE prefix = ?1",
+            [prefix],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .unwrap_or(1);
+    if next < 1 || next == i64::MAX {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    connection.execute(
+        "INSERT INTO account_ref_sequences (prefix, next_value) VALUES (?1, ?2) ON CONFLICT(prefix) DO UPDATE SET next_value = excluded.next_value",
+        rusqlite::params![prefix, next + 1],
+    )?;
+    Ok(format!("{prefix}{next}"))
+}
+
+fn reserve_reference_sequence(
+    connection: &Connection,
+    prefix: &str,
+    next_value: i64,
+) -> Result<(), rusqlite::Error> {
+    connection.execute(
+        "INSERT INTO account_ref_sequences (prefix, next_value) VALUES (?1, ?2) ON CONFLICT(prefix) DO UPDATE SET next_value = MAX(next_value, excluded.next_value)",
+        rusqlite::params![prefix, next_value],
+    )?;
     Ok(())
+}
+
+fn reference_components(account_ref: &str) -> Option<(&str, i64)> {
+    let split = account_ref.find(|character: char| character.is_ascii_digit())?;
+    let (prefix, number) = account_ref.split_at(split);
+    if prefix.is_empty()
+        || !prefix
+            .chars()
+            .all(|character| character.is_ascii_lowercase())
+        || number.is_empty()
+        || !number.chars().all(|character| character.is_ascii_digit())
+    {
+        return None;
+    }
+    let number = number.parse::<i64>().ok()?;
+    (number > 0).then_some((prefix, number))
 }
 
 #[async_trait]
@@ -489,6 +645,7 @@ fn read_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRecord> {
         workspace_name: row.get(8)?,
         codex_home: row.get(9)?,
         alias: row.get(13)?,
+        account_ref: row.get(14)?,
         status,
         created_at_utc,
         updated_at_utc,

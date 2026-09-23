@@ -1018,6 +1018,7 @@ fn placeholder_account(account_id: AccountId) -> AccountRecord {
         workspace_name: None,
         codex_home: None,
         alias: None,
+        account_ref: None,
     }
 }
 

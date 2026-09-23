@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use codex_usage_core::{
     accounts::{
         ANTIGRAVITY, AccountId, AccountRecord, AccountStore, CLAUDE, InMemoryAccountStore, OPENAI,
-        OPENROUTER,
+        OPENCODE_GO, OPENROUTER,
     },
     auth::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
@@ -1129,6 +1129,184 @@ async fn account_alias_is_optional_and_does_not_change_provider_identity() {
             .await
             .unwrap()
             .is_none()
+    );
+}
+
+#[tokio::test]
+async fn account_references_use_stable_provider_prefixes_and_skip_deleted_numbers() {
+    let store = InMemoryAccountStore::default();
+    let providers = [
+        (OPENAI, "ch1"),
+        (CLAUDE, "cc1"),
+        (OPENROUTER, "or1"),
+        (OPENCODE_GO, "oc1"),
+        (ANTIGRAVITY, "ag1"),
+    ];
+    let mut saved_accounts = Vec::new();
+
+    for (index, (provider_id, expected_reference)) in providers.iter().enumerate() {
+        let account = AccountRecord::create(
+            format!("Account {index}"),
+            format!("user{index}@example.com"),
+            None,
+            provider_id,
+            None,
+        )
+        .unwrap();
+        let saved = store
+            .upsert_or_get_by_provider_identity(&account)
+            .await
+            .unwrap();
+        assert_eq!(saved.account_ref.as_deref(), Some(*expected_reference));
+        saved_accounts.push(saved);
+    }
+
+    let codex_two =
+        AccountRecord::create("Codex two", "codex-two@example.com", None, OPENAI, None).unwrap();
+    let codex_two = store
+        .upsert_or_get_by_provider_identity(&codex_two)
+        .await
+        .unwrap();
+    assert_eq!(codex_two.account_ref.as_deref(), Some("ch2"));
+
+    let renamed = store
+        .set_alias(saved_accounts[0].id, Some("Personal"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(renamed.account_ref.as_deref(), Some("ch1"));
+    store.remove(codex_two.id).await.unwrap();
+
+    let codex_three =
+        AccountRecord::create("Codex three", "codex-three@example.com", None, OPENAI, None)
+            .unwrap();
+    let codex_three = store
+        .upsert_or_get_by_provider_identity(&codex_three)
+        .await
+        .unwrap();
+    assert_eq!(codex_three.account_ref.as_deref(), Some("ch3"));
+}
+
+#[tokio::test]
+async fn sqlite_account_references_survive_updates_reopen_and_identity_deduplication() {
+    let directory = tempfile::tempdir().unwrap();
+    let database_path = directory.path().join("accounts.db");
+    let first = AccountRecord::create(
+        "Codex one",
+        "codex@example.com",
+        Some("provider-codex-1".to_owned()),
+        OPENAI,
+        None,
+    )
+    .unwrap();
+    let second =
+        AccountRecord::create("Codex two", "codex-two@example.com", None, OPENAI, None).unwrap();
+
+    let store = SqliteStore::open(&database_path).unwrap();
+    store.upsert(&first).await.unwrap();
+    store.upsert(&second).await.unwrap();
+    assert_eq!(
+        store
+            .get(first.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .account_ref
+            .as_deref(),
+        Some("ch1")
+    );
+    assert_eq!(
+        store
+            .get(second.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .account_ref
+            .as_deref(),
+        Some("ch2")
+    );
+    drop(store);
+
+    let reopened = SqliteStore::open(&database_path).unwrap();
+    let renamed = reopened
+        .set_alias(first.id, Some("Main"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(renamed.account_ref.as_deref(), Some("ch1"));
+
+    let duplicate = AccountRecord::create(
+        "Same Codex identity",
+        "codex@example.com",
+        Some("provider-codex-1".to_owned()),
+        OPENAI,
+        None,
+    )
+    .unwrap();
+    let deduplicated = reopened
+        .upsert_or_get_by_provider_identity(&duplicate)
+        .await
+        .unwrap();
+    assert_eq!(deduplicated.id, first.id);
+    assert_eq!(deduplicated.account_ref.as_deref(), Some("ch1"));
+
+    reopened.remove(second.id).await.unwrap();
+    let third = AccountRecord::create("Codex three", "codex-three@example.com", None, OPENAI, None)
+        .unwrap();
+    reopened.upsert(&third).await.unwrap();
+    assert_eq!(
+        reopened
+            .get(third.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .account_ref
+            .as_deref(),
+        Some("ch3")
+    );
+}
+
+#[tokio::test]
+async fn sqlite_open_backfills_references_for_an_older_accounts_database() {
+    let directory = tempfile::tempdir().unwrap();
+    let database_path = directory.path().join("accounts.db");
+    let codex = AccountRecord::create("Codex", "codex@example.com", None, OPENAI, None).unwrap();
+    let antigravity =
+        AccountRecord::create("Antigravity", "google@example.com", None, ANTIGRAVITY, None)
+            .unwrap();
+    let store = SqliteStore::open(&database_path).unwrap();
+    store.upsert(&codex).await.unwrap();
+    store.upsert(&antigravity).await.unwrap();
+    drop(store);
+
+    let legacy = rusqlite::Connection::open(&database_path).unwrap();
+    legacy
+        .execute_batch(
+            "DROP INDEX ux_accounts_account_ref; ALTER TABLE accounts DROP COLUMN account_ref; DROP TABLE account_ref_sequences;",
+        )
+        .unwrap();
+    drop(legacy);
+
+    let migrated = SqliteStore::open(&database_path).unwrap();
+    assert_eq!(
+        migrated
+            .get(codex.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .account_ref
+            .as_deref(),
+        Some("ch1")
+    );
+    assert_eq!(
+        migrated
+            .get(antigravity.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .account_ref
+            .as_deref(),
+        Some("ag1")
     );
 }
 

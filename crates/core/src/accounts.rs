@@ -10,6 +10,17 @@ pub const OPENCODE_GO: &str = "opencodego";
 pub const OPENROUTER: &str = "openrouter";
 pub const ANTIGRAVITY: &str = "antigravity";
 
+pub(crate) fn account_reference_prefix(provider_id: &str) -> &'static str {
+    match provider_id {
+        "codex" | "openai" => "ch",
+        "claude" => "cc",
+        "openrouter" => "or",
+        "opencodego" => "oc",
+        "antigravity" => "ag",
+        _ => "ac",
+    }
+}
+
 pub const KNOWN_PROVIDER_IDS: &[&str] = &[
     "codex",
     "openai",
@@ -162,6 +173,10 @@ pub struct AccountRecord {
     /// unchanged when this is set or cleared.
     #[serde(default)]
     pub alias: Option<String>,
+    /// Stable, human-readable reference assigned by the account store. This is
+    /// the public selector for CLI and agent workflows; `id` remains internal.
+    #[serde(default)]
+    pub account_ref: Option<String>,
 }
 
 impl AccountRecord {
@@ -192,6 +207,7 @@ impl AccountRecord {
             workspace_name: None,
             codex_home: None,
             alias: None,
+            account_ref: None,
         })
     }
 
@@ -285,17 +301,34 @@ pub trait AccountStore: Send + Sync {
 }
 
 #[derive(Debug, Default)]
+struct InMemoryAccountState {
+    accounts: std::collections::HashMap<AccountId, AccountRecord>,
+    next_reference: std::collections::HashMap<&'static str, u64>,
+}
+
+impl InMemoryAccountState {
+    fn allocate_reference(&mut self, provider_id: &str) -> String {
+        let prefix = account_reference_prefix(provider_id);
+        let next = self.next_reference.entry(prefix).or_insert(1);
+        let reference = format!("{prefix}{next}");
+        *next += 1;
+        reference
+    }
+}
+
+#[derive(Debug, Default)]
 pub struct InMemoryAccountStore {
-    accounts: tokio::sync::RwLock<std::collections::HashMap<AccountId, AccountRecord>>,
+    state: tokio::sync::RwLock<InMemoryAccountState>,
 }
 
 #[async_trait]
 impl AccountStore for InMemoryAccountStore {
     async fn list(&self) -> Result<Vec<AccountRecord>, AccountStoreError> {
         let mut accounts = self
-            .accounts
+            .state
             .read()
             .await
+            .accounts
             .values()
             .cloned()
             .collect::<Vec<_>>();
@@ -308,16 +341,16 @@ impl AccountStore for InMemoryAccountStore {
     }
 
     async fn get(&self, account_id: AccountId) -> Result<Option<AccountRecord>, AccountStoreError> {
-        Ok(self.accounts.read().await.get(&account_id).cloned())
+        Ok(self.state.read().await.accounts.get(&account_id).cloned())
     }
 
     async fn upsert(&self, account: &AccountRecord) -> Result<(), AccountStoreError> {
-        let mut accounts = self.accounts.write().await;
+        let mut state = self.state.write().await;
         if account
             .provider_account_id
             .as_deref()
             .is_some_and(|identity| {
-                accounts.values().any(|existing| {
+                state.accounts.values().any(|existing| {
                     existing.id != account.id
                         && existing.provider_id == account.provider_id
                         && existing.provider_account_id.as_deref() == Some(identity)
@@ -327,13 +360,18 @@ impl AccountStore for InMemoryAccountStore {
         {
             return Err(AccountStoreError::DuplicateProviderIdentity);
         }
+        let existing = state.accounts.get(&account.id).cloned();
         let mut saved = account.clone();
+        saved.account_ref = Some(
+            existing
+                .as_ref()
+                .and_then(|existing| existing.account_ref.clone())
+                .unwrap_or_else(|| state.allocate_reference(&account.provider_id)),
+        );
         if saved.alias.is_none() {
-            saved.alias = accounts
-                .get(&account.id)
-                .and_then(|existing| existing.alias.clone());
+            saved.alias = existing.and_then(|existing| existing.alias);
         }
-        accounts.insert(account.id, saved);
+        state.accounts.insert(account.id, saved);
         Ok(())
     }
 
@@ -341,22 +379,27 @@ impl AccountStore for InMemoryAccountStore {
         &self,
         account: &AccountRecord,
     ) -> Result<AccountRecord, AccountStoreError> {
-        let mut accounts = self.accounts.write().await;
-        let existing = account.provider_account_id.as_deref().and_then(|identity| {
-            accounts
-                .values()
-                .filter(|existing| {
-                    existing.provider_id == account.provider_id
-                        && existing.provider_account_id.as_deref() == Some(identity)
-                        && existing.workspace_id == account.workspace_id
-                })
-                .max_by(|left, right| {
-                    left.updated_at_utc
-                        .cmp(&right.updated_at_utc)
-                        .then_with(|| left.id.to_string().cmp(&right.id.to_string()))
-                })
-                .cloned()
-        });
+        let mut state = self.state.write().await;
+        let existing = account
+            .provider_account_id
+            .as_deref()
+            .and_then(|identity| {
+                state
+                    .accounts
+                    .values()
+                    .filter(|existing| {
+                        existing.provider_id == account.provider_id
+                            && existing.provider_account_id.as_deref() == Some(identity)
+                            && existing.workspace_id == account.workspace_id
+                    })
+                    .max_by(|left, right| {
+                        left.updated_at_utc
+                            .cmp(&right.updated_at_utc)
+                            .then_with(|| left.id.to_string().cmp(&right.id.to_string()))
+                    })
+                    .cloned()
+            })
+            .or_else(|| state.accounts.get(&account.id).cloned());
 
         if let Some(existing) = existing {
             let resolved = if existing.id == account.id {
@@ -370,12 +413,20 @@ impl AccountStore for InMemoryAccountStore {
                     .with_identity(Some(&account.email), account.provider_account_id.as_deref())
                     .map_err(|error| AccountStoreError::InvalidData(error.to_string()))?
             };
-            accounts.insert(resolved.id, resolved.clone());
+            let mut resolved = resolved;
+            resolved.account_ref = Some(
+                existing
+                    .account_ref
+                    .unwrap_or_else(|| state.allocate_reference(&resolved.provider_id)),
+            );
+            state.accounts.insert(resolved.id, resolved.clone());
             return Ok(resolved);
         }
 
-        accounts.insert(account.id, account.clone());
-        Ok(account.clone())
+        let mut saved = account.clone();
+        saved.account_ref = Some(state.allocate_reference(&saved.provider_id));
+        state.accounts.insert(saved.id, saved.clone());
+        Ok(saved)
     }
 
     async fn set_alias(
@@ -383,7 +434,8 @@ impl AccountStore for InMemoryAccountStore {
         account_id: AccountId,
         alias: Option<&str>,
     ) -> Result<Option<AccountRecord>, AccountStoreError> {
-        let mut accounts = self.accounts.write().await;
+        let mut accounts = self.state.write().await;
+        let accounts = &mut accounts.accounts;
         let Some(account) = accounts.get_mut(&account_id) else {
             return Ok(None);
         };
@@ -393,7 +445,7 @@ impl AccountStore for InMemoryAccountStore {
     }
 
     async fn remove(&self, account_id: AccountId) -> Result<(), AccountStoreError> {
-        self.accounts.write().await.remove(&account_id);
+        self.state.write().await.accounts.remove(&account_id);
         Ok(())
     }
 }
