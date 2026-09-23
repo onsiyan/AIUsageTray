@@ -10,7 +10,7 @@ use codex_usage_core::{
     providers::{codex_workspace::resolve_workspace_name, openai::oauth_definition},
     refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
     runtime::UsageRuntime,
-    storage::SqliteStore,
+    storage::{SqliteStore, default_accounts_database_path},
     transport::{ReqwestUsageHttpTransport, UsageHttpTransport},
 };
 use codex_usage_windows_auth::{
@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         resolve_workspace_names,
     } = parse_arguments()?;
 
-    let database_path = database.unwrap_or_else(default_database_path);
+    let database_path = database.unwrap_or_else(default_accounts_database_path);
     if resolve_workspace_names && !database_path.is_file() {
         return Err(format!(
             "Codex account database does not exist: {}",
@@ -862,12 +862,4 @@ mod tests {
             Some("chatgpt-user-1")
         );
     }
-}
-
-fn default_database_path() -> PathBuf {
-    env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(env::temp_dir)
-        .join("CodexUsageMonitor-Rust")
-        .join("accounts.db")
 }

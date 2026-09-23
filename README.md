@@ -28,6 +28,9 @@ under this `rust/` workspace.
 - `codex-usage-openrouter-probe`: account-scoped OpenRouter API-key probe. It
   reads the primary key from a process environment variable or stdin, stores
   it in Windows Credential Manager, and never writes it to SQLite or prints it.
+- `codex-usage-cli`: the shared human- and agent-facing command line. It uses
+  durable account references such as `ch1`, supports account listing and
+  aliases, reads cached normalized usage, and performs explicit refreshes.
 
 The durable SQLite database contains account metadata and snapshots only; it
 never contains provider secrets. OAuth access tokens are memory-only during a
@@ -100,6 +103,49 @@ cargo fmt --all -- --check
 cargo test --workspace
 cargo check --workspace
 ```
+
+## Shared usage CLI
+
+Build and run the unified command:
+
+```powershell
+cargo run -p codex-usage-cli -- account list
+cargo run -p codex-usage-cli -- --json account list
+cargo run -p codex-usage-cli -- account get ch1
+cargo run -p codex-usage-cli -- usage get ch1 --json
+cargo run -p codex-usage-cli -- usage refresh ch1
+cargo run -p codex-usage-cli -- usage refresh --all --provider codex --json
+cargo run -p codex-usage-cli -- account alias set ch1 "Personal"
+cargo run -p codex-usage-cli -- status --json
+```
+
+Account references are stable selectors shared by people and agents: `chN`
+for Codex, `ccN` for Claude, `orN` for OpenRouter, `ocN` for OpenCode Go, and
+`agN` for Antigravity. They are stored in SQLite, survive restarts and renames,
+and are never reused after deletion. The internal UUID is not printed by the
+CLI. Exact alias, label, or email selection is also supported; if more than one
+account matches, the command fails with candidate references and accepts
+`--provider` or `--workspace` to disambiguate.
+
+`account list`, `account get`, `account alias`, `usage get`, and `status` are
+local-only operations. `usage get` reads the latest cached snapshot and never
+contacts a provider. Only `usage refresh` performs network requests;
+`usage refresh --all` reports one result per account and exits nonzero if any
+refresh did not update. `--json` emits one JSON object with `schema_version: 1`
+on stdout, including structured errors and stable exit codes: 3 for no matching
+account, 4 for an ambiguous selector, 5 when no cached usage exists, and 6 for
+a failed/partial refresh. Other runtime errors exit 1; argument errors use the
+standard parser exit code 2.
+
+The shared default database is `%LOCALAPPDATA%\CodexUsageMonitor-Rust\accounts.db`
+(or the same app folder under the system temporary directory if `LOCALAPPDATA`
+is unavailable). Pass `--database PATH` to any CLI command to select another
+database. Account refresh uses credentials stored per account in Windows
+Credential Manager and the account-scoped Codex/Antigravity OAuth refresh
+credentials. It does not apply ambient environment API keys or the global
+Codex/Claude CLI session to every matching account. Account creation and
+credential removal remain in the provider-specific login flows so the CLI
+cannot orphan secure credentials.
 
 To run the real Windows OAuth probe:
 

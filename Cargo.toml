@@ -8,4 +8,5 @@ members = [
     "tools/opencode-go-probe",
     "tools/openrouter-probe",
     "tools/oauth-probe",
+    "tools/usage-cli",
 ]

@@ -17,7 +17,7 @@ use codex_usage_core::{
     providers::registry::ProviderRegistryConfig,
     refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
     runtime::UsageRuntime,
-    storage::SqliteStore,
+    storage::{SqliteStore, default_accounts_database_path},
     transport::ReqwestUsageHttpTransport,
     usage::UsageSnapshotStore,
 };
@@ -45,7 +45,9 @@ struct Arguments {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = parse_arguments()?;
-    let database_path = arguments.database.unwrap_or_else(default_database_path);
+    let database_path = arguments
+        .database
+        .unwrap_or_else(default_accounts_database_path);
     if let Some(parent) = database_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -338,14 +340,6 @@ fn read_stdin_credentials() -> Result<(String, Option<String>), Box<dyn std::err
         .ok_or("primary OpenRouter API key from stdin was empty")?;
     let management = lines.next().map(str::to_owned);
     Ok((primary.to_owned(), management))
-}
-
-fn default_database_path() -> PathBuf {
-    env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(env::temp_dir)
-        .join("CodexUsageMonitor-Rust")
-        .join("accounts.db")
 }
 
 fn format_number(value: Option<f64>) -> String {

@@ -12,14 +12,14 @@ use codex_usage_core::{
     providers::registry::ProviderRegistryConfig,
     refresh::{RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
     runtime::UsageRuntime,
-    storage::SqliteStore,
+    storage::{SqliteStore, default_accounts_database_path},
     transport::{ReqwestUsageHttpTransport, UsageHttpTransport},
 };
 use codex_usage_windows_auth::{
     WindowsCredentialManagerAuthMaterialStore, WindowsCredentialManagerStore,
     WindowsDefaultBrowserLauncher,
 };
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 type Transport = ReqwestUsageHttpTransport;
 type CredentialStore = WindowsCredentialManagerStore;
@@ -32,12 +32,7 @@ type Authorization =
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let force_new_account =
         std::env::args().any(|argument| matches!(argument.as_str(), "--new" | "--login-new"));
-    let data_root = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("CodexUsageMonitor-Rust"))
-        .join("CodexUsageMonitor-Rust");
-    std::fs::create_dir_all(&data_root)?;
-    let database_path = data_root.join("accounts.db");
+    let database_path = default_accounts_database_path();
     let account_store = Arc::new(SqliteStore::open(&database_path)?);
     let transport = Arc::new(ReqwestUsageHttpTransport::new(Duration::from_secs(45))?);
     let credential_store = Arc::new(WindowsCredentialManagerStore);

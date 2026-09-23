@@ -8,7 +8,16 @@ use crate::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use std::{collections::HashSet, path::Path, str::FromStr, sync::Mutex};
+use std::{collections::HashSet, env, path::Path, path::PathBuf, str::FromStr, sync::Mutex};
+
+/// The shared default account and usage database used by every host and CLI.
+pub fn default_accounts_database_path() -> PathBuf {
+    env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(env::temp_dir)
+        .join("CodexUsageMonitor-Rust")
+        .join("accounts.db")
+}
 
 pub struct SqliteStore {
     connection: Mutex<Connection>,

@@ -1,0 +1,17 @@
+[package]
+name = "codex-usage-cli"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "codex-usage"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.6", features = ["derive"] }
+codex-usage-core = { path = "../../crates/core" }
+codex-usage-windows-auth = { path = "../../crates/windows-auth" }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
