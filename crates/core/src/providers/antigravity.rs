@@ -550,11 +550,11 @@ impl UsageAdapter for AntigravityUsageAdapter {
         };
         quotas = effective_quotas;
         let plan_type = find_plan_type(&assist_root);
-        let snapshot = if quota_summary.is_empty() {
+        let mut snapshot = if quota_summary.is_empty() {
             snapshot_from_model_quotas(
                 account,
                 &quotas,
-                Some(account.email.clone()),
+                None,
                 plan_type.clone(),
                 if remote_quota_verified {
                     "api-verified-quota"
@@ -572,19 +572,16 @@ impl UsageAdapter for AntigravityUsageAdapter {
                 account,
                 &quota_summary,
                 &quotas,
-                Some(account.email.clone()),
+                None,
                 plan_type.clone(),
                 "api",
             )
         };
-        Ok(UsageProbeResult::success(
-            snapshot,
-            Some(VerifiedIdentity {
-                email: Some(account.email.clone()),
-                provider_account_id: project_id,
-                plan_type,
-            }),
-        ))
+        // The remote quota RPCs identify their project, not the Google user.
+        // Keep that response context on the snapshot and leave the OAuth
+        // identity captured during account linking untouched.
+        snapshot.response_account_id = project_id;
+        Ok(UsageProbeResult::success(snapshot, None))
     }
 }
 

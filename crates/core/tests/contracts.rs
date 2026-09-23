@@ -87,6 +87,31 @@ async fn antigravity_adapter_keeps_rpc_colon_in_https_path() {
 }
 
 #[tokio::test]
+async fn antigravity_remote_keeps_project_id_out_of_google_identity() {
+    let transport = Arc::new(FakeTransport::default());
+    let auth = Arc::new(StaticAuth);
+    let adapter = AntigravityUsageAdapter::new_without_local_probe(transport, auth).unwrap();
+    let account = AccountRecord::create(
+        "test",
+        "test@example.com",
+        Some("google-subject-1".to_owned()),
+        ANTIGRAVITY,
+        None,
+    )
+    .unwrap();
+
+    let result = adapter.probe(&account).await.unwrap();
+    let snapshot = result.snapshot.expect("quota snapshot");
+    assert!(result.identity.is_none());
+    assert_eq!(snapshot.response_account_id.as_deref(), Some("project-1"));
+    assert_eq!(snapshot.observed_email, None);
+    assert_eq!(
+        account.provider_account_id.as_deref(),
+        Some("google-subject-1")
+    );
+}
+
+#[tokio::test]
 async fn antigravity_remote_fallback_uses_authoritative_summary() {
     let transport = Arc::new(FallbackTransport::default());
     let auth = Arc::new(StaticAuth);
