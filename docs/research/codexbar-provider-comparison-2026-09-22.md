@@ -7,7 +7,7 @@
 
 | المزود | حالة أساس الاستعلام | أعلى فرق ذي أثر |
 |---|---|---|
-| Codex | جلسة متصفح مستوردة، هوية موثقة، ثم WHAM | استبعاد متعمد لمصادر ملفات/CLI؛ إثراء لوحة الويب الاختياري غير منفذ |
+| Codex | جلسة متصفح مستوردة، هوية موثقة، WHAM، وحارس هبوط الحد الأسبوعي | استبعاد متعمد لمصادر ملفات/CLI؛ إثراء لوحة الويب الاختياري غير منفذ |
 | Claude | تغطية OAuth وWeb وCLI وAdmin؛ تدوير Web session، واستعادة واحدة مربوطة بالحساب بعد 401 | سجلات الحساب القديمة التي لا تملك browser kind تحتاج ربطًا جديدًا؛ لم يُختبر مع خدمة حية |
 | Antigravity | مسارا التطبيق وOAuth؛ الملخص والعناصر الإضافية تتبعان تقسيم العائلات وكبح التكرار في CodexBar | إسناد آمن لمصدر `agy` مؤجل لغياب دليل هوية الحساب |
 | OpenRouter | `/key` و`/credits` وActivity مستقلة، مع HTTPS وسجل 30 يومًا مكتملًا وBYOK | لم يُختبر مع خدمة OpenRouter حية؛ الأدلة الحالية اختبارات اصطناعية ومقارنة مصدرية |
@@ -21,13 +21,15 @@
 
 **المقارنة مع CodexBar:** CodexBar يملك مسارات OAuth وCLI إضافية، ولوحة الويب enrichment اختياري. لم ننسخ مسارات الملفات/CLI لأن سياسة الحسابات هنا تشترط جلسة المتصفح التي اختارها المستخدم وتحقق هويتها؛ هذا فرق مقصود لا فجوة في WHAM أو في نافذتي الاستخدام. لوحة الويب غير منفذة، وهي enrichment منفصل وليست شرطًا لعرض حد الخمس ساعات والأسبوع.
 
+**تأكيد إعادة التعيين الأسبوعية:** يرفض المنسق استبدال استخدام أسبوعي موثوق بهبوط مفاجئ من أكثر من 1% إلى 1% أو أقل اعتمادًا على قراءة واحدة. يعيد الطلب من خلال المحول نفسه، الذي يعيد التحقق من جلسة المتصفح والبريد قبل WHAM. تُنشر القراءة الثانية المرتدة إذا بقي الحد صالحًا وغير متراجع؛ أما القراءة المنخفضة فتحتاج حدًا مستقبليًا متسقًا مع العينة الأولى، وبلوغ الحد القديم، أو دليل استهلاك reset credit موجود في القراءتين. يجب أن تتطابق هوية الحساب والخطة وأن تتقدم أوقات الرصد؛ وإلا تبقى آخر لقطة وتُعلّم stale. هذا تكيف لمسار التأكيد الفوري في CodexBar مع مصدرنا المسموح (جلسة المتصفح)، لا نسخ لمسار OAuth أو CLI. كما يمنع المنسق المشترك أي لقطة أقدم من الكتابة فوق أحدث لقطة محفوظة. كلفة التأكيد طلب إضافي فقط عند هذا الهبوط المشبوه.
+
 **دقة الحدود:** يقبل parser الآن النسبة الخام `used_percent > 100` عند تجاوز الحصة، بينما تعرض `remaining_percent()` المتبقي بحد أدنى صفر. ويعرض مسار WHAM النوافذ الأساسية والإضافية ورصيد reset credits وتواريخ reset المطلقة.
 
 **فشل الإثراءات الاختيارية:** إذا فشلت استعلامات reset-credit inventory أو صرف مساحة العمل أو رصيدها، تبقى لقطة WHAM الأساسية صالحة ويضيف المحول تشخيصًا آمنًا لكل مصدر يوضح فئة HTTP/النقل/التحليل، مع `Retry-After` حين يرسله الخادم. لا تُنسخ أجسام الردود أو بيانات الطلب الحساسة إلى التشخيص. هذا يجعل نقص الإثراء ظاهرًا بدل إسقاطه بصمت أو تحويله إلى فشل للحساب.
 
 **اختبارات الانحدار:** تثبت أن session preflight يسبق WHAM، وأن الجلسة المطابقة وحدها تمد الطلب برمزها، وأن mismatch يوقف أي طلب usage، وأن رمزًا بلا Cookies لا يصدر أي استعلام. كما تتيح أداة الاختبار حصر الاستيراد في ملف متصفح بعينه عند تعدد الحسابات.
-**مراجع محلية:** [محول OpenAI/WHAM](../../crates/core/src/providers/openai.rs)، [مصادر المصادقة](../../crates/core/src/auth_sources.rs)، [مستورد Cookies](../../crates/windows-auth/src/browser_cookies.rs)، [أداة الاستيراد والاختبار](../../tools/codex-probe/src/main.rs).
-**مرجع CodexBar:** [Codex provider](https://github.com/steipete/CodexBar/blob/main/docs/codex.md)، [دليل OAuth](https://github.com/steipete/CodexBar/blob/main/docs/codex-oauth.md)، [Codex UsageFetcher](https://raw.githubusercontent.com/steipete/CodexBar/main/Sources/CodexBarCore/UsageFetcher.swift).
+**مراجع محلية:** [محول OpenAI/WHAM](../../crates/core/src/providers/openai.rs)، [حارس reset الأسبوعي](../../crates/core/src/providers/codex_reset.rs)، [منسق التحديث](../../crates/core/src/refresh.rs)، [مصادر المصادقة](../../crates/core/src/auth_sources.rs)، [مستورد Cookies](../../crates/windows-auth/src/browser_cookies.rs)، [أداة الاستيراد والاختبار](../../tools/codex-probe/src/main.rs).
+**مرجع CodexBar:** [Codex provider](https://github.com/steipete/CodexBar/blob/main/docs/codex.md)، [تنفيذ تأكيد reset الأسبوعي](https://raw.githubusercontent.com/steipete/CodexBar/main/Sources/CodexBar/Providers/Codex/CodexWeeklyResetConfirmation.swift)، [دمجه في نشر اللقطات](https://raw.githubusercontent.com/steipete/CodexBar/main/Sources/CodexBar/Providers/Codex/UsageStore%2BCodexWeeklyResetConfirmation.swift)، [اختبارات النشر](https://raw.githubusercontent.com/steipete/CodexBar/main/Tests/CodexBarTests/CodexWeeklyResetPublicationTests.swift)، [Codex UsageFetcher](https://raw.githubusercontent.com/steipete/CodexBar/main/Sources/CodexBarCore/UsageFetcher.swift).
 
 ## Claude
 
@@ -101,7 +103,7 @@ CodexBar يوثق نطاقًا تكيفيًا مماثلًا 2–30 دقيقة،
 ## ترتيب العمل المقترح
 
 1. **OpenCode Go:** استكمال إثراء الرصيد والـfallback المتوازي بعقود تغطي `noSubscription` وأخطاء الشبكة والتحليل؛ ثم اختبار الحساب الحي.
-2. **Codex:** إعادة فحص قيمة Web Dashboard enrichment الاختياري مقابل WHAM فقط، مع الإبقاء على جلسة المتصفح المستوردة للحساب المختار ورفض مصادر `auth.json`/CLI؛ Codex هو الأولوية الأعلى للمشروع.
+2. **Codex:** تقييم enrichment لوحة الويب الاختياري فقط إذا أضاف قيمة لازمة، وبعد التأكد من أنه لا يفرض WebView أو مصدر مصادقة خارج جلسة الحساب المستوردة؛ تظل مصادر `auth.json`/CLI مستبعدة. حارس reset الأسبوعي أصبح منفذًا.
 3. **Claude وOpenRouter:** التحقق الحي مع الحساب/المفتاح المخصص للاختبار عند توفرهما؛ الاختبارات الحالية اصطناعية.
 4. **Antigravity:** لا يُضاف مصدر `agy` قبل العثور على دليل موثوق يربطه بهوية الحساب، مع استمرار حفظ عزل الحسابات.
 
@@ -109,7 +111,7 @@ CodexBar يوثق نطاقًا تكيفيًا مماثلًا 2–30 دقيقة،
 
 ## التحقق وحدود المراجعة
 
-- تحقق دفعة Codex: `cargo test -p codex-usage-core` نجح (97 اختبارًا وحدويًا و11 اختبار عقد)، ونجح `cargo fmt --all -- --check` و`git diff --check`. لم تُعَد اختبارات الحزم الأخرى في هذه الدفعة.
+- تحقق Codex الحالي بعد حارس reset وترتيب اللقطات: `cargo test -p codex-usage-core` نجح (120 اختبارًا وحدويًا و21 اختبار عقد)، ونجح `cargo fmt --all -- --check` و`git diff --check`. شغّل Clippy بنجاح دون بوابة `-D warnings`؛ بقيت تحذيرات lint سابقة في ملفات أخرى، ولم يظهر تحذير في `codex_reset.rs`.
 - تحقق دفعة Claude السابقة: `cargo test -p codex-usage-core` نجح (99 اختبارًا وحدويًا و15 اختبار عقد)، و`cargo test -p codex-usage-windows-auth` نجح (12 اختبارًا).
 - تحقق استعادة Claude: `cargo test --workspace` نجح (99 core unit، و19 contract، و13 Windows-auth؛ إضافةً لاختبارات الأدوات والـdoc tests)، ونجح `cargo fmt --all -- --check` و`git diff --check`.
 - بقية المزودين: مقارنة source/docs/tests فقط في هذه الجولة؛ لم يُشغّل تكامل حقيقي مع حسابات أو خدمات خارجية، ولم تُشغّل اختبارات Swift/CodexBar.
