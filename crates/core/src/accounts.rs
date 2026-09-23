@@ -151,6 +151,9 @@ pub struct AccountRecord {
     pub browser_kind: Option<String>,
     pub browser_profile_id: Option<String>,
     pub workspace_id: Option<String>,
+    /// Provider-supplied display name for the selected workspace, when available.
+    #[serde(default)]
+    pub workspace_name: Option<String>,
     /// Legacy metadata retained for SQLite compatibility. The Codex adapter
     /// does not read this path or use native Codex processes as a source.
     #[serde(default)]
@@ -182,6 +185,7 @@ impl AccountRecord {
             browser_kind: None,
             browser_profile_id: None,
             workspace_id: normalize_optional(workspace_id),
+            workspace_name: None,
             codex_home: None,
         })
     }
@@ -222,6 +226,13 @@ impl AccountRecord {
     pub fn with_workspace_id(&self, workspace_id: Option<&str>) -> Self {
         let mut next = self.clone();
         next.workspace_id = normalize_optional(workspace_id.map(str::to_owned));
+        next.updated_at_utc = Utc::now();
+        next
+    }
+
+    pub fn with_workspace_name(&self, workspace_name: Option<&str>) -> Self {
+        let mut next = self.clone();
+        next.workspace_name = normalize_optional(workspace_name.map(str::to_owned));
         next.updated_at_utc = Utc::now();
         next
     }

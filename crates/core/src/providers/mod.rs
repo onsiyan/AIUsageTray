@@ -3,6 +3,7 @@ pub mod claude;
 pub mod claude_cli;
 pub mod claude_planner;
 pub(crate) mod codex_reset;
+pub mod codex_workspace;
 pub mod openai;
 pub mod opencode_go;
 pub mod opencode_go_local;

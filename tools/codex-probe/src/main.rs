@@ -6,8 +6,8 @@ use codex_usage_core::{
     },
     oauth_loopback::CodexOAuthCallbackListenerFactory,
     oauth_service::OAuthAuthorizationService,
-    providers::openai::oauth_definition,
     providers::registry::ProviderRegistryConfig,
+    providers::{codex_workspace::resolve_workspace_name, openai::oauth_definition},
     refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
     runtime::UsageRuntime,
     storage::SqliteStore,
@@ -30,13 +30,25 @@ type Authorization =
 struct Arguments {
     database: Option<PathBuf>,
     label: Option<String>,
+    resolve_workspace_names: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let Arguments { database, label } = parse_arguments()?;
+    let Arguments {
+        database,
+        label,
+        resolve_workspace_names,
+    } = parse_arguments()?;
 
     let database_path = database.unwrap_or_else(default_database_path);
+    if resolve_workspace_names && !database_path.is_file() {
+        return Err(format!(
+            "Codex account database does not exist: {}",
+            database_path.display()
+        )
+        .into());
+    }
     if let Some(parent) = database_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -47,6 +59,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let credential_store = Arc::new(WindowsCredentialManagerStore);
     let provider = oauth_definition();
     let authorization = create_authorization(transport.clone(), credential_store.clone());
+    if resolve_workspace_names {
+        return resolve_saved_workspace_names(&database_path, transport, &provider, authorization)
+            .await;
+    }
     let provisional =
         AccountRecord::create("Codex account", "pending@local.invalid", None, OPENAI, None)?;
 
@@ -68,6 +84,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         credential_store.remove(provisional.id).await?;
         return Err("OpenAI OAuth identity did not include an email".into());
     };
+    let workspace_name = if let Some(workspace_id) = identity.workspace_id.as_deref() {
+        match resolve_workspace_name(transport.as_ref(), &login.tokens.access_token, workspace_id)
+            .await
+        {
+            Ok(name) => name,
+            Err(error) => {
+                eprintln!(
+                    "Workspace name lookup was unavailable; keeping the workspace id: {error}"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
     let account_label = label
         .as_deref()
         .map(str::trim)
@@ -81,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         OPENAI,
         identity.workspace_id.clone(),
     ) {
-        Ok(account) => account,
+        Ok(account) => account.with_workspace_name(workspace_name.as_deref()),
         Err(error) => {
             credential_store.remove(provisional.id).await?;
             return Err(error.into());
@@ -98,6 +129,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("OpenAI OAuth account linked: {}", account.email);
     println!("Account: {}", account.email);
+    println!(
+        "Workspace: {}",
+        account.workspace_name.as_deref().unwrap_or("unavailable")
+    );
     println!("Database: {}", database_path.display());
     probe_and_print(
         &database_path,
@@ -189,6 +224,11 @@ async fn persist_oauth_login_account(
     } else {
         resolved
     };
+    let resolved = if let Some(workspace_name) = account.workspace_name.as_deref() {
+        resolved.with_workspace_name(Some(workspace_name))
+    } else {
+        resolved
+    };
     if let Err(error) = account_store.upsert(&resolved).await {
         if let Err(cleanup_error) = credential_store.remove(provisional_account_id).await {
             eprintln!("Warning: temporary OAuth credential cleanup failed: {cleanup_error}");
@@ -222,6 +262,77 @@ fn create_authorization(
         Arc::new(CodexOAuthCallbackListenerFactory),
         Arc::new(WindowsDefaultBrowserLauncher),
     )
+}
+
+async fn resolve_saved_workspace_names(
+    database_path: &std::path::Path,
+    transport: Arc<Transport>,
+    provider: &codex_usage_core::auth::OAuthProviderDefinition,
+    authorization: Authorization,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = SqliteStore::open(database_path)?;
+    let accounts = store
+        .list()
+        .await?
+        .into_iter()
+        .filter(|account| {
+            account.provider_id == OPENAI
+                && account.workspace_id.is_some()
+                && account.workspace_name.is_none()
+        })
+        .collect::<Vec<_>>();
+    if accounts.is_empty() {
+        println!("No Codex accounts are missing a workspace name.");
+        return Ok(());
+    }
+
+    let mut updated = 0;
+    let mut unresolved = 0;
+    let mut failed = 0;
+    for account in accounts {
+        let workspace_id = account
+            .workspace_id
+            .as_deref()
+            .expect("filtered account has a workspace id");
+        let tokens = match authorization.access_token(account.id, provider).await {
+            Ok(tokens) => tokens,
+            Err(error) => {
+                failed += 1;
+                eprintln!(
+                    "Workspace name lookup failed for {}: {error}",
+                    account.email
+                );
+                continue;
+            }
+        };
+        match resolve_workspace_name(transport.as_ref(), &tokens.access_token, workspace_id).await {
+            Ok(Some(workspace_name)) => {
+                let named_account = account.with_workspace_name(Some(&workspace_name));
+                store.upsert(&named_account).await?;
+                println!("{} — workspace: {}", account.email, workspace_name);
+                updated += 1;
+            }
+            Ok(None) => {
+                eprintln!(
+                    "Workspace id was not listed for {}; keeping it unchanged.",
+                    account.email
+                );
+                unresolved += 1;
+            }
+            Err(error) => {
+                eprintln!(
+                    "Workspace name lookup failed for {}: {error}",
+                    account.email
+                );
+                failed += 1;
+            }
+        }
+    }
+    println!("Workspace-name lookup: {updated} updated, {unresolved} unresolved, {failed} failed.");
+    if failed > 0 {
+        return Err(format!("workspace-name lookup failed for {failed} Codex account(s)").into());
+    }
+    Ok(())
 }
 
 async fn probe_and_print(
@@ -350,9 +461,12 @@ fn parse_arguments_from(
                         .into_owned(),
                 );
             }
+            "--resolve-workspace-names" => {
+                arguments.resolve_workspace_names = true;
+            }
             "--help" | "-h" => {
                 println!(
-                    "Usage: codex-usage-codex-probe [--database PATH] [--label LABEL]\n\nAdds a Codex account through OpenAI OAuth in the default browser and receives the authorization callback on localhost. OAuth credentials are stored per account in Windows Credential Manager; usage is queried from WHAM with that account's bearer token. It does not read browser cookies, Codex auth files, or launch Codex CLI/app-server."
+                    "Usage: codex-usage-codex-probe [--database PATH] [--label LABEL]\n       codex-usage-codex-probe --resolve-workspace-names [--database PATH]\n\nAdds a Codex account through OpenAI OAuth in the default browser and receives the authorization callback on localhost. OAuth credentials are stored per account in Windows Credential Manager. Workspace names are optionally resolved from OpenAI's account metadata endpoint. Usage is queried from WHAM with that account's bearer token. It does not read browser cookies, Codex auth files, or launch Codex CLI/app-server."
                 );
                 std::process::exit(0);
             }
@@ -401,6 +515,16 @@ mod tests {
             Some(std::path::Path::new("accounts.db"))
         );
         assert_eq!(arguments.label.as_deref(), Some("Codex Work"));
+
+        let resolve_arguments = parse_arguments_from(
+            ["--resolve-workspace-names", "--database", "accounts.db"].map(OsString::from),
+        )
+        .unwrap();
+        assert!(resolve_arguments.resolve_workspace_names);
+        assert_eq!(
+            resolve_arguments.database.as_deref(),
+            Some(std::path::Path::new("accounts.db"))
+        );
     }
 
     #[test]
@@ -461,7 +585,8 @@ mod tests {
             OPENAI,
             Some("workspace-1".to_owned()),
         )
-        .unwrap();
+        .unwrap()
+        .with_workspace_name(Some("Team North"));
         credentials
             .save(
                 provisional.id,
@@ -489,6 +614,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(resolved.id, existing.id);
+        assert_eq!(resolved.workspace_name.as_deref(), Some("Team North"));
         assert_eq!(accounts.list().await.unwrap().len(), 1);
         assert_eq!(
             credentials
@@ -500,6 +626,52 @@ mod tests {
             "new-refresh-token"
         );
         assert!(credentials.get(provisional.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn unavailable_workspace_name_lookup_preserves_a_previously_saved_name() {
+        let accounts = Arc::new(InMemoryAccountStore::default());
+        let credentials = Arc::new(InMemoryOAuthCredentialStore::default());
+        let existing = AccountRecord::create(
+            "Codex work",
+            "codex@example.com",
+            Some("chatgpt-user-1".to_owned()),
+            OPENAI,
+            Some("workspace-1".to_owned()),
+        )
+        .unwrap()
+        .with_workspace_name(Some("Engineering"));
+        accounts.upsert(&existing).await.unwrap();
+        let provisional = AccountRecord::create(
+            "Codex account",
+            "codex@example.com",
+            Some("chatgpt-user-1".to_owned()),
+            OPENAI,
+            Some("workspace-1".to_owned()),
+        )
+        .unwrap();
+        let new_credential = credential(
+            "new-refresh-token",
+            Some("chatgpt-user-1"),
+            Some("workspace-1"),
+        );
+        credentials
+            .save(provisional.id, &new_credential)
+            .await
+            .unwrap();
+
+        let resolved = persist_oauth_login_account(
+            accounts.as_ref(),
+            credentials.as_ref(),
+            provisional.clone(),
+            provisional.id,
+            &new_credential,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resolved.id, existing.id);
+        assert_eq!(resolved.workspace_name.as_deref(), Some("Engineering"));
     }
 
     #[tokio::test]

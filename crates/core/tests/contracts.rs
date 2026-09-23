@@ -1037,12 +1037,27 @@ async fn sqlite_account_identity_upsert_reuses_only_the_same_provider_and_worksp
         OPENAI,
         Some("workspace-1".to_owned()),
     )
-    .unwrap();
+    .unwrap()
+    .with_workspace_name(Some("  Team North  "));
     let saved_openai_workspace_one = store
         .upsert_or_get_by_provider_identity(&openai_workspace_one)
         .await
         .unwrap();
     assert_eq!(saved_openai_workspace_one.id, openai_workspace_one.id);
+    assert_eq!(
+        saved_openai_workspace_one.workspace_name.as_deref(),
+        Some("Team North")
+    );
+    assert_eq!(
+        store
+            .get(saved_openai_workspace_one.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .workspace_name
+            .as_deref(),
+        Some("Team North")
+    );
 
     let same_user_other_workspace = AccountRecord::create(
         "OpenAI account in another workspace",
@@ -1058,6 +1073,47 @@ async fn sqlite_account_identity_upsert_reuses_only_the_same_provider_and_worksp
         .unwrap();
     assert_eq!(saved_other_workspace.id, same_user_other_workspace.id);
     assert_eq!(store.list().await.unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn sqlite_open_adds_workspace_name_to_an_existing_accounts_table() {
+    let directory = tempfile::tempdir().unwrap();
+    let database_path = directory.path().join("accounts.db");
+    let store = SqliteStore::open(&database_path).unwrap();
+    let account = AccountRecord::create(
+        "Codex account",
+        "user@example.com",
+        Some("chatgpt-user-1".to_owned()),
+        OPENAI,
+        Some("workspace-1".to_owned()),
+    )
+    .unwrap();
+    store.upsert(&account).await.unwrap();
+    drop(store);
+
+    let legacy_connection = rusqlite::Connection::open(&database_path).unwrap();
+    legacy_connection
+        .execute("ALTER TABLE accounts DROP COLUMN workspace_name", [])
+        .unwrap();
+    drop(legacy_connection);
+
+    let migrated_store = SqliteStore::open(&database_path).unwrap();
+    let migrated = migrated_store.get(account.id).await.unwrap().unwrap();
+    assert_eq!(migrated.workspace_id.as_deref(), Some("workspace-1"));
+    assert_eq!(migrated.workspace_name, None);
+
+    let named = migrated.with_workspace_name(Some("Team North"));
+    migrated_store.upsert(&named).await.unwrap();
+    assert_eq!(
+        migrated_store
+            .get(account.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .workspace_name
+            .as_deref(),
+        Some("Team North")
+    );
 }
 
 #[tokio::test]
