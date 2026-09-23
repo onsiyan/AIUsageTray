@@ -1,7 +1,7 @@
 # مقارنة مزودي الاستخدام مع CodexBar
 
 تاريخ المراجعة: 2026-09-23
-النطاق: نسخة Rust المنسوخة `outputs/CodexUsageMonitor-Rust/rust` فقط، ومقارنة مصدرية مع مشروع CodexBar واختباراته ووثائقه الحالية. نُفذت تحسينات مساري Codex وAntigravity الموضحة أدناه؛ بقية adapters لم تتغير في هذه الدفعة، ولم يُمس مشروع .NET الأصلي. هذه مراجعة لاستعلامات الاستخدام والهوية والحدود وإعادة التعيين والاسترداد من الأخطاء، لا مقارنة واجهات.
+النطاق: نسخة Rust المنسوخة `outputs/CodexUsageMonitor-Rust/rust` فقط، ومقارنة مصدرية مع مشروع CodexBar واختباراته ووثائقه الحالية. نُفذت تحسينات محددة في مسارات Codex وClaude وAntigravity وOpenRouter وOpenCode Go؛ الفروق المتبقية مذكورة لكل مزود، ولم يُمس مشروع .NET الأصلي. هذه مراجعة لاستعلامات الاستخدام والهوية والحدود وإعادة التعيين والاسترداد من الأخطاء، وليست اختبارًا حيًا للخدمات أو مقارنة واجهات.
 
 ## الخلاصة التنفيذية
 
@@ -11,7 +11,7 @@
 | Claude | تغطية OAuth وWeb وCLI وAdmin؛ تدوير Web session، واستعادة واحدة مربوطة بالحساب بعد 401 | سجلات الحساب القديمة التي لا تملك browser kind تحتاج ربطًا جديدًا؛ لم يُختبر مع خدمة حية |
 | Antigravity | مسارا التطبيق وOAuth؛ الملخص والعناصر الإضافية تتبعان تقسيم العائلات وكبح التكرار في CodexBar | إسناد آمن لمصدر `agy` مؤجل لغياب دليل هوية الحساب |
 | OpenRouter | `/key` و`/credits` وActivity مستقلة، مع HTTPS وسجل 30 يومًا مكتملًا وBYOK | لم يُختبر مع خدمة OpenRouter حية؛ الأدلة الحالية اختبارات اصطناعية ومقارنة مصدرية |
-| OpenCode Go | Console/API والـmeters الأساسية متوافقة | `endsAt` لا يدخل في إعادة تعيين الشهر، وسلوك التحويلات والـfallback أقل اكتمالًا |
+| OpenCode Go | Console/API والـmeters و`endsAt` وحقول reset، مع redirects محدودة لنفس الأصل | إثراء الرصيد والـfallback ما زالا تسلسليين وأقل اكتمالًا من المرجع؛ لا يوجد اختبار حي |
 
 التوصية العامة ليست إعادة كتابة المزودين؛ الأساس موجود. الأولوية هي تثبيت دلالات المصدر والحساب، ثم سدّ حالات الفشل التي قد تنتج بيانات ناقصة أو تنسبها للحساب الخطأ. عولج Codex أولًا مع الحفاظ على قيد الجلسة المستوردة من المتصفح وتعدد الحسابات.
 
@@ -79,14 +79,13 @@
 
 ## OpenCode Go
 
-**المتوافق:** مسارات Console (`zen/go/v1/usage` و`console/api/...`) والـworkspace header، وmeters للـ5h/week/month، وتحويل micro-cent وfallbackات billing الأساسية ممثلة محليًا. استراتيجية مصدر account-scoped تتبع web/local/API، وSQLite المحلي معلّم كتقدير لا كقياس authoritative.
+**المتوافق:** مسارات Console (`zen/go/v1/usage` و`console/api/...`) والـworkspace header، وmeters للـ5h/week/month، وتحويل micro-cent وfallbackات billing الأساسية ممثلة محليًا. أصبح `access.endsAt` موعد تجديد، ويملأ reset الشهر فقط عندما لا يرسل meter الشهر reset صالحًا؛ وتُقبل أسماء reset النسبية التي يستخدمها المرجع، ويُقرأ `usage.renewAt` قبل fallback إلى الجذر. التحويلات تُتبع حتى 10 مرات، فقط إلى HTTPS من الأصل نفسه، مع الحفاظ على دلالات 301/302/303 مقابل 307/308. هذه السياسة provider-specific ولا تغيّر النقل المشترك. استراتيجية المصدر account-scoped تتبع web/local/API، وSQLite المحلي معلّم كتقدير لا كقياس authoritative.
 
 **الفروق المؤثرة:**
 
-1. Parser Console المحلي لا يمرر `access.endsAt` كموعد تجديد ولا يملأ reset الشهر منه، بينما CodexBar يستخدمه لـ `renewsAt` وmonth reset حين `month.resetsAt` غائب. كما أن بعض أسماء حقول reset المتداولة مثل `reset_sec` غير مقبولة محليًا.
-2. transport المحلي يعطل redirects كليًا، بينما المرجع يسمح بتحويلات HTTPS على النطاق نفسه. هذا قد يكسر redirect مشروعًا؛ العلاج ليس اتباع أي redirect، بل سياسة provider-specific تقيد HTTPS والنطاق.
-3. fallback المحلي تسلسلي وأقل غنيًا من المرجع: لا يوازي subscription مع Zen balance الاختياري ولا يحتفظ بنفس قواعد fallback عند `noSubscription` مقابل أخطاء الشبكة/التحليل. وهذا قد يرفع زمن التحديث أو يفقد balance صالحًا عند تعطل مسار آخر.
-4. بعض الحقول المباشرة مثل `usage` و`usage.renewAt` لا تُقرأ في كل أشكال API مثل المرجع، وتطبيع workspace override المحلي أقل صرامة. كذلك ينبغي فصل رؤوس API Bearer عن Cookie headers لتجنب إرسال cookie إلى API لا يحتاجها.
+1. إثراء رصيد Console المحلي ما زال بعد استعلام الاستخدام بالتتابع؛ CodexBar يبدأ طلب Zen balance اختياريًا بالتوازي مع استعلام الاشتراك ويضع مهلة محدودة للانضمام، ثم يجعله fallback إلزاميًا في حالات `noSubscription` أو payload usage المفقود فقط. يلزم بعد ذلك نقل قواعد التوازي والاسترداد مع الحفاظ على تشخيص المصدر وحدود الحساب.
+2. redirect المحلي أشد تقييدًا من المرجع عمدًا: يثبت scheme والـhost والـport معًا (HTTPS same-origin)، والمرجع يقارن الـhost ويشترط HTTPS. هذا يمنع إرسال Cookie/Bearer إلى منفذ مختلف، لكنه قد يرفض تحويلًا مشروعًا على منفذ بديل.
+3. لم يُجر اختبار بحساب OpenCode Go حي؛ قواعد النقل والتحليل مثبتة باختبارات اصطناعية ومقارنة مصدرية فقط.
 
 **مراجع محلية:** [OpenCode Go adapter](../../crates/core/src/providers/opencode_go.rs)، [مصدر usage المحلي](../../crates/core/src/providers/opencode_go_local.rs)، [HTTP transport](../../crates/core/src/transport.rs).  
 **مرجع CodexBar:** [OpenCode provider notes](https://github.com/steipete/CodexBar/blob/main/docs/opencode.md)، [OpenCode Go fetcher](https://raw.githubusercontent.com/steipete/CodexBar/main/Sources/CodexBarCore/Providers/OpenCodeGo/OpenCodeGoUsageFetcher.swift)، [legacy fallback](https://raw.githubusercontent.com/steipete/CodexBar/main/Sources/CodexBarCore/Providers/OpenCodeGo/OpenCodeGoLegacyFallback.swift).
@@ -101,10 +100,10 @@ CodexBar يوثق نطاقًا تكيفيًا مماثلًا 2–30 دقيقة،
 
 ## ترتيب العمل المقترح
 
-1. **Antigravity:** تقوية تصنيف process ownership وجاهزية `language_server` ومطابقة الحساب؛ لا يُضاف `agy` قبل وجود دليل account identity قابل للربط.
-2. **Claude:** مسار الاسترداد بعد 401 وتدوير `Set-Cookie` أصبحا منفذين ومختبرين اصطناعيًا؛ يتبقى التحقق مع جلسة حية عند إجراء اختبار المستخدم.
-3. **OpenRouter:** افصل فشل key عن credits، ثم أصلح activity آخر يوم/التحقق/dedup وBYOK، وارفض HTTP.
-4. **OpenCode Go:** ابدأ بـ `endsAt` وحقول reset، ثم redirect HTTPS المحدود وفصل الرؤوس، وبعدها مصفوفة fallback/balance.
+1. **OpenCode Go:** استكمال إثراء الرصيد والـfallback المتوازي بعقود تغطي `noSubscription` وأخطاء الشبكة والتحليل؛ ثم اختبار الحساب الحي.
+2. **Codex:** إعادة فحص قيمة Web Dashboard enrichment الاختياري مقابل WHAM فقط، مع الإبقاء على جلسة المتصفح المستوردة للحساب المختار ورفض مصادر `auth.json`/CLI؛ Codex هو الأولوية الأعلى للمشروع.
+3. **Claude وOpenRouter:** التحقق الحي مع الحساب/المفتاح المخصص للاختبار عند توفرهما؛ الاختبارات الحالية اصطناعية.
+4. **Antigravity:** لا يُضاف مصدر `agy` قبل العثور على دليل موثوق يربطه بهوية الحساب، مع استمرار حفظ عزل الحسابات.
 
 هذه البنود تخص adapters التي لم تُحدّث بعد. قبل كل تغيير، تُراجع نسخة CodexBar من المصدر والاختبارات المقابلة لأن فرع `main` متغير، ثم تُكيّف الفكرة مع Windows وعزل الحسابات بدل نسخ تنفيذ macOS حرفيًا.
 
