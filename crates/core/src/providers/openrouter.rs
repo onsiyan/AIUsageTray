@@ -196,21 +196,51 @@ impl UsageAdapter for OpenRouterUsageAdapter {
             return Ok(missing_auth("OpenRouter"));
         };
 
-        // /key is the authoritative per-key source. It contains the current
-        // limit period, explicit remaining dollars, calendar-period spend,
-        // tier flags, and the workspace identifier.
-        let key_response = self.get("key", &material, token).await?;
-        if !key_response.is_success() {
-            return Ok(map_http_error(&key_response, "OpenRouter"));
-        }
-        let root: Value = serde_json::from_str(&key_response.body)
-            .map_err(|error| TransportError::Serialization(error.to_string()))?;
-        let Some(data) = root.get("data") else {
-            return Ok(invalid_payload(
-                "OpenRouter",
-                "key response is missing data",
-            ));
+        // /key and /credits are independent account-scoped sources. Keep a
+        // usable credit balance when quota is temporarily unavailable, while
+        // preserving the key failure if no other source yields data.
+        let mut source_diagnostics = Vec::new();
+        let mut key_failure = None;
+        let key_data = match self.get("key", &material, token).await {
+            Ok(response) if response.is_success() => {
+                match serde_json::from_str::<Value>(&response.body) {
+                    Ok(root) => match root.get("data").filter(|data| data.is_object()) {
+                        Some(data) => Some(data.clone()),
+                        None => {
+                            source_diagnostics.push(invalid_source_diagnostic(
+                                "key",
+                                "key response is missing object data",
+                            ));
+                            key_failure = Some(Ok(invalid_payload(
+                                "OpenRouter",
+                                "key response is missing data",
+                            )));
+                            None
+                        }
+                    },
+                    Err(error) => {
+                        source_diagnostics.push(invalid_source_diagnostic(
+                            "key",
+                            "key response was not valid JSON",
+                        ));
+                        key_failure = Some(Err(TransportError::Serialization(error.to_string())));
+                        None
+                    }
+                }
+            }
+            Ok(response) => {
+                source_diagnostics.push(response_diagnostic("key", &response));
+                key_failure = Some(Ok(map_http_error(&response, "OpenRouter")));
+                None
+            }
+            Err(error) => {
+                source_diagnostics.push(transport_diagnostic("key", &error));
+                key_failure = Some(Err(error));
+                None
+            }
         };
+        let empty_data = Value::Null;
+        let data = key_data.as_ref().unwrap_or(&empty_data);
 
         let now = Utc::now();
         let cumulative_usage = non_negative(json_number(data, &["usage"]));
@@ -227,7 +257,8 @@ impl UsageAdapter for OpenRouterUsageAdapter {
             .and_then(|label| period_usage(data, label));
         let used_percent =
             key_limit_used_percent(limit, explicit_remaining, period_usage, cumulative_usage);
-        let workspace_id = json_string(data, &["workspace_id", "workspaceId"]);
+        let workspace_id = json_string(data, &["workspace_id", "workspaceId"])
+            .or_else(|| account.workspace_id.clone());
         let is_management_key =
             json_bool(data, &["is_management_key", "isManagementKey"]).unwrap_or(false);
         let is_free_tier = json_bool(data, &["is_free_tier", "isFreeTier"]);
@@ -367,8 +398,6 @@ impl UsageAdapter for OpenRouterUsageAdapter {
             });
         }
 
-        let mut source_diagnostics = Vec::new();
-
         // Credits are optional enrichment and remain account-key scoped. A
         // separately configured management key must never replace the
         // selected key here: OpenRouter's credits endpoint is account-wide for
@@ -473,7 +502,10 @@ impl UsageAdapter for OpenRouterUsageAdapter {
         });
 
         if primary.is_none() && spend.is_none() && credits.is_none() && metrics.is_empty() {
-            return Ok(invalid_payload("OpenRouter", "no usage data was present"));
+            return match key_failure {
+                Some(failure) => failure,
+                None => Ok(invalid_payload("OpenRouter", "no usage data was present")),
+            };
         }
 
         let snapshot = UsageSnapshot {

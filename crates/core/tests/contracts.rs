@@ -374,6 +374,39 @@ async fn openrouter_optional_failures_preserve_key_data_and_record_diagnostics()
 }
 
 #[tokio::test]
+async fn openrouter_credits_survive_a_failed_key_quota_request() {
+    let transport = Arc::new(KeyUnavailableCreditsTransport);
+    let auth = Arc::new(StaticAuth);
+    let adapter = OpenRouterUsageAdapter::new(transport, auth, true)
+        .unwrap()
+        .with_activity(false);
+    let account = AccountRecord::create(
+        "openrouter-partial",
+        "openrouter-partial@example.com",
+        None,
+        OPENROUTER,
+        None,
+    )
+    .unwrap();
+
+    let result = adapter.probe(&account).await.unwrap();
+    let snapshot = result.snapshot.expect("credits-only usage snapshot");
+    assert!(snapshot.primary.is_none());
+    assert_eq!(
+        snapshot
+            .credits
+            .as_ref()
+            .and_then(|credits| credits.balance),
+        Some(75.0)
+    );
+    assert!(snapshot.source_diagnostics.iter().any(|diagnostic| {
+        diagnostic.source == "key"
+            && diagnostic.code == codex_usage_core::usage::UsageAdapterErrorCode::TransientHttp
+            && diagnostic.http_status_code == Some(503)
+    }));
+}
+
+#[tokio::test]
 async fn claude_oauth_adapter_uses_authoritative_oauth_usage_route() {
     let transport = Arc::new(FakeTransport::default());
     let auth = Arc::new(ClaudeOAuthAuth);
@@ -945,6 +978,24 @@ impl UsageHttpTransport for OptionalFailureTransport {
                 200,
                 r#"{"data":[{"date":"2030-01-02","model":"openai/gpt-5","usage":0.01,"prompt_tokens":9007199254740992}]}"#,
             ),
+            _ => return Err(TransportError::InvalidUrl(request.url.to_string())),
+        };
+        Ok(UsageHttpResponse {
+            status_code,
+            body: body.to_owned(),
+            headers: Default::default(),
+        })
+    }
+}
+
+struct KeyUnavailableCreditsTransport;
+
+#[async_trait]
+impl UsageHttpTransport for KeyUnavailableCreditsTransport {
+    async fn send(&self, request: UsageHttpRequest) -> Result<UsageHttpResponse, TransportError> {
+        let (status_code, body) = match request.url.path() {
+            "/api/v1/key" => (503, "temporary quota failure"),
+            "/api/v1/credits" => (200, r#"{"data":{"total_credits":100,"total_usage":25}}"#),
             _ => return Err(TransportError::InvalidUrl(request.url.to_string())),
         };
         Ok(UsageHttpResponse {
