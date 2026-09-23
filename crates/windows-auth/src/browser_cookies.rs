@@ -7,11 +7,13 @@
 //! the returned header through the account-scoped secure auth store.
 
 use crate::{WindowsBrowserLauncher, WindowsDefaultBrowserLauncher};
+use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use codex_usage_core::{
     accounts::{AccountRecord, CLAUDE, OPENAI, OPENCODE_GO, OPENROUTER},
     auth::{
-        AccountAuthMaterial, AccountAuthMaterialStore, AuthError, CookieValue, OAuthBrowserLauncher,
+        AccountAuthMaterial, AccountAuthMaterialStore, AccountBrowserSessionRefresher, AuthError,
+        CookieValue, OAuthBrowserLauncher,
     },
 };
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
@@ -56,6 +58,12 @@ impl BrowserKind {
             Self::Brave => "brave",
             Self::Chromium => "chromium",
         }
+    }
+
+    fn from_account_id(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|browser| browser.as_str().eq_ignore_ascii_case(value.trim()))
     }
 
     fn user_data_root(self, local_app_data: &Path) -> PathBuf {
@@ -532,6 +540,36 @@ impl WindowsBrowserCookieImporter {
             }
             tokio::time::sleep(poll_interval).await;
         }
+    }
+}
+
+#[async_trait]
+impl AccountBrowserSessionRefresher for WindowsBrowserCookieImporter {
+    async fn reimport(
+        &self,
+        account: &AccountRecord,
+    ) -> Result<Option<AccountAuthMaterial>, AuthError> {
+        let (Some(browser_id), Some(profile_id)) = (
+            account.browser_kind.as_deref(),
+            account.browser_profile_id.as_deref(),
+        ) else {
+            return Ok(None);
+        };
+        let browser = BrowserKind::from_account_id(browser_id).ok_or_else(|| {
+            AuthError::CredentialStore("the saved browser type is not supported".to_owned())
+        })?;
+        let mut request = BrowserCookieImportRequest::for_provider(&account.provider_id)
+            .map_err(|error| AuthError::CredentialStore(error.to_string()))?;
+        request.browser = Some(browser);
+        request.profile_id = Some(profile_id.to_owned());
+        let imported = self
+            .import(&request)
+            .map_err(|error| AuthError::CredentialStore(error.to_string()))?;
+        Ok(Some(AccountAuthMaterial {
+            cookies: imported.cookies,
+            user_agent: imported.user_agent,
+            ..AccountAuthMaterial::default()
+        }))
     }
 }
 
@@ -1114,5 +1152,55 @@ mod tests {
             stored.cookie_header().as_deref(),
             Some("sessionKey=session-value")
         );
+    }
+
+    #[tokio::test]
+    async fn session_reimport_uses_only_the_saved_browser_and_profile() {
+        let root = tempdir().unwrap();
+        let create_profile = |browser_root: &str, profile_id: &str, cookie_value: &str| {
+            let user_data = root.path().join(browser_root);
+            let profile = user_data.join(profile_id).join("Network");
+            fs::create_dir_all(&profile).unwrap();
+            let local_state = user_data.join("Local State");
+            fs::write(local_state, "{}").unwrap();
+            let database = profile.join("Cookies");
+            let connection = Connection::open(database).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB, path TEXT, expires_utc INTEGER, last_access_utc INTEGER);",
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO cookies VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        ".claude.ai",
+                        "sessionKey",
+                        cookie_value,
+                        Vec::<u8>::new(),
+                        "/",
+                        0,
+                        1
+                    ],
+                )
+                .unwrap();
+        };
+        create_profile("Google/Chrome/User Data", "Default", "chrome-default");
+        create_profile("Google/Chrome/User Data", "Profile 2", "chrome-profile-two");
+        create_profile("Microsoft/Edge/User Data", "Default", "edge-default");
+
+        let importer = WindowsBrowserCookieImporter::with_local_app_data(root.path());
+        let mut account =
+            AccountRecord::create("Claude", "user@example.com", None, CLAUDE, None).unwrap();
+        account.browser_kind = Some("chrome".to_owned());
+        account.browser_profile_id = Some("Profile 2".to_owned());
+        let material = importer.reimport(&account).await.unwrap().unwrap();
+        assert_eq!(
+            material.cookie_header().as_deref(),
+            Some("sessionKey=chrome-profile-two")
+        );
+
+        account.browser_kind = None;
+        assert!(importer.reimport(&account).await.unwrap().is_none());
     }
 }

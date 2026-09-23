@@ -1,7 +1,10 @@
 pub use super::claude_planner::ClaudeSourceMode;
 use crate::{
     accounts::{AccountId, AccountRecord, CLAUDE, VerifiedIdentity},
-    auth::{AccountAuthMaterialProvider, AccountAuthMaterialStore, AuthError},
+    auth::{
+        AccountAuthMaterialProvider, AccountAuthMaterialStore, AccountBrowserSessionRefresher,
+        AuthError,
+    },
     providers::claude_cli::{self, ClaudeCliError, ClaudeCliProbeOptions},
     providers::claude_planner::{self, ClaudeRuntime, ClaudeSource},
     providers::shared::{
@@ -27,6 +30,7 @@ pub struct ClaudeUsageAdapter {
     transport: Arc<dyn UsageHttpTransport>,
     auth: Arc<dyn AccountAuthMaterialProvider>,
     auth_material_store: Option<Arc<dyn AccountAuthMaterialStore>>,
+    browser_session_refresher: Option<Arc<dyn AccountBrowserSessionRefresher>>,
     base_url: Url,
     oauth_base_url: Url,
     fetch_prepaid_credits: bool,
@@ -64,6 +68,7 @@ impl ClaudeUsageAdapter {
             transport,
             auth,
             auth_material_store: None,
+            browser_session_refresher: None,
             base_url: Url::parse("https://claude.ai/")
                 .map_err(|error| TransportError::InvalidUrl(error.to_string()))?,
             oauth_base_url: Url::parse("https://api.anthropic.com/")
@@ -91,6 +96,16 @@ impl ClaudeUsageAdapter {
     /// verified the response identity against this account's recorded email.
     pub fn with_auth_material_store(mut self, store: Arc<dyn AccountAuthMaterialStore>) -> Self {
         self.auth_material_store = Some(store);
+        self
+    }
+
+    /// Enables account-bound browser session recovery after a real 401. The
+    /// replacement cookie is identity-checked before secure storage or retry.
+    pub fn with_browser_session_refresher(
+        mut self,
+        refresher: Arc<dyn AccountBrowserSessionRefresher>,
+    ) -> Self {
+        self.browser_session_refresher = Some(refresher);
         self
     }
 
@@ -427,6 +442,93 @@ impl ClaudeUsageAdapter {
     }
 
     async fn probe_web(
+        &self,
+        account: &AccountRecord,
+        session_key: &str,
+    ) -> Result<UsageProbeResult, TransportError> {
+        let unauthorized = crate::usage::UsageAdapterErrorCode::Unauthorized;
+        let initial = self.probe_web_once(account, session_key).await?;
+        if initial.error.as_ref().map(|error| error.code) != Some(unauthorized) {
+            return Ok(initial);
+        }
+        let (Some(refresher), Some(store)) = (
+            self.browser_session_refresher.as_ref(),
+            self.auth_material_store.as_ref(),
+        ) else {
+            return Ok(initial);
+        };
+        let Ok(Some(replacement)) = refresher.reimport(account).await else {
+            return Ok(initial);
+        };
+        let Some(replacement_key) = claude_session_key(&replacement) else {
+            return Ok(initial);
+        };
+        if replacement_key == session_key {
+            return Ok(initial);
+        }
+
+        let (identity, verified_session_key) = match fetch_web_identity_for_account(
+            self.transport.as_ref(),
+            &replacement_key,
+            account.provider_account_id.as_deref(),
+        )
+        .await
+        {
+            Ok(identity) => identity,
+            Err(_) => return Ok(initial),
+        };
+        let email_matches = identity
+            .email
+            .as_deref()
+            .is_some_and(|email| email.trim().eq_ignore_ascii_case(&account.email));
+        let organization_matches = account
+            .provider_account_id
+            .as_deref()
+            .is_none_or(|expected| identity.provider_account_id.as_deref() == Some(expected));
+        if !email_matches || !organization_matches {
+            return Ok(account_mismatch(
+                "Claude browser session belongs to another account",
+            ));
+        }
+
+        // The imported cookie is not written until both the account email and
+        // the account's selected organization have been verified.
+        let replaced = store
+            .replace_cookie_if_matches(account.id, "sessionKey", session_key, &verified_session_key)
+            .await
+            .unwrap_or(false);
+        let persisted = replaced
+            || store
+                .get(account.id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|material| claude_session_key(&material))
+                .as_deref()
+                == Some(verified_session_key.as_str());
+        let mut retried = self.probe_web_once(account, &verified_session_key).await?;
+        if persisted {
+            retried.session_token_was_refreshed = true;
+        } else if !retried.session_token_was_refreshed
+            && retried.succeeded()
+            && let Some(snapshot) = retried.snapshot.as_mut()
+            && !snapshot
+                .source_diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.source == "auth.session-key")
+        {
+            snapshot.source_diagnostics.push(UsageSourceDiagnostic {
+                source: "auth.session-key".to_owned(),
+                code: UsageAdapterErrorCode::Unknown,
+                message: "Claude usage was fetched with the verified replacement session, but secure storage did not confirm saving it; a later refresh may need to re-import the browser session".to_owned(),
+                http_status_code: None,
+                retry_after_seconds: None,
+            });
+        }
+        Ok(retried)
+    }
+
+    async fn probe_web_once(
         &self,
         account: &AccountRecord,
         session_key: &str,
@@ -1302,7 +1404,16 @@ pub async fn fetch_web_identity(
     transport: &dyn UsageHttpTransport,
     session_key: &str,
 ) -> Result<VerifiedIdentity, TransportError> {
-    let session_key = session_key.trim();
+    let (identity, _) = fetch_web_identity_for_account(transport, session_key, None).await?;
+    Ok(identity)
+}
+
+async fn fetch_web_identity_for_account(
+    transport: &dyn UsageHttpTransport,
+    session_key: &str,
+    expected_organization_id: Option<&str>,
+) -> Result<(VerifiedIdentity, String), TransportError> {
+    let mut session_key = session_key.trim().to_owned();
     if !session_key.starts_with("sk-ant-") || session_key.len() <= "sk-ant-".len() {
         return Err(TransportError::Serialization(
             "Claude Web session key is missing or invalid".to_owned(),
@@ -1310,7 +1421,7 @@ pub async fn fetch_web_identity(
     }
     let base_url = Url::parse("https://claude.ai/")
         .map_err(|error| TransportError::InvalidUrl(error.to_string()))?;
-    let headers = || {
+    let headers = |session_key: &str| {
         [
             ("Accept".to_owned(), "application/json".to_owned()),
             ("Cookie".to_owned(), format!("sessionKey={session_key}")),
@@ -1327,7 +1438,7 @@ pub async fn fetch_web_identity(
         .send(UsageHttpRequest {
             method: Method::GET,
             url: organizations_url,
-            headers: headers(),
+            headers: headers(&session_key),
             body: None,
         })
         .await?;
@@ -1337,11 +1448,14 @@ pub async fn fetch_web_identity(
             organizations.status_code
         )));
     }
-    let organization_id = select_organization(&organizations.body, None).ok_or_else(|| {
-        TransportError::Serialization(
-            "Claude Web organizations did not contain an organization id".to_owned(),
-        )
-    })?;
+    update_session_key_from_response(&mut session_key, &organizations);
+    let organization_id = select_organization(&organizations.body, expected_organization_id)
+        .or_else(|| select_organization(&organizations.body, None))
+        .ok_or_else(|| {
+            TransportError::Serialization(
+                "Claude Web organizations did not contain an organization id".to_owned(),
+            )
+        })?;
 
     let account_url = base_url
         .join("api/account")
@@ -1350,7 +1464,7 @@ pub async fn fetch_web_identity(
         .send(UsageHttpRequest {
             method: Method::GET,
             url: account_url,
-            headers: headers(),
+            headers: headers(&session_key),
             body: None,
         })
         .await?;
@@ -1360,6 +1474,7 @@ pub async fn fetch_web_identity(
             account.status_code
         )));
     }
+    update_session_key_from_response(&mut session_key, &account);
     let account = parse_claude_web_account(&account.body, &organization_id).ok_or_else(|| {
         TransportError::Serialization(
             "Claude Web account did not contain an account identity".to_owned(),
@@ -1370,11 +1485,14 @@ pub async fn fetch_web_identity(
             "Claude Web account did not contain an email address".to_owned(),
         ));
     }
-    Ok(VerifiedIdentity {
-        email: account.email,
-        provider_account_id: Some(organization_id),
-        plan_type: account.plan_type,
-    })
+    Ok((
+        VerifiedIdentity {
+            email: account.email,
+            provider_account_id: Some(organization_id),
+            plan_type: account.plan_type,
+        },
+        session_key,
+    ))
 }
 
 fn parse_claude_profile(body: &str) -> Option<ClaudeProfile> {

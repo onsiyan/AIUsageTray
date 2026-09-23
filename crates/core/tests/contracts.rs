@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use codex_usage_core::{
     accounts::{ANTIGRAVITY, AccountRecord, AccountStore, CLAUDE, OPENROUTER},
     auth::{
-        AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore, AuthError,
-        CookieValue, InMemoryAuthMaterialStore, OAuthCallbackListener, OAuthPkcePair,
-        StoredAuthMaterialProvider,
+        AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
+        AccountBrowserSessionRefresher, AuthError, CookieValue, InMemoryAuthMaterialStore,
+        OAuthCallbackListener, OAuthPkcePair, StoredAuthMaterialProvider,
     },
     oauth_loopback::LoopbackOAuthCallbackListener,
     providers::antigravity::AntigravityUsageAdapter,
@@ -21,7 +21,10 @@ use codex_usage_core::{
     },
 };
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration as StdDuration,
 };
 use tokio::{io::AsyncWriteExt, net::TcpStream};
@@ -632,6 +635,207 @@ async fn claude_web_session_rotation_is_reported_when_merged_into_oauth_usage() 
 }
 
 #[tokio::test]
+async fn claude_401_reimports_and_verifies_the_bound_browser_session_once() {
+    let transport = Arc::new(ClaudeSessionRecoveryTransport {
+        rotate_browser_session_on_organizations: true,
+        ..ClaudeSessionRecoveryTransport::default()
+    });
+    let store = Arc::new(InMemoryAuthMaterialStore::default());
+    let refresher = Arc::new(StaticBrowserSessionRefresher::new("sk-ant-browser-a"));
+    let account = claude_recovery_account("claude-recovery", "a@example.com", "org-a");
+    store
+        .save(
+            account.id,
+            &claude_auth_material("sk-ant-initial-a", "private-cookie"),
+        )
+        .await
+        .unwrap();
+    let auth: Arc<dyn AccountAuthMaterialProvider> =
+        Arc::new(StoredAuthMaterialProvider::new(store.clone()));
+    let adapter = ClaudeUsageAdapter::new(transport.clone(), auth, false)
+        .unwrap()
+        .with_source_mode(ClaudeSourceMode::Web)
+        .with_auth_material_store(store.clone())
+        .with_browser_session_refresher(refresher.clone());
+
+    let result = adapter.probe(&account).await.unwrap();
+    assert!(result.succeeded());
+    assert!(result.session_token_was_refreshed);
+    assert_eq!(
+        result
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .response_account_id
+            .as_deref(),
+        Some("org-a")
+    );
+    assert_eq!(refresher.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        claude_session_cookie(&store.get(account.id).await.unwrap().unwrap()),
+        Some("sk-ant-browser-a-rotated")
+    );
+    let requests = transport.requests.lock().unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request
+                .headers
+                .get("Cookie")
+                .is_some_and(|cookie| { cookie == "sessionKey=sk-ant-initial-a" }))
+            .count(),
+        1,
+        "the expired session must not be retried"
+    );
+    assert!(requests.iter().all(|request| {
+        request
+            .headers
+            .get("Cookie")
+            .is_none_or(|cookie| !cookie.contains("sk-ant-browser-b"))
+    }));
+    assert!(requests.iter().any(|request| {
+        request.url.path() == "/api/account"
+            && request
+                .headers
+                .get("Cookie")
+                .is_some_and(|cookie| cookie == "sessionKey=sk-ant-browser-a-rotated")
+    }));
+    assert!(requests.iter().any(|request| {
+        request.url.path().ends_with("/usage")
+            && request
+                .headers
+                .get("Cookie")
+                .is_some_and(|cookie| cookie == "sessionKey=sk-ant-browser-a-rotated")
+    }));
+}
+
+#[tokio::test]
+async fn claude_401_does_not_persist_a_reimported_session_for_another_account() {
+    let transport = Arc::new(ClaudeSessionRecoveryTransport::default());
+    let store = Arc::new(InMemoryAuthMaterialStore::default());
+    let refresher = Arc::new(StaticBrowserSessionRefresher::new("sk-ant-browser-b"));
+    let account = claude_recovery_account("claude-recovery-mismatch", "a@example.com", "org-a");
+    store
+        .save(
+            account.id,
+            &claude_auth_material("sk-ant-initial-a", "private-cookie"),
+        )
+        .await
+        .unwrap();
+    let auth: Arc<dyn AccountAuthMaterialProvider> =
+        Arc::new(StoredAuthMaterialProvider::new(store.clone()));
+    let adapter = ClaudeUsageAdapter::new(transport.clone(), auth, false)
+        .unwrap()
+        .with_source_mode(ClaudeSourceMode::Web)
+        .with_auth_material_store(store.clone())
+        .with_browser_session_refresher(refresher.clone());
+
+    let result = adapter.probe(&account).await.unwrap();
+    assert_eq!(
+        result.error.as_ref().map(|error| error.code),
+        Some(codex_usage_core::usage::UsageAdapterErrorCode::AccountMismatch)
+    );
+    assert_eq!(refresher.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        claude_session_cookie(&store.get(account.id).await.unwrap().unwrap()),
+        Some("sk-ant-initial-a")
+    );
+    assert!(
+        transport
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|request| !request.url.path().ends_with("/usage"))
+    );
+}
+
+#[tokio::test]
+async fn claude_401_retries_usage_only_once_with_the_reimported_session() {
+    let transport = Arc::new(ClaudeSessionRecoveryTransport {
+        replacement_session_unauthorized: true,
+        ..ClaudeSessionRecoveryTransport::default()
+    });
+    let store = Arc::new(InMemoryAuthMaterialStore::default());
+    let refresher = Arc::new(StaticBrowserSessionRefresher::new("sk-ant-browser-a"));
+    let account = claude_recovery_account("claude-recovery-second-401", "a@example.com", "org-a");
+    store
+        .save(
+            account.id,
+            &claude_auth_material("sk-ant-initial-a", "private-cookie"),
+        )
+        .await
+        .unwrap();
+    let auth: Arc<dyn AccountAuthMaterialProvider> =
+        Arc::new(StoredAuthMaterialProvider::new(store.clone()));
+    let adapter = ClaudeUsageAdapter::new(transport.clone(), auth, false)
+        .unwrap()
+        .with_source_mode(ClaudeSourceMode::Web)
+        .with_auth_material_store(store.clone())
+        .with_browser_session_refresher(refresher.clone());
+
+    let result = adapter.probe(&account).await.unwrap();
+    assert_eq!(
+        result.error.as_ref().map(|error| error.code),
+        Some(codex_usage_core::usage::UsageAdapterErrorCode::Unauthorized)
+    );
+    assert_eq!(refresher.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        claude_session_cookie(&store.get(account.id).await.unwrap().unwrap()),
+        Some("sk-ant-browser-a")
+    );
+    let requests = transport.requests.lock().unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.url.path() == "/api/organizations"
+                && request
+                    .headers
+                    .get("Cookie")
+                    .is_some_and(|cookie| { cookie == "sessionKey=sk-ant-browser-a" }))
+            .count(),
+        2,
+        "one identity preflight and one usage retry, with no recursive recovery"
+    );
+}
+
+#[tokio::test]
+async fn claude_cloudflare_challenge_does_not_trigger_browser_session_reimport() {
+    let transport = Arc::new(ClaudeSessionRecoveryTransport {
+        stale_session_challenge: true,
+        ..ClaudeSessionRecoveryTransport::default()
+    });
+    let store = Arc::new(InMemoryAuthMaterialStore::default());
+    let refresher = Arc::new(StaticBrowserSessionRefresher::new("sk-ant-browser-a"));
+    let account = claude_recovery_account("claude-recovery-challenge", "a@example.com", "org-a");
+    store
+        .save(
+            account.id,
+            &claude_auth_material("sk-ant-initial-a", "private-cookie"),
+        )
+        .await
+        .unwrap();
+    let auth: Arc<dyn AccountAuthMaterialProvider> =
+        Arc::new(StoredAuthMaterialProvider::new(store.clone()));
+    let adapter = ClaudeUsageAdapter::new(transport, auth, false)
+        .unwrap()
+        .with_source_mode(ClaudeSourceMode::Web)
+        .with_auth_material_store(store.clone())
+        .with_browser_session_refresher(refresher.clone());
+
+    let result = adapter.probe(&account).await.unwrap();
+    assert_eq!(
+        result.error.as_ref().map(|error| error.code),
+        Some(codex_usage_core::usage::UsageAdapterErrorCode::CloudflareChallenge)
+    );
+    assert_eq!(refresher.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        claude_session_cookie(&store.get(account.id).await.unwrap().unwrap()),
+        Some("sk-ant-initial-a")
+    );
+}
+
+#[tokio::test]
 async fn sqlite_store_round_trips_account_and_snapshot() {
     let directory = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(directory.path().join("accounts.db")).unwrap();
@@ -810,6 +1014,145 @@ impl UsageHttpTransport for NoFiveHourTransport {
             status_code: 200,
             body: body.to_owned(),
             headers: Default::default(),
+        })
+    }
+}
+
+fn claude_recovery_account(label: &str, email: &str, organization_id: &str) -> AccountRecord {
+    let mut account =
+        AccountRecord::create(label, email, Some(organization_id.to_owned()), CLAUDE, None)
+            .unwrap();
+    account.browser_kind = Some("chrome".to_owned());
+    account.browser_profile_id = Some("Default".to_owned());
+    account
+}
+
+struct StaticBrowserSessionRefresher {
+    session_key: String,
+    calls: AtomicUsize,
+}
+
+impl StaticBrowserSessionRefresher {
+    fn new(session_key: &str) -> Self {
+        Self {
+            session_key: session_key.to_owned(),
+            calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl AccountBrowserSessionRefresher for StaticBrowserSessionRefresher {
+    async fn reimport(
+        &self,
+        account: &AccountRecord,
+    ) -> Result<Option<AccountAuthMaterial>, AuthError> {
+        assert_eq!(account.browser_kind.as_deref(), Some("chrome"));
+        assert_eq!(account.browser_profile_id.as_deref(), Some("Default"));
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Some(AccountAuthMaterial {
+            cookies: vec![CookieValue {
+                name: "sessionKey".to_owned(),
+                value: self.session_key.clone(),
+            }],
+            ..AccountAuthMaterial::default()
+        }))
+    }
+}
+
+#[derive(Default)]
+struct ClaudeSessionRecoveryTransport {
+    requests: Mutex<Vec<UsageHttpRequest>>,
+    stale_session_challenge: bool,
+    replacement_session_unauthorized: bool,
+    rotate_browser_session_on_organizations: bool,
+}
+
+#[async_trait]
+impl UsageHttpTransport for ClaudeSessionRecoveryTransport {
+    async fn send(&self, request: UsageHttpRequest) -> Result<UsageHttpResponse, TransportError> {
+        self.requests.lock().unwrap().push(request.clone());
+        let session_key = request
+            .headers
+            .get("Cookie")
+            .and_then(|header| header.strip_prefix("sessionKey="))
+            .ok_or_else(|| TransportError::InvalidUrl("missing Claude cookie".to_owned()))?;
+        let path = request.url.path();
+        if path == "/api/organizations" && session_key == "sk-ant-initial-a" {
+            if self.stale_session_challenge {
+                return Ok(UsageHttpResponse {
+                    status_code: 403,
+                    body: "Just a moment".to_owned(),
+                    headers: [("cf-mitigated".to_owned(), "challenge".to_owned())]
+                        .into_iter()
+                        .collect(),
+                });
+            }
+            return Ok(UsageHttpResponse {
+                status_code: 401,
+                body: String::new(),
+                headers: Default::default(),
+            });
+        }
+        let replacement_organization_requests = self
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| {
+                request.url.path() == "/api/organizations"
+                    && request
+                        .headers
+                        .get("Cookie")
+                        .is_some_and(|cookie| cookie.starts_with("sessionKey=sk-ant-browser-"))
+            })
+            .count();
+        if path == "/api/organizations"
+            && self.replacement_session_unauthorized
+            && session_key.starts_with("sk-ant-browser-")
+            && replacement_organization_requests > 1
+        {
+            return Ok(UsageHttpResponse {
+                status_code: 401,
+                body: String::new(),
+                headers: Default::default(),
+            });
+        }
+
+        let (organization_id, email) = match session_key {
+            "sk-ant-browser-a" | "sk-ant-browser-a-rotated" => ("org-a", "a@example.com"),
+            "sk-ant-browser-b" => ("org-b", "b@example.com"),
+            _ => {
+                return Err(TransportError::InvalidUrl(
+                    "unexpected Claude recovery session".to_owned(),
+                ));
+            }
+        };
+        let body = if path == "/api/organizations" {
+            format!(r#"[{{"uuid":"{organization_id}","has_chat_capability":true}}]"#)
+        } else if path == "/api/account" {
+            format!(
+                r#"{{"email_address":"{email}","memberships":[{{"organization":{{"uuid":"{organization_id}","rate_limit_tier":"default_claude_pro"}}}}]}}"#
+            )
+        } else if path == format!("/api/organizations/{organization_id}/usage") {
+            r#"{"five_hour":{"utilization":30,"resets_at":"2030-01-01T00:00:00Z"},"seven_day":{"utilization":15,"resets_at":"2030-01-02T00:00:00Z"}}"#.to_owned()
+        } else {
+            return Err(TransportError::InvalidUrl(request.url.to_string()));
+        };
+        let mut headers = std::collections::BTreeMap::new();
+        if path == "/api/organizations"
+            && self.rotate_browser_session_on_organizations
+            && session_key == "sk-ant-browser-a"
+        {
+            headers.insert(
+                "Set-Cookie".to_owned(),
+                "sessionKey=sk-ant-browser-a-rotated; Path=/; HttpOnly".to_owned(),
+            );
+        }
+        Ok(UsageHttpResponse {
+            status_code: 200,
+            body,
+            headers,
         })
     }
 }

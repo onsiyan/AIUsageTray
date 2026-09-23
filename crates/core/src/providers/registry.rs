@@ -15,7 +15,7 @@ use super::{
 };
 use crate::{
     accounts::OPENAI,
-    auth::{AccountAuthMaterialProvider, AccountAuthMaterialStore},
+    auth::{AccountAuthMaterialProvider, AccountAuthMaterialStore, AccountBrowserSessionRefresher},
     transport::{TransportError, UsageHttpTransport},
     usage::UsageAdapter,
 };
@@ -125,7 +125,7 @@ impl ProviderRegistry {
         auth: Arc<dyn AccountAuthMaterialProvider>,
         config: ProviderRegistryConfig,
     ) -> Result<Self, ProviderRegistryError> {
-        Self::from_dependencies_inner(transport, auth, None, config)
+        Self::from_dependencies_inner(transport, auth, None, None, config)
     }
 
     /// Constructs the complete adapter set and gives Claude Web access to the
@@ -137,13 +137,32 @@ impl ProviderRegistry {
         auth_store: Arc<dyn AccountAuthMaterialStore>,
         config: ProviderRegistryConfig,
     ) -> Result<Self, ProviderRegistryError> {
-        Self::from_dependencies_inner(transport, auth, Some(auth_store), config)
+        Self::from_dependencies_inner(transport, auth, Some(auth_store), None, config)
+    }
+
+    /// Constructs the provider set with Claude's secure session store and a
+    /// host-supplied importer for the account's previously bound browser.
+    pub fn from_dependencies_with_auth_store_and_session_refresher(
+        transport: Arc<dyn UsageHttpTransport>,
+        auth: Arc<dyn AccountAuthMaterialProvider>,
+        auth_store: Arc<dyn AccountAuthMaterialStore>,
+        session_refresher: Arc<dyn AccountBrowserSessionRefresher>,
+        config: ProviderRegistryConfig,
+    ) -> Result<Self, ProviderRegistryError> {
+        Self::from_dependencies_inner(
+            transport,
+            auth,
+            Some(auth_store),
+            Some(session_refresher),
+            config,
+        )
     }
 
     fn from_dependencies_inner(
         transport: Arc<dyn UsageHttpTransport>,
         auth: Arc<dyn AccountAuthMaterialProvider>,
         auth_store: Option<Arc<dyn AccountAuthMaterialStore>>,
+        session_refresher: Option<Arc<dyn AccountBrowserSessionRefresher>>,
         config: ProviderRegistryConfig,
     ) -> Result<Self, ProviderRegistryError> {
         let openai_adapter = WhamUsageAdapter::new(
@@ -165,6 +184,9 @@ impl ProviderRegistry {
         .with_runtime(config.claude_runtime);
         if let Some(auth_store) = auth_store {
             claude_adapter = claude_adapter.with_auth_material_store(auth_store);
+        }
+        if let Some(session_refresher) = session_refresher {
+            claude_adapter = claude_adapter.with_browser_session_refresher(session_refresher);
         }
         let claude = Arc::new(claude_adapter) as Arc<dyn UsageAdapter>;
         let opencode_go = Arc::new(

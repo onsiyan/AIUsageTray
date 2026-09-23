@@ -7,7 +7,7 @@
 
 use crate::{
     accounts::{AccountRecord, AccountStore},
-    auth::{AccountAuthMaterialProvider, AccountAuthMaterialStore},
+    auth::{AccountAuthMaterialProvider, AccountAuthMaterialStore, AccountBrowserSessionRefresher},
     claude_oauth::ClaudeOAuthRefreshingAuthMaterialProvider,
     providers::registry::{ProviderRegistry, ProviderRegistryConfig, ProviderRegistryError},
     refresh::{
@@ -96,17 +96,74 @@ impl UsageRuntime {
         provider_config: ProviderRegistryConfig,
         refresh_config: RefreshCoordinatorConfig,
     ) -> Result<Arc<Self>, RuntimeBootstrapError> {
+        Self::from_dependencies_with_auth_services(
+            account_store,
+            snapshot_store,
+            transport,
+            auth,
+            auth_store,
+            None,
+            provider_config,
+            refresh_config,
+        )
+    }
+
+    /// Composition root for hosts that also support non-interactive browser
+    /// session re-import from each account's saved browser/profile binding.
+    pub fn from_dependencies_with_auth_store_and_session_refresher(
+        account_store: Arc<dyn AccountStore>,
+        snapshot_store: Arc<dyn UsageSnapshotStore>,
+        transport: Arc<dyn UsageHttpTransport>,
+        auth: Arc<dyn AccountAuthMaterialProvider>,
+        auth_store: Arc<dyn AccountAuthMaterialStore>,
+        session_refresher: Arc<dyn AccountBrowserSessionRefresher>,
+        provider_config: ProviderRegistryConfig,
+        refresh_config: RefreshCoordinatorConfig,
+    ) -> Result<Arc<Self>, RuntimeBootstrapError> {
+        Self::from_dependencies_with_auth_services(
+            account_store,
+            snapshot_store,
+            transport,
+            auth,
+            auth_store,
+            Some(session_refresher),
+            provider_config,
+            refresh_config,
+        )
+    }
+
+    fn from_dependencies_with_auth_services(
+        account_store: Arc<dyn AccountStore>,
+        snapshot_store: Arc<dyn UsageSnapshotStore>,
+        transport: Arc<dyn UsageHttpTransport>,
+        auth: Arc<dyn AccountAuthMaterialProvider>,
+        auth_store: Arc<dyn AccountAuthMaterialStore>,
+        session_refresher: Option<Arc<dyn AccountBrowserSessionRefresher>>,
+        provider_config: ProviderRegistryConfig,
+        refresh_config: RefreshCoordinatorConfig,
+    ) -> Result<Arc<Self>, RuntimeBootstrapError> {
         let auth = Arc::new(ClaudeOAuthRefreshingAuthMaterialProvider::new(
             auth,
             Arc::clone(&auth_store),
             Arc::clone(&transport),
         )) as Arc<dyn AccountAuthMaterialProvider>;
-        let providers = Arc::new(ProviderRegistry::from_dependencies_with_auth_store(
-            Arc::clone(&transport),
-            auth,
-            auth_store,
-            provider_config,
-        )?);
+        let providers = Arc::new(match session_refresher {
+            Some(session_refresher) => {
+                ProviderRegistry::from_dependencies_with_auth_store_and_session_refresher(
+                    Arc::clone(&transport),
+                    auth,
+                    auth_store,
+                    session_refresher,
+                    provider_config,
+                )?
+            }
+            None => ProviderRegistry::from_dependencies_with_auth_store(
+                Arc::clone(&transport),
+                auth,
+                auth_store,
+                provider_config,
+            )?,
+        });
         Ok(Self::new(
             account_store,
             snapshot_store,

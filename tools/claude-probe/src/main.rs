@@ -9,7 +9,7 @@ use codex_usage_core::{
     accounts::{AccountRecord, AccountStore, CLAUDE, VerifiedIdentity},
     auth::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
-        CompositeAuthMaterialProvider, StoredAuthMaterialProvider,
+        AccountBrowserSessionRefresher, CompositeAuthMaterialProvider, StoredAuthMaterialProvider,
     },
     auth_sources::{EnvironmentAuthMaterialProvider, LocalFileAuthMaterialProvider},
     providers::{
@@ -53,14 +53,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let account_store: Arc<dyn AccountStore> = sqlite.clone();
     let snapshot_store: Arc<dyn UsageSnapshotStore> = sqlite;
     let secure_material_store = Arc::new(WindowsCredentialManagerAuthMaterialStore);
+    let browser_importer = WindowsBrowserCookieImporter::from_process()?;
     let transport = Arc::new(ReqwestUsageHttpTransport::new(Duration::from_secs(45))?);
 
     let (identity, browser_material, imported_browser) = if arguments.login {
-        let importer = WindowsBrowserCookieImporter::from_process()?;
         let timeout = Duration::from_secs(arguments.timeout_seconds.max(1));
         let login_url = Url::parse("https://claude.ai/login")?;
         println!("Checking for an existing Claude Web session first.");
-        let result = importer
+        let result = browser_importer
             .open_and_wait_for_provider(
                 CLAUDE,
                 &login_url,
@@ -167,12 +167,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         environment_material,
     ])) as Arc<dyn AccountAuthMaterialProvider>;
 
-    let runtime = UsageRuntime::from_dependencies_with_auth_store(
+    let runtime = UsageRuntime::from_dependencies_with_auth_store_and_session_refresher(
         account_store,
         snapshot_store,
         transport,
         auth,
         secure_material_store as Arc<dyn AccountAuthMaterialStore>,
+        Arc::new(browser_importer) as Arc<dyn AccountBrowserSessionRefresher>,
         ProviderRegistryConfig {
             claude_source_mode: ClaudeSourceMode::Web,
             fetch_claude_account_identity: true,

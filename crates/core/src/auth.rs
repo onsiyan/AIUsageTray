@@ -86,6 +86,18 @@ pub trait AccountAuthMaterialProvider: Send + Sync {
     async fn get(&self, account: &AccountRecord) -> Result<Option<AccountAuthMaterial>, AuthError>;
 }
 
+/// Re-imports an expired browser-backed provider session from the exact
+/// browser profile already bound to an account. Implementations must not open
+/// a browser or choose another profile; the provider adapter verifies identity
+/// before it persists the returned material.
+#[async_trait]
+pub trait AccountBrowserSessionRefresher: Send + Sync {
+    async fn reimport(
+        &self,
+        account: &AccountRecord,
+    ) -> Result<Option<AccountAuthMaterial>, AuthError>;
+}
+
 /// Durable storage for provider credentials that are not part of the account
 /// metadata database. Implementations must use an OS-protected secret store;
 /// the core crate deliberately does not provide a plaintext-file implementation.
