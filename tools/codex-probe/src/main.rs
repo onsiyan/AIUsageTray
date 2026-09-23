@@ -220,29 +220,64 @@ async fn probe_and_print(
         return Err(message.into());
     }
     let snapshot = outcome.snapshot.expect("updated outcome has a snapshot");
+    let rate_windows = snapshot.all_rate_windows().collect::<Vec<_>>();
+    let additional_metrics = snapshot
+        .metrics
+        .iter()
+        .filter(|metric| {
+            !rate_windows
+                .iter()
+                .any(|window| window.name.eq_ignore_ascii_case(&metric.name))
+        })
+        .collect::<Vec<_>>();
     println!(
         "Plan: {}",
         snapshot.plan_type.as_deref().unwrap_or("unknown")
     );
     println!(
-        "Source: {} | quota windows: {} | metrics/models: {}",
+        "Source: {} | rate windows: {} | additional metrics: {}",
         snapshot.source.as_deref().unwrap_or("unknown"),
-        snapshot.additional_windows.len(),
-        snapshot.metrics.len()
+        rate_windows.len(),
+        additional_metrics.len()
     );
-    for metric in &snapshot.metrics {
-        let remaining = metric
-            .remaining_percent()
-            .map(|value| format!("{value:.2}% remaining"))
-            .or_else(|| {
-                metric
-                    .remaining_amount
-                    .map(|value| format!("{value:.2}% remaining"))
-            })
-            .unwrap_or_else(|| "unknown remaining quota".to_owned());
-        println!("{}: {remaining}", metric.name);
+    for window in &rate_windows {
+        let reset = window
+            .reset_at_utc
+            .as_ref()
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "unknown".to_owned());
+        println!(
+            "{}: {:.2}% remaining | reset {}",
+            window.name,
+            window.remaining_percent(),
+            reset
+        );
+    }
+    for metric in additional_metrics {
+        println!("{}", format_metric_status(metric));
     }
     Ok(())
+}
+
+fn format_metric_status(metric: &codex_usage_core::usage::UsageMetric) -> String {
+    let remaining = metric
+        .remaining_percent()
+        .map(|value| format!("{value:.2}% remaining"))
+        .or_else(|| {
+            metric.remaining_amount.map(|value| {
+                format!(
+                    "{value:.2} {} remaining",
+                    metric.unit.as_deref().unwrap_or("units")
+                )
+            })
+        })
+        .unwrap_or_else(|| "unknown remaining quota".to_owned());
+    let reset = metric
+        .reset_at_utc
+        .as_ref()
+        .map(|value| value.to_rfc3339())
+        .unwrap_or_else(|| "unknown".to_owned());
+    format!("{}: {remaining} | reset {reset}", metric.name)
 }
 
 fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
@@ -284,10 +319,11 @@ fn parse_arguments_from(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_arguments_from, persist_oauth_login_account};
+    use super::{format_metric_status, parse_arguments_from, persist_oauth_login_account};
     use codex_usage_core::{
         accounts::{AccountRecord, AccountStore, InMemoryAccountStore, OPENAI},
         auth::{InMemoryOAuthCredentialStore, OAuthCredentialStore, StoredOAuthCredential},
+        usage::UsageMetric,
     };
     use std::{collections::BTreeMap, ffi::OsString, sync::Arc};
 
@@ -321,6 +357,27 @@ mod tests {
     #[test]
     fn arguments_no_longer_accept_cookie_import_profile_options() {
         assert!(parse_arguments_from(["--browser", "chrome"].map(OsString::from)).is_err());
+    }
+
+    #[test]
+    fn amount_metrics_are_not_mislabeled_as_percentages() {
+        let metric = UsageMetric {
+            key: "credits".to_owned(),
+            name: "Credits".to_owned(),
+            used_percent: None,
+            used_amount: None,
+            limit_amount: None,
+            remaining_amount: Some(2.5),
+            unit: Some("credits".to_owned()),
+            reset_at_utc: None,
+            reset_label: None,
+            metadata: Default::default(),
+        };
+
+        let output = format_metric_status(&metric);
+
+        assert_eq!(output, "Credits: 2.50 credits remaining | reset unknown");
+        assert!(!output.contains("% remaining"));
     }
 
     #[tokio::test]
