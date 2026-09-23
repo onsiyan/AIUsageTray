@@ -1775,8 +1775,12 @@ fn parse_reset_in(value: &Value, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
             "resetInSec",
             "resetInSeconds",
             "resetSeconds",
+            "reset_sec",
             "reset_in_sec",
             "resetsInSec",
+            "resetsInSeconds",
+            "resetIn",
+            "resetSec",
         ],
     )
     .map(|seconds| now + Duration::seconds(seconds.max(0.0) as i64))
@@ -2153,6 +2157,30 @@ mod tests {
         assert_eq!(parsed.window.used_percent, 50.0);
         assert_eq!(parsed.used_amount, Some(0.06));
         assert_eq!(parsed.limit_amount, Some(0.12));
+    }
+
+    #[test]
+    fn relative_reset_parser_accepts_codexbar_field_aliases() {
+        for key in ["reset_sec", "resetsInSeconds", "resetIn", "resetSec"] {
+            let mut value = serde_json::Map::new();
+            value.insert("usagePercent".to_owned(), json!(25.0));
+            value.insert(key.to_owned(), json!(3600));
+
+            let parsed = parse_window(
+                &Value::Object(value),
+                UsageWindowKind::Primary,
+                "Rolling",
+                true,
+                false,
+            )
+            .unwrap();
+            assert!(parsed.window.reset_at_utc.is_some(), "missing {key}");
+            assert!(
+                (3599..=3600).contains(&parsed.window.limit_window_seconds),
+                "unexpected duration for {key}: {}",
+                parsed.window.limit_window_seconds
+            );
+        }
     }
 
     #[test]
