@@ -665,6 +665,26 @@ impl UsageRefreshCoordinator {
                         )
                         .await;
                 }
+                if prior
+                    .as_ref()
+                    .is_some_and(|previous| snapshot.observed_at_utc < previous.observed_at_utc)
+                {
+                    return self
+                        .finish_failure(
+                            &account,
+                            reason,
+                            prior,
+                            UsageAdapterError {
+                                code: UsageAdapterErrorCode::InvalidPayload,
+                                message:
+                                    "adapter returned a snapshot older than the stored snapshot"
+                                        .to_owned(),
+                                http_status_code: None,
+                                retry_after_seconds: None,
+                            },
+                        )
+                        .await;
+                }
                 let identity = probe.identity.clone();
                 let identity_storage_error = identity.as_ref().and_then(|identity| {
                     let updated = account
@@ -1156,6 +1176,62 @@ mod tests {
                 retry_after_seconds: Some(10),
             }))
         }
+    }
+
+    struct FixedSnapshotAdapter(UsageSnapshot);
+
+    #[async_trait]
+    impl UsageAdapter for FixedSnapshotAdapter {
+        fn adapter_id(&self) -> &str {
+            OPENAI
+        }
+
+        async fn probe(
+            &self,
+            _account: &AccountRecord,
+        ) -> Result<UsageProbeResult, TransportError> {
+            Ok(UsageProbeResult::success(self.0.clone(), None))
+        }
+    }
+
+    #[tokio::test]
+    async fn older_provider_snapshot_cannot_replace_newer_persisted_usage() {
+        let account =
+            AccountRecord::create("test", "test@example.com", None, OPENAI, None).unwrap();
+        let accounts = Arc::new(InMemoryAccountStore::default());
+        accounts.upsert(&account).await.unwrap();
+        let store = Arc::new(crate::usage::InMemoryUsageSnapshotStore::default());
+        let mut prior = snapshot(account.id, now(), now() + ChronoDuration::hours(1));
+        prior.primary.as_mut().unwrap().used_percent = 88.0;
+        store.save(prior.clone()).await.unwrap();
+        let adapter = FixedSnapshotAdapter(snapshot(
+            account.id,
+            now() - ChronoDuration::minutes(1),
+            now() + ChronoDuration::hours(2),
+        ));
+        let coordinator = UsageRefreshCoordinator::new(
+            accounts,
+            store.clone(),
+            vec![Arc::new(adapter) as Arc<dyn UsageAdapter>],
+            RefreshCoordinatorConfig::default(),
+        );
+
+        let outcome = coordinator
+            .refresh_account(account.clone(), RefreshReason::Scheduled)
+            .await;
+
+        assert_eq!(outcome.status, RefreshStatus::RetainedStale);
+        assert_eq!(
+            outcome.error.as_ref().map(|error| error.code),
+            Some(UsageAdapterErrorCode::InvalidPayload)
+        );
+        let retained = outcome.snapshot.unwrap();
+        assert!(retained.is_stale);
+        assert_eq!(retained.observed_at_utc, prior.observed_at_utc);
+        assert_eq!(retained.primary.unwrap().used_percent, 88.0);
+        let persisted = store.get_latest(account.id).await.unwrap().unwrap();
+        assert_eq!(persisted.observed_at_utc, prior.observed_at_utc);
+        assert_eq!(persisted.primary.unwrap().used_percent, 88.0);
     }
 
     #[tokio::test]
