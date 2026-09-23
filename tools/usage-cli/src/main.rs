@@ -13,11 +13,13 @@ use codex_usage_core::{
         antigravity, claude::ClaudeSourceMode, openai, opencode_go::OpenCodeGoSourceMode,
         registry::ProviderRegistryConfig,
     },
-    refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
+    refresh::{
+        RefreshCadence, RefreshCoordinatorConfig, RefreshOutcome, RefreshReason, RefreshStatus,
+    },
     runtime::UsageRuntime,
     storage::{SqliteStore, default_accounts_database_path},
     transport::{ReqwestUsageHttpTransport, UsageHttpTransport},
-    usage::{UsageSnapshot, UsageSnapshotStore, UsageWindowKind},
+    usage::{UsageAdapterError, UsageSnapshot, UsageSnapshotStore, UsageWindowKind},
 };
 use codex_usage_windows_auth::{
     WindowsCredentialManagerAuthMaterialStore, WindowsCredentialManagerStore,
@@ -35,7 +37,6 @@ use tokio::{
     process::Command as TokioCommand,
 };
 
-const EXIT_USAGE_NOT_CACHED: i32 = 5;
 const EXIT_REFRESH_FAILED: i32 = 6;
 const ACCOUNT_REF_MARKER: &str = "CODEX_USAGE_ACCOUNT_REF=";
 const ACCOUNT_ADD_CHILD_ENV: &str = "CODEX_USAGE_CLI_CHILD";
@@ -148,7 +149,7 @@ struct SelectorArgs {
 
 #[derive(Debug, Subcommand)]
 enum UsageCommand {
-    /// Read the latest saved snapshot. This command never makes a network call.
+    /// Refresh the selected account, then display its latest usage snapshot.
     Get(SelectorArgs),
     /// Explicitly contact the provider and save the resulting snapshot.
     Refresh {
@@ -747,32 +748,25 @@ async fn execute_usage_command(
                     provider: arguments.provider.as_deref(),
                     workspace: arguments.workspace.as_deref(),
                 },
-            )?;
-            let snapshot = snapshot_store
-                .get_latest(account.id)
-                .await
-                .map_err(|error| CliFailure::runtime(error.to_string()))?
-                .ok_or_else(|| {
-                    CliFailure::new(
-                        "usage_not_cached",
-                        format!(
-                            "No usage snapshot is saved for {}. Run `codex-usage usage refresh {}` explicitly.",
-                            account.account_ref.as_deref().unwrap_or("this account"),
-                            account.account_ref.as_deref().unwrap_or("<account-ref>")
-                        ),
-                        EXIT_USAGE_NOT_CACHED,
-                    )
-                })?;
+            )?
+            .clone();
+            let results = collect_refresh_results(
+                std::slice::from_ref(&account),
+                &account_store,
+                &snapshot_store,
+            )
+            .await?;
+            let (_, outcome) = results
+                .into_iter()
+                .next()
+                .expect("one selected account is refreshed");
+            let exit_code = usage_get_exit_code(outcome.status);
             if json_output {
-                print_json(json!({
-                    "schema_version": 1,
-                    "account": account_value(account),
-                    "snapshot": snapshot_value(&snapshot),
-                }));
+                print_json(usage_get_value(&account, &outcome));
             } else {
-                print_usage(account, &snapshot);
+                print_usage_get(&account, &outcome);
             }
-            Ok(0)
+            Ok(exit_code)
         }
         UsageCommand::Refresh {
             selector,
@@ -893,6 +887,38 @@ async fn refresh_accounts(
     snapshot_store: &Arc<dyn UsageSnapshotStore>,
     json_output: bool,
 ) -> Result<i32, CliFailure> {
+    let results = collect_refresh_results(accounts, account_store, snapshot_store).await?;
+
+    let all_updated = results
+        .iter()
+        .all(|(_, outcome)| outcome.status == RefreshStatus::Updated);
+    if json_output {
+        print_json(json!({
+            "schema_version": 1,
+            "results": results.iter().map(|(account, outcome)| refresh_result_value(account, outcome)).collect::<Vec<_>>(),
+        }));
+    } else {
+        for (account, outcome) in &results {
+            let reference = account.account_ref.as_deref().unwrap_or("?");
+            match &outcome.error {
+                Some(error) => println!(
+                    "{reference}\t{}\t{}: {}",
+                    refresh_status_name(outcome.status),
+                    format!("{:?}", error.code).to_ascii_lowercase(),
+                    error.message
+                ),
+                None => println!("{reference}\t{}", refresh_status_name(outcome.status)),
+            }
+        }
+    }
+    Ok(if all_updated { 0 } else { EXIT_REFRESH_FAILED })
+}
+
+async fn collect_refresh_results(
+    accounts: &[AccountRecord],
+    account_store: &Arc<dyn AccountStore>,
+    snapshot_store: &Arc<dyn UsageSnapshotStore>,
+) -> Result<Vec<(AccountRecord, codex_usage_core::refresh::RefreshOutcome)>, CliFailure> {
     let transport = Arc::new(
         ReqwestUsageHttpTransport::new(Duration::from_secs(45))
             .map_err(|error| CliFailure::runtime(error.to_string()))?,
@@ -933,32 +959,9 @@ async fn refresh_accounts(
         let outcome = runtime
             .refresh_account(account.clone(), RefreshReason::Manual)
             .await;
-        results.push((account, outcome));
+        results.push((account.clone(), outcome));
     }
-
-    let all_updated = results
-        .iter()
-        .all(|(_, outcome)| outcome.status == RefreshStatus::Updated);
-    if json_output {
-        print_json(json!({
-            "schema_version": 1,
-            "results": results.iter().map(|(account, outcome)| refresh_result_value(account, outcome)).collect::<Vec<_>>(),
-        }));
-    } else {
-        for (account, outcome) in &results {
-            let reference = account.account_ref.as_deref().unwrap_or("?");
-            match &outcome.error {
-                Some(error) => println!(
-                    "{reference}\t{}\t{}: {}",
-                    refresh_status_name(outcome.status),
-                    format!("{:?}", error.code).to_ascii_lowercase(),
-                    error.message
-                ),
-                None => println!("{reference}\t{}", refresh_status_name(outcome.status)),
-            }
-        }
-    }
-    Ok(if all_updated { 0 } else { EXIT_REFRESH_FAILED })
+    Ok(results)
 }
 
 fn build_auth_provider(
@@ -1248,14 +1251,65 @@ fn refresh_result_value(
         "status": refresh_status_name(outcome.status),
         "completed_at_utc": outcome.completed_at_utc,
         "snapshot": outcome.snapshot.as_ref().map(snapshot_value),
-        "error": outcome.error.as_ref().map(|error| json!({
-            "code": format!("{:?}", error.code).to_ascii_lowercase(),
-            "message": error.message,
-            "http_status_code": error.http_status_code,
-            "retry_after_seconds": error.retry_after_seconds,
-        })),
+        "error": outcome.error.as_ref().map(refresh_error_value),
         "storage_error": outcome.storage_error,
     })
+}
+
+fn usage_get_value(account: &AccountRecord, outcome: &RefreshOutcome) -> Value {
+    json!({
+        "schema_version": 1,
+        "account": account_value(account),
+        "snapshot": outcome.snapshot.as_ref().map(snapshot_value),
+        "refresh": {
+            "status": refresh_status_name(outcome.status),
+            "completed_at_utc": outcome.completed_at_utc,
+            "error": outcome.error.as_ref().map(refresh_error_value),
+            "storage_error": outcome.storage_error,
+        },
+    })
+}
+
+fn refresh_error_value(error: &UsageAdapterError) -> Value {
+    json!({
+        "code": format!("{:?}", error.code).to_ascii_lowercase(),
+        "message": error.message,
+        "http_status_code": error.http_status_code,
+        "retry_after_seconds": error.retry_after_seconds,
+    })
+}
+
+fn usage_get_exit_code(status: RefreshStatus) -> i32 {
+    if status == RefreshStatus::Updated {
+        0
+    } else {
+        EXIT_REFRESH_FAILED
+    }
+}
+
+fn print_usage_get(account: &AccountRecord, outcome: &RefreshOutcome) {
+    if let Some(snapshot) = &outcome.snapshot {
+        print_usage(account, snapshot);
+    } else {
+        println!(
+            "{}\t{}\t{}",
+            account.account_ref.as_deref().unwrap_or("?"),
+            provider_name(&account.provider_id),
+            account.display_name()
+        );
+        println!("No current usage snapshot is available.");
+    }
+    println!("Refresh: {}", refresh_status_name(outcome.status));
+    if let Some(error) = &outcome.error {
+        println!(
+            "Refresh error: {}: {}",
+            format!("{:?}", error.code).to_ascii_lowercase(),
+            error.message
+        );
+    }
+    if let Some(error) = &outcome.storage_error {
+        println!("Storage error: {error}");
+    }
 }
 
 fn account_status_name(account: &AccountRecord) -> &'static str {
@@ -1641,6 +1695,99 @@ mod tests {
 
         let references = forward_probe_stdout(reader, true).await.unwrap();
         assert_eq!(references, ["ch4"]);
+    }
+
+    #[test]
+    fn usage_get_json_includes_the_refreshed_snapshot_and_status() {
+        let account = account(OPENAI, "ch1", "Personal", "user@example.com", None, None);
+        let outcome = test_refresh_outcome(
+            &account,
+            RefreshStatus::Updated,
+            Some(test_snapshot(&account, false)),
+            None,
+        );
+
+        let value = usage_get_value(&account, &outcome);
+        assert_eq!(value["refresh"]["status"], "updated");
+        assert_eq!(value["snapshot"]["is_stale"], false);
+        assert_eq!(usage_get_exit_code(outcome.status), 0);
+    }
+
+    #[test]
+    fn usage_get_json_keeps_last_good_snapshot_and_reports_refresh_failure() {
+        let account = account(OPENAI, "ch1", "Personal", "user@example.com", None, None);
+        let error = UsageAdapterError {
+            code: codex_usage_core::usage::UsageAdapterErrorCode::NetworkFailure,
+            message: "provider is unavailable".to_owned(),
+            http_status_code: None,
+            retry_after_seconds: None,
+        };
+        let outcome = test_refresh_outcome(
+            &account,
+            RefreshStatus::RetainedStale,
+            Some(test_snapshot(&account, true)),
+            Some(error),
+        );
+
+        let value = usage_get_value(&account, &outcome);
+        assert_eq!(value["refresh"]["status"], "retained_stale");
+        assert_eq!(value["snapshot"]["is_stale"], true);
+        assert_eq!(
+            value["refresh"]["error"]["message"],
+            "provider is unavailable"
+        );
+        assert_eq!(usage_get_exit_code(outcome.status), EXIT_REFRESH_FAILED);
+    }
+
+    fn test_refresh_outcome(
+        account: &AccountRecord,
+        status: RefreshStatus,
+        snapshot: Option<UsageSnapshot>,
+        error: Option<UsageAdapterError>,
+    ) -> RefreshOutcome {
+        RefreshOutcome {
+            account_id: account.id,
+            provider_id: account.provider_id.clone(),
+            reason: RefreshReason::Manual,
+            status,
+            snapshot,
+            identity: None,
+            error,
+            storage_error: None,
+            completed_at_utc: Utc::now(),
+        }
+    }
+
+    fn test_snapshot(account: &AccountRecord, is_stale: bool) -> UsageSnapshot {
+        UsageSnapshot {
+            account_id: account.id,
+            observed_at_utc: Utc::now(),
+            response_account_id: None,
+            plan_type: Some("free".to_owned()),
+            primary: Some(codex_usage_core::usage::RateLimitWindow {
+                kind: UsageWindowKind::Primary,
+                name: "Primary".to_owned(),
+                used_percent: 25.0,
+                reset_at_utc: None,
+                limit_window_seconds: 3600,
+            }),
+            primary_window_kind: None,
+            primary_window_is_synthetic: false,
+            secondary: None,
+            additional_windows: Vec::new(),
+            credits: None,
+            credit_inventory: None,
+            spend: None,
+            observed_email: Some(account.email.clone()),
+            is_stale,
+            stale_reason: is_stale.then(|| "temporary provider failure".to_owned()),
+            stale_at_utc: is_stale.then(Utc::now),
+            metrics: Vec::new(),
+            source_diagnostics: Vec::new(),
+            provider_id: account.provider_id.clone(),
+            source: Some("test".to_owned()),
+            data_confidence: "authoritative".to_owned(),
+        }
     }
 
     #[test]

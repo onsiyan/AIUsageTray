@@ -147,15 +147,16 @@ CLI. Exact alias, label, or email selection is also supported; if more than one
 account matches, the command fails with candidate references and accepts
 `--provider` or `--workspace` to disambiguate.
 
-`account list`, `account get`, `account alias`, `usage get`, and `status` are
-local-only operations. `usage get` reads the latest cached snapshot and never
-contacts a provider. Only `usage refresh` performs network requests;
-`usage refresh --all` reports one result per account and exits nonzero if any
-refresh did not update. `--json` emits one JSON object with `schema_version: 1`
-on stdout, including structured errors and stable exit codes: 3 for no matching
-account, 4 for an ambiguous selector, 5 when no cached usage exists, and 6 for
-a failed/partial refresh. Other runtime errors exit 1; argument errors use the
-standard parser exit code 2.
+`account list`, `account get`, `account alias`, and `status` are local-only
+operations. `usage get` refreshes the selected account before returning its
+latest snapshot and refresh status; if the provider fails, a retained last-good
+snapshot is returned as stale and the command exits nonzero. `usage refresh`
+refreshes without the usage-focused output, while `usage refresh --all` reports
+one result per account and exits nonzero if any refresh did not update. `--json`
+emits one JSON object with `schema_version: 1` on stdout, including refresh
+status and errors. Stable exit codes include 3 for no matching account, 4 for
+an ambiguous selector, 6 for a failed/partial refresh, and 1 for other runtime
+errors; argument errors use the standard parser exit code 2.
 
 The shared default database is `%LOCALAPPDATA%\CodexUsageMonitor-Rust\accounts.db`
 (or the same app folder under the system temporary directory if `LOCALAPPDATA`
