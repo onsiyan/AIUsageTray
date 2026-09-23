@@ -211,10 +211,7 @@ version = "0.1.0"
 dependencies = [
  "codex-usage-core",
  "codex-usage-windows-auth",
- "reqwest",
- "serde_json",
  "tokio",
- "url",
 ]
 
 [[package]]

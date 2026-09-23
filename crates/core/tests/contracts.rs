@@ -312,14 +312,9 @@ async fn api_adapters_normalize_provider_specific_usage() {
     let result = claude.probe(&claude_account).await.unwrap();
     assert_eq!(result.snapshot.unwrap().primary.unwrap().used_percent, 30.0);
 
-    let openai = WhamUsageAdapter::new(
-        transport.clone(),
-        Arc::new(BrowserSessionAuth),
-        false,
-        false,
-    )
-    .unwrap()
-    .with_reset_credits(false);
+    let openai = WhamUsageAdapter::new(transport.clone(), Arc::new(CodexOAuthAuth), false, false)
+        .unwrap()
+        .with_reset_credits(false);
     let openai_account = AccountRecord::create(
         "openai",
         "openai@example.com",
@@ -1138,9 +1133,6 @@ impl UsageHttpTransport for FakeTransport {
             "/api/oauth/usage" => {
                 r#"{"rate_limit_tier":"pro","five_hour":{"utilization":22,"resets_at":"2030-01-01T00:00:00Z"},"seven_day":{"utilization":11,"resets_at":"2030-01-02T00:00:00Z"},"seven_day_cowork":{"utilization":4,"resets_at":"2030-01-04T00:00:00Z"},"limits":[{"kind":"weekly_scoped","group":"weekly","percent":7,"resets_at":"2030-01-03T00:00:00Z","scope":{"model":{"id":"sonnet","display_name":"Sonnet"}}},{"kind":"weekly_scoped","group":"weekly","percent":99,"scope":{"model":{"id":"all-models","display_name":"All models"}}}]}"#
             }
-            "/api/auth/session" => {
-                r#"{"user":{"email":"openai@example.com"},"accessToken":"session-token"}"#
-            }
             "/backend-api/wham/usage" => {
                 r#"{"account_id":"acct-1","plan_type":"plus","rate_limit":{"primary_window":{"used_percent":40,"reset_at":"2030-01-01T00:00:00Z","limit_window_seconds":18000},"secondary_window":{"used_percent":10,"reset_at":"2030-01-02T00:00:00Z","limit_window_seconds":604800}}}"#
             }
@@ -1154,19 +1146,16 @@ impl UsageHttpTransport for FakeTransport {
     }
 }
 
-struct BrowserSessionAuth;
+struct CodexOAuthAuth;
 
 #[async_trait]
-impl AccountAuthMaterialProvider for BrowserSessionAuth {
+impl AccountAuthMaterialProvider for CodexOAuthAuth {
     async fn get(
         &self,
         _account: &AccountRecord,
     ) -> Result<Option<AccountAuthMaterial>, AuthError> {
         Ok(Some(AccountAuthMaterial {
-            cookies: vec![CookieValue {
-                name: "__Secure-next-auth.session-token".to_owned(),
-                value: "browser-session-cookie".to_owned(),
-            }],
+            bearer_token: Some("codex-oauth-token".to_owned()),
             ..AccountAuthMaterial::default()
         }))
     }

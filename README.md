@@ -41,7 +41,7 @@ sources are:
 - Antigravity OAuth refresh credentials,
 - provider-owned Antigravity `.gemini/oauth_creds.json` and OpenCode Go
   `auth.json` files,
-- explicitly imported ChatGPT browser cookies for Codex, bound to one account,
+- Codex OAuth refresh credentials, bound to one local account id,
 - provider-owned Claude `~/.claude/.credentials.json` OAuth/session material,
 - explicitly account-bound environment variables (`OPENROUTER_API_KEY`,
   `OPENROUTER_MANAGEMENT_API_KEY`, `OPENCODE_API_KEY`, or
@@ -71,13 +71,14 @@ keys are not treated as web session cookies. This prevents a generic API key or
 another account's ambient session from being mislabeled as the selected
 account.
 
-Codex usage is fetched from the account-scoped WHAM contract using only an
-imported ChatGPT browser session. Before every usage query, the adapter calls
-`/api/auth/session`, requires the returned email to match the selected account,
-and only then sends the optional session access token and account id to WHAM.
-The token extracted from the session response is used for that refresh only.
-Token-only material is rejected; Codex `auth.json`, CLI, and app-server are not
-usage or authentication sources. The normalized snapshot includes primary,
+Codex account registration uses OpenAI's browser OAuth authorization-code flow
+with PKCE and a short-lived localhost callback (`/auth/callback`, preferred
+port 1455 with 1457 as the documented fallback). The authorization code is
+exchanged directly; the account's refresh token is stored in Windows Credential
+Manager under its local account id and rotated by the account-scoped OAuth
+service. WHAM requests use that account's bearer token and ChatGPT account id;
+they do not read browser cookies or call `/api/auth/session`. Codex `auth.json`,
+CLI, and app-server are not usage or authentication sources. The normalized snapshot includes primary,
 weekly, and model-specific windows, reset-credit inventory, optional workspace
 spend/balance enrichments, and absolute reset timestamps. Over-quota percentages
 remain intact in the snapshot while remaining percentage is clamped to zero.
@@ -141,16 +142,14 @@ OpenCode Go keeps the provider sources separate and account-scoped:
   source. Optional failures are recorded in `source_diagnostics` while a
   valid quota snapshot remains usable.
 
-On Windows, Codex and OpenCode Go account-add flows use the user's normal
+On Windows, OpenCode Go's browser account-add flow uses the user's normal
 default browser plus the unpacked extension in
-`opencode-browser-bridge-extension`. This is required when Chromium app-bound
-(`v20`) cookies prevent direct import: the desktop process never decrypts or
-weakens the browser's profile protection. For Codex, while a one-shot local
-Add Account request is pending, the extension waits for ChatGPT's own session
-endpoint to report a signed-in email and then transfers ChatGPT/OpenAI cookies
-automatically to the paired loopback listener. OpenCode Go retains its explicit
-**Connect** click. The validated material is stored in Windows Credential
-Manager and the endpoint closes.
+`opencode-browser-bridge-extension`; its explicit **Connect** click pairs the
+extension with a short-lived loopback listener. Codex does not use this bridge:
+its account-add flow opens OpenAI's OAuth authorization URL directly in the
+default browser and receives the redirect on localhost. This avoids reading or
+decrypting Chromium cookies, including profiles protected by app-bound
+(`v20`) encryption.
 
 The local estimate is explicitly marked `data_confidence = "estimated"`; it
 is never presented as account truth when an API or web snapshot is available.
@@ -192,25 +191,19 @@ HTTP rejection, or invalid response is retained as a source diagnostic without
 discarding valid `/key` data. Workspace filters are opt-in through the
 environment variables above.
 
-## Codex browser-session test
+## Codex OAuth live test
 
-First list the supported Chromium profiles. When more than one profile is
-signed in, pin the browser and profile id for each account; the probe verifies
-the session email before saving anything, then stores its cookies in Windows
-Credential Manager under that account id and queries WHAM:
+Run the account-add probe once per account. It opens OpenAI's authorization
+page in the default browser and waits for the localhost callback; after login,
+it stores the account-scoped refresh credential and immediately checks WHAM:
 
 ```powershell
-cargo run -p codex-usage-codex-probe -- --list-profiles
-cargo run -p codex-usage-codex-probe -- --browser chrome --profile-id "Default" --label "Codex Personal"
-cargo run -p codex-usage-codex-probe -- --browser edge --profile-id "Profile 2" --label "Codex Work"
+cargo run -p codex-usage-codex-probe -- --label "Codex Personal"
+cargo run -p codex-usage-codex-probe -- --label "Codex Work"
 ```
 
-Use the same database for accounts that should appear together, or pass
-`--database PATH` to select an explicit SQLite file. `--browser` accepts
-`chrome`, `edge`, `brave`, or `chromium`; `--profile-id` requires `--browser`.
-If the selected profile has no ChatGPT session, the tool opens ChatGPT in the
-default browser and waits for the session to appear in that profile. The email
-is checked again before every usage request, so a different browser session
-cannot silently refresh the selected account. The probe prints each quota
-window and its reset timestamp; it never prints session cookies or access
-tokens. It does not read Codex auth files or launch Codex CLI/app-server.
+Both commands use `%LOCALAPPDATA%\CodexUsageMonitor-Rust\accounts.db` by
+default; pass `--database PATH` to select another SQLite file. OAuth credentials
+are saved in Windows Credential Manager, not in SQLite. The probe prints each
+quota window and reset timestamp, never prints tokens, and does not read browser
+cookies, Codex auth files, or launch Codex CLI/app-server.

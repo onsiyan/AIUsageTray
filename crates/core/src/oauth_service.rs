@@ -1,5 +1,5 @@
 use crate::{
-    accounts::AccountId,
+    accounts::{AccountId, OPENAI},
     auth::{
         AuthError, OAuthBrowserLauncher, OAuthCallbackListenerFactory, OAuthCredentialStore,
         OAuthLoginResult, OAuthPkcePair, OAuthProviderDefinition, OAuthTokenProvider,
@@ -157,6 +157,11 @@ where
         let credential = self.credentials.get(account_id).await?.ok_or_else(|| {
             AuthError::ReauthenticationRequired("no stored refresh credential".to_owned())
         })?;
+        if credential.provider_id != provider.provider_id {
+            return Err(AuthError::ReauthenticationRequired(
+                "stored OAuth credential belongs to a different provider".to_owned(),
+            ));
+        }
         let mut fields = provider.token_parameters.clone();
         fields.insert("grant_type".to_owned(), "refresh_token".to_owned());
         fields.insert("refresh_token".to_owned(), credential.refresh_token.clone());
@@ -245,7 +250,8 @@ where
         provider: &OAuthProviderDefinition,
         tokens: &OAuthTokenSet,
     ) -> Result<Option<OAuthUserIdentity>, AuthError> {
-        let token_identity = identity_from_id_token(tokens.id_token.as_deref());
+        let token_identity =
+            identity_from_id_token(&provider.provider_id, tokens.id_token.as_deref());
         let Some(url) = provider.user_info_endpoint.clone() else {
             return Ok(token_identity);
         };
@@ -387,16 +393,31 @@ fn parse_token_response(body: &str) -> Result<OAuthTokenSet, AuthError> {
     })
 }
 
-fn identity_from_id_token(id_token: Option<&str>) -> Option<OAuthUserIdentity> {
+fn identity_from_id_token(provider_id: &str, id_token: Option<&str>) -> Option<OAuthUserIdentity> {
     let payload = id_token?.split('.').nth(1)?;
     let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
     let value: Value = serde_json::from_slice(&bytes).ok()?;
+    let openai_auth = value.get("https://api.openai.com/auth");
+    let openai_profile = value.get("https://api.openai.com/profile");
     Some(OAuthUserIdentity {
         email: value
             .get("email")
             .and_then(Value::as_str)
+            .or_else(|| {
+                (provider_id == OPENAI)
+                    .then(|| openai_profile.and_then(|profile| profile.get("email")))
+                    .flatten()
+                    .and_then(Value::as_str)
+            })
             .map(str::to_owned),
-        provider_account_id: value.get("sub").and_then(Value::as_str).map(str::to_owned),
+        provider_account_id: if provider_id == OPENAI {
+            openai_auth
+                .and_then(|auth| auth.get("chatgpt_account_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        } else {
+            value.get("sub").and_then(Value::as_str).map(str::to_owned)
+        },
         display_name: value.get("name").and_then(Value::as_str).map(str::to_owned),
     })
 }
@@ -417,7 +438,9 @@ fn random_url_safe() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::antigravity::oauth_definition;
+    use crate::providers::{
+        antigravity::oauth_definition, openai::oauth_definition as codex_oauth_definition,
+    };
 
     #[test]
     fn authorization_uri_contains_required_google_parameters() {
@@ -461,5 +484,76 @@ mod tests {
             Some("select_account consent")
         );
         assert!(!query.contains_key("include_granted_scopes"));
+    }
+
+    #[test]
+    fn codex_authorization_uri_uses_direct_openai_oauth_with_loopback_pkce() {
+        let provider = codex_oauth_definition();
+        let pkce = OAuthPkcePair {
+            verifier: "codex-verifier".to_owned(),
+            challenge: OAuthPkcePair::compute_s256_challenge("codex-verifier"),
+        };
+        let redirect_uri = Url::parse("http://localhost:1457/auth/callback").unwrap();
+        let uri = build_authorization_uri(&provider, &redirect_uri, "codex-state", &pkce);
+        let query: BTreeMap<String, String> = uri.query_pairs().into_owned().collect();
+
+        assert_eq!(
+            uri.origin().ascii_serialization(),
+            "https://auth.openai.com"
+        );
+        assert_eq!(uri.path(), "/oauth/authorize");
+        assert_eq!(query.get("response_type").map(String::as_str), Some("code"));
+        assert_eq!(
+            query.get("client_id").map(String::as_str),
+            Some(provider.client_id.as_str())
+        );
+        assert_eq!(
+            query.get("redirect_uri").map(String::as_str),
+            Some("http://localhost:1457/auth/callback")
+        );
+        assert_eq!(query.get("state").map(String::as_str), Some("codex-state"));
+        assert_eq!(
+            query.get("code_challenge_method").map(String::as_str),
+            Some("S256")
+        );
+        assert_eq!(
+            query.get("code_challenge").map(String::as_str),
+            Some(pkce.challenge.as_str())
+        );
+        assert_eq!(
+            query.get("originator").map(String::as_str),
+            Some("codex_usage_monitor_rust")
+        );
+    }
+
+    #[test]
+    fn codex_id_token_identity_uses_the_chatgpt_account_claim_not_jwt_subject() {
+        let provider = codex_oauth_definition();
+        let payload = URL_SAFE_NO_PAD.encode(
+            br#"{"email":"codex@example.com","sub":"user-subject","https://api.openai.com/auth":{"chatgpt_account_id":"chatgpt-account"}}"#,
+        );
+        let token = format!("header.{payload}.signature");
+
+        let identity = identity_from_id_token(&provider.provider_id, Some(&token)).unwrap();
+
+        assert_eq!(identity.email.as_deref(), Some("codex@example.com"));
+        assert_eq!(
+            identity.provider_account_id.as_deref(),
+            Some("chatgpt-account")
+        );
+    }
+
+    #[test]
+    fn codex_id_token_can_read_email_from_openai_profile_claims() {
+        let provider = codex_oauth_definition();
+        let payload = URL_SAFE_NO_PAD.encode(
+            br#"{"sub":"user-subject","https://api.openai.com/profile":{"email":"codex@example.com"},"https://api.openai.com/auth":{}}"#,
+        );
+        let token = format!("header.{payload}.signature");
+
+        let identity = identity_from_id_token(&provider.provider_id, Some(&token)).unwrap();
+
+        assert_eq!(identity.email.as_deref(), Some("codex@example.com"));
+        assert_eq!(identity.provider_account_id, None);
     }
 }

@@ -12,11 +12,19 @@ use url::Url;
 pub struct LoopbackOAuthCallbackListener {
     configured_uri: Url,
     actual_uri: Url,
+    fallback_ports: Vec<u16>,
     listener: Option<TcpListener>,
 }
 
 impl LoopbackOAuthCallbackListener {
     pub fn new(redirect_uri: Url) -> Result<Self, AuthError> {
+        Self::with_fallback_ports(redirect_uri, [])
+    }
+
+    pub fn with_fallback_ports(
+        redirect_uri: Url,
+        fallback_ports: impl IntoIterator<Item = u16>,
+    ) -> Result<Self, AuthError> {
         if redirect_uri.scheme() != "http"
             || !matches!(redirect_uri.host_str(), Some("localhost" | "127.0.0.1"))
             || redirect_uri.path().trim_matches('/').is_empty()
@@ -29,6 +37,10 @@ impl LoopbackOAuthCallbackListener {
         Ok(Self {
             actual_uri: redirect_uri.clone(),
             configured_uri: redirect_uri,
+            fallback_ports: fallback_ports
+                .into_iter()
+                .filter(|port| *port != 0)
+                .collect(),
             listener: None,
         })
     }
@@ -70,11 +82,38 @@ impl OAuthCallbackListener for LoopbackOAuthCallbackListener {
             .configured_uri
             .port_or_known_default()
             .ok_or_else(|| AuthError::Config("OAuth callback port is missing".to_owned()))?;
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
-            .await
-            .map_err(|error| {
-                AuthError::Callback(format!("could not bind OAuth callback: {error}"))
-            })?;
+        let mut candidate_ports = vec![port];
+        for fallback_port in &self.fallback_ports {
+            if !candidate_ports.contains(fallback_port) {
+                candidate_ports.push(*fallback_port);
+            }
+        }
+        let mut listener = None;
+        let mut last_bind_error = None;
+        for candidate_port in candidate_ports {
+            match TcpListener::bind((Ipv4Addr::LOCALHOST, candidate_port)).await {
+                Ok(bound) => {
+                    listener = Some(bound);
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                    last_bind_error = Some(error);
+                }
+                Err(error) => {
+                    return Err(AuthError::Callback(format!(
+                        "could not bind OAuth callback: {error}"
+                    )));
+                }
+            }
+        }
+        let listener = listener.ok_or_else(|| {
+            AuthError::Callback(format!(
+                "could not bind OAuth callback: {}",
+                last_bind_error
+                    .map(|error| error.to_string())
+                    .unwrap_or_else(|| "no callback ports were available".to_owned())
+            ))
+        })?;
         let actual_port = listener
             .local_addr()
             .map_err(|error| AuthError::Callback(format!("could not inspect callback: {error}")))?
@@ -228,6 +267,23 @@ impl OAuthCallbackListenerFactory for LoopbackOAuthCallbackListenerFactory {
     }
 }
 
+/// OpenAI Codex currently accepts localhost callbacks on its default port and
+/// one documented fallback port. Keep this provider-specific instead of
+/// changing the redirect policy for other OAuth providers.
+pub struct CodexOAuthCallbackListenerFactory;
+
+#[async_trait]
+impl OAuthCallbackListenerFactory for CodexOAuthCallbackListenerFactory {
+    async fn create(
+        &self,
+        redirect_uri: &Url,
+    ) -> Result<Box<dyn OAuthCallbackListener>, AuthError> {
+        Ok(Box::new(
+            LoopbackOAuthCallbackListener::with_fallback_ports(redirect_uri.clone(), [1457])?,
+        ))
+    }
+}
+
 fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
     let max_len = left.len().max(right.len());
     let mut difference = (left.len() ^ right.len()) as u8;
@@ -237,4 +293,32 @@ fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
         difference |= left_byte ^ right_byte;
     }
     difference == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LoopbackOAuthCallbackListener;
+    use crate::auth::OAuthCallbackListener;
+    use std::net::{Ipv4Addr, TcpListener as StdTcpListener};
+    use url::Url;
+
+    #[tokio::test]
+    async fn callback_listener_uses_a_fallback_port_when_the_preferred_port_is_busy() {
+        let occupied = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let preferred_port = occupied.local_addr().unwrap().port();
+        let fallback_probe = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let fallback_port = fallback_probe.local_addr().unwrap().port();
+        drop(fallback_probe);
+
+        let redirect_uri =
+            Url::parse(&format!("http://localhost:{preferred_port}/auth/callback")).unwrap();
+        let mut listener =
+            LoopbackOAuthCallbackListener::with_fallback_ports(redirect_uri, [fallback_port])
+                .unwrap();
+
+        listener.start().await.unwrap();
+
+        assert_eq!(listener.redirect_uri().port(), Some(fallback_port));
+        drop(occupied);
+    }
 }

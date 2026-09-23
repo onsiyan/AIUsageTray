@@ -10,8 +10,8 @@ const WEEKLY_WINDOW_SECONDS: i64 = 7 * 24 * 60 * 60;
 const RESET_BOUNDARY_TOLERANCE_SECONDS: i64 = 2 * 60;
 const RESET_THRESHOLD_PERCENT: f64 = 1.0;
 
-/// A sudden weekly drop is ambiguous until a second request through the same
-/// account-scoped browser session confirms it.
+/// A sudden weekly drop is ambiguous until a second request using the same
+/// account-scoped Codex credential confirms it.
 pub(crate) fn needs_weekly_reset_confirmation(
     account: &AccountRecord,
     previous: Option<&UsageSnapshot>,
@@ -21,8 +21,8 @@ pub(crate) fn needs_weekly_reset_confirmation(
         return false;
     };
     if !is_codex_account(account)
-        || !is_trusted_browser_snapshot(account, previous)
-        || !is_trusted_browser_snapshot(account, candidate)
+        || !is_trusted_codex_snapshot(account, previous)
+        || !is_trusted_codex_snapshot(account, candidate)
     {
         return false;
     }
@@ -46,9 +46,9 @@ pub(crate) fn confirms_weekly_reset(
     initial: &UsageSnapshot,
     confirmation: &UsageSnapshot,
 ) -> bool {
-    if !is_trusted_browser_snapshot(account, previous)
-        || !is_trusted_browser_snapshot(account, initial)
-        || !is_trusted_browser_snapshot(account, confirmation)
+    if !is_trusted_codex_snapshot(account, previous)
+        || !is_trusted_codex_snapshot(account, initial)
+        || !is_trusted_codex_snapshot(account, confirmation)
         || !compatible_identity_and_plan(previous, initial, confirmation)
         || initial.observed_at_utc <= previous.observed_at_utc
         || confirmation.observed_at_utc <= initial.observed_at_utc
@@ -119,15 +119,17 @@ fn is_codex_account(account: &AccountRecord) -> bool {
         || account.provider_id.eq_ignore_ascii_case("codex")
 }
 
-fn is_trusted_browser_snapshot(account: &AccountRecord, snapshot: &UsageSnapshot) -> bool {
+fn is_trusted_codex_snapshot(account: &AccountRecord, snapshot: &UsageSnapshot) -> bool {
     is_codex_account(account)
         && snapshot.account_id == account.id
         && (snapshot.provider_id.eq_ignore_ascii_case(OPENAI)
             || snapshot.provider_id.eq_ignore_ascii_case("codex"))
-        && snapshot
-            .source
-            .as_deref()
-            .is_some_and(|source| source.eq_ignore_ascii_case("browser-session"))
+        && snapshot.source.as_deref().is_some_and(|source| {
+            source.eq_ignore_ascii_case("codex-oauth")
+                    // Accept snapshots written by the previous Rust build so
+                    // the reset guard survives this auth-source migration.
+                    || source.eq_ignore_ascii_case("browser-session")
+        })
         && snapshot
             .observed_email
             .as_deref()
@@ -307,13 +309,13 @@ mod tests {
             metrics: Vec::new(),
             source_diagnostics: Vec::new(),
             provider_id: OPENAI.to_owned(),
-            source: Some("browser-session".to_owned()),
+            source: Some("codex-oauth".to_owned()),
             data_confidence: "authoritative".to_owned(),
         }
     }
 
     #[test]
-    fn sudden_low_usage_requires_same_account_browser_confirmation() {
+    fn sudden_low_usage_requires_same_account_codex_confirmation() {
         let account = account();
         let previous = snapshot(&account, instant(1), 70.0, instant(5));
         let candidate = snapshot(&account, instant(2), 0.2, instant(12));

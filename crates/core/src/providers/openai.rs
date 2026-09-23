@@ -1,6 +1,6 @@
 use crate::{
     accounts::{AccountRecord, OPENAI, VerifiedIdentity},
-    auth::{AccountAuthMaterial, AccountAuthMaterialProvider, AuthError},
+    auth::{AccountAuthMaterial, AccountAuthMaterialProvider, AuthError, OAuthProviderDefinition},
     providers::shared::{
         bearer_headers, invalid_payload, json_bool, json_number, json_string, map_http_error,
         missing_auth, normalize_percent,
@@ -17,11 +17,47 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::Method;
 use serde_json::Value;
-use std::{collections::HashMap, env, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    env,
+    sync::Arc,
+};
 use url::Url;
 
 const ADAPTER_ID: &str = "openai-wham";
 const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api/";
+const CODEX_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+
+pub fn oauth_definition() -> OAuthProviderDefinition {
+    let mut definition = OAuthProviderDefinition::new(
+        OPENAI,
+        Url::parse("https://auth.openai.com/oauth/authorize").expect("static Codex OAuth URL"),
+        Url::parse("https://auth.openai.com/oauth/token").expect("static Codex OAuth URL"),
+        Url::parse("http://localhost:1455/auth/callback").expect("static Codex callback URL"),
+        CODEX_OAUTH_CLIENT_ID,
+        None,
+        [
+            "openid",
+            "profile",
+            "email",
+            "offline_access",
+            "api.connectors.read",
+            "api.connectors.invoke",
+        ],
+    )
+    .expect("static Codex OAuth definition");
+    definition.authorization_parameters = BTreeMap::from([
+        ("id_token_add_organizations".to_owned(), "true".to_owned()),
+        ("codex_cli_simplified_flow".to_owned(), "true".to_owned()),
+        // Identify this application accurately instead of impersonating the
+        // first-party Codex CLI originator.
+        (
+            "originator".to_owned(),
+            "codex_usage_monitor_rust".to_owned(),
+        ),
+    ]);
+    definition
+}
 
 pub struct WhamUsageAdapter {
     transport: Arc<dyn UsageHttpTransport>,
@@ -114,38 +150,6 @@ impl WhamUsageAdapter {
             })
             .await
     }
-
-    async fn get_browser_session(
-        &self,
-        material: &AccountAuthMaterial,
-    ) -> Result<UsageHttpResponse, TransportError> {
-        let mut url = self.base_url.clone();
-        url.set_path("/");
-        url.set_query(None);
-        url.set_fragment(None);
-        let url = url
-            .join("api/auth/session")
-            .map_err(|error| TransportError::InvalidUrl(error.to_string()))?;
-        let mut cookie_material = material.clone();
-        cookie_material.bearer_token = None;
-        cookie_material.secondary_bearer_token = None;
-        cookie_material.oauth_access_token = None;
-        let headers = bearer_headers(
-            &cookie_material,
-            material
-                .user_agent
-                .as_deref()
-                .unwrap_or("CodexUsageMonitor/0.1"),
-        );
-        self.transport
-            .send(UsageHttpRequest {
-                method: Method::GET,
-                url,
-                headers,
-                body: None,
-            })
-            .await
-    }
 }
 
 #[async_trait]
@@ -155,51 +159,28 @@ impl UsageAdapter for WhamUsageAdapter {
     }
 
     async fn probe(&self, account: &AccountRecord) -> Result<UsageProbeResult, TransportError> {
-        let mut material = match self.auth.get(account).await {
+        let source_material = match self.auth.get(account).await {
             Ok(Some(material)) => material,
             Ok(None) | Err(AuthError::ReauthenticationRequired(_)) => {
                 return Ok(missing_auth("Codex"));
             }
             Err(error) => return Ok(invalid_payload("OpenAI", error.to_string())),
         };
-        if material.cookies.is_empty() {
-            return Ok(missing_auth("Codex browser session"));
-        }
-
-        // Codex usage must belong to the browser account explicitly imported
-        // for this managed account. Never let an unrelated stored token bypass
-        // the session identity check or take precedence over the session token.
-        material.bearer_token = None;
-        material.secondary_bearer_token = None;
-        material.oauth_access_token = None;
-        let mut token_refreshed = false;
-        let session = self.get_browser_session(&material).await?;
-        if !session.is_success() {
-            return Ok(map_http_error(&session, "OpenAI"));
-        }
-        let root: Value = match serde_json::from_str(&session.body) {
-            Ok(root) => root,
-            Err(error) => return Ok(invalid_payload("OpenAI session", error.to_string())),
-        };
-        let Some(email) = root
-            .get("user")
-            .and_then(|user| json_string(user, &["email"]))
+        let Some(access_token) = source_material
+            .bearer_token
+            .as_deref()
+            .filter(|token| !token.trim().is_empty())
         else {
-            return Ok(invalid_payload(
-                "OpenAI session",
-                "session response did not include the signed-in user's email",
-            ));
+            return Ok(missing_auth("Codex OAuth"));
         };
-        if !email.eq_ignore_ascii_case(&account.email) {
-            return Ok(account_mismatch(
-                "the browser session belongs to a different account",
-            ));
-        }
-        if let Some(access_token) = json_string(&root, &["accessToken", "access_token"]) {
-            material.bearer_token = Some(access_token);
-            token_refreshed = true;
-        }
-        let session_email = Some(email);
+        // Only the account-scoped OAuth bearer credential is valid for Codex
+        // usage. Ignore any legacy cookie, secondary token, or unrelated
+        // material that may coexist in a host's composite auth source.
+        let material = AccountAuthMaterial {
+            bearer_token: Some(access_token.to_owned()),
+            user_agent: source_material.user_agent.clone(),
+            ..AccountAuthMaterial::default()
+        };
         let base_url = self.base_url.clone();
         let usage_response = self
             .get(
@@ -222,8 +203,8 @@ impl UsageAdapter for WhamUsageAdapter {
             }
             Err(error) => return Ok(UsageProbeResult::failure(error)),
         };
-        snapshot.observed_email = session_email.clone();
-        snapshot.source = Some("browser-session".to_owned());
+        snapshot.observed_email = Some(account.email.clone());
+        snapshot.source = Some("codex-oauth".to_owned());
         let mut source_diagnostics = Vec::new();
 
         if self.fetch_reset_credits {
@@ -339,23 +320,12 @@ impl UsageAdapter for WhamUsageAdapter {
         }
         snapshot.source_diagnostics = source_diagnostics;
         let identity = VerifiedIdentity {
-            email: session_email,
+            email: Some(account.email.clone()),
             provider_account_id: snapshot.response_account_id.clone(),
             plan_type: snapshot.plan_type.clone(),
         };
-        let mut result = UsageProbeResult::success(snapshot, Some(identity));
-        result.session_token_was_refreshed = token_refreshed;
-        Ok(result)
+        Ok(UsageProbeResult::success(snapshot, Some(identity)))
     }
-}
-
-fn account_mismatch(message: &str) -> UsageProbeResult {
-    UsageProbeResult::failure(crate::usage::UsageAdapterError {
-        code: crate::usage::UsageAdapterErrorCode::AccountMismatch,
-        message: message.to_owned(),
-        http_status_code: None,
-        retry_after_seconds: None,
-    })
 }
 
 fn optional_payload_diagnostic(source: &str) -> UsageSourceDiagnostic {
@@ -983,11 +953,57 @@ fn is_backend_api_base(url: &Url) -> bool {
 mod tests {
     use super::*;
     use crate::{
-        accounts::AccountRecord, auth::CookieValue, transport::UsageHttpRequest,
-        usage::UsageAdapterErrorCode,
+        accounts::AccountRecord, transport::UsageHttpRequest, usage::UsageAdapterErrorCode,
     };
     use async_trait::async_trait;
     use std::{collections::BTreeMap, sync::Mutex};
+
+    #[test]
+    fn codex_oauth_definition_uses_openai_endpoints_and_loopback_callback() {
+        let provider = oauth_definition();
+
+        assert_eq!(
+            provider.authorization_endpoint.as_str(),
+            "https://auth.openai.com/oauth/authorize"
+        );
+        assert_eq!(
+            provider.token_endpoint.as_str(),
+            "https://auth.openai.com/oauth/token"
+        );
+        assert_eq!(
+            provider.redirect_uri.as_str(),
+            "http://localhost:1455/auth/callback"
+        );
+        assert_eq!(provider.client_id, CODEX_OAUTH_CLIENT_ID);
+        assert!(provider.client_secret.is_none());
+        assert_eq!(
+            provider.scopes,
+            [
+                "openid",
+                "profile",
+                "email",
+                "offline_access",
+                "api.connectors.read",
+                "api.connectors.invoke",
+            ]
+        );
+        assert_eq!(
+            provider
+                .authorization_parameters
+                .get("id_token_add_organizations"),
+            Some(&"true".to_owned())
+        );
+        assert_eq!(
+            provider
+                .authorization_parameters
+                .get("codex_cli_simplified_flow"),
+            Some(&"true".to_owned())
+        );
+        assert_eq!(
+            provider.authorization_parameters.get("originator"),
+            Some(&"codex_usage_monitor_rust".to_owned())
+        );
+    }
 
     #[test]
     fn parses_numeric_reset_and_stable_spark_windows() {
@@ -1125,17 +1141,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_session_is_validated_before_usage_and_owns_the_request_token() {
-        let transport = Arc::new(BrowserSessionTransport::new(
-            r#"{"user":{"email":"codex@example.com"},"accessToken":"session-access-token"}"#,
-        ));
-        let auth = Arc::new(StaticBrowserAuth(AccountAuthMaterial {
-            bearer_token: Some("unverified-stored-token".to_owned()),
+    async fn account_oauth_bearer_queries_wham_without_cookies_or_session_preflight() {
+        let transport = Arc::new(CodexUsageTransport::default());
+        let auth = Arc::new(StaticOAuthAuth(AccountAuthMaterial {
+            bearer_token: Some("account-scoped-oauth-token".to_owned()),
             secondary_bearer_token: Some("unverified-secondary-token".to_owned()),
             oauth_access_token: Some("unverified-oauth-token".to_owned()),
-            cookies: vec![CookieValue {
-                name: "__Secure-next-auth.session-token".to_owned(),
-                value: "browser-session-cookie".to_owned(),
+            cookies: vec![crate::auth::CookieValue {
+                name: "legacy-session-cookie".to_owned(),
+                value: "must-not-be-sent".to_owned(),
             }],
             ..AccountAuthMaterial::default()
         }));
@@ -1155,26 +1169,21 @@ mod tests {
 
         assert!(result.succeeded());
         let snapshot = result.snapshot.unwrap();
-        assert_eq!(snapshot.source.as_deref(), Some("browser-session"));
+        assert_eq!(snapshot.source.as_deref(), Some("codex-oauth"));
         assert_eq!(
             snapshot.observed_email.as_deref(),
             Some("codex@example.com")
         );
         let requests = transport.requests.lock().unwrap();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].url.path(), "/api/auth/session");
-        assert!(!requests[0].headers.contains_key("Authorization"));
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/backend-api/wham/usage");
         assert_eq!(
-            requests[0].headers.get("Cookie").map(String::as_str),
-            Some("__Secure-next-auth.session-token=browser-session-cookie")
+            requests[0].headers.get("Authorization").map(String::as_str),
+            Some("Bearer account-scoped-oauth-token")
         );
-        assert_eq!(requests[1].url.path(), "/backend-api/wham/usage");
+        assert!(!requests[0].headers.contains_key("Cookie"));
         assert_eq!(
-            requests[1].headers.get("Authorization").map(String::as_str),
-            Some("Bearer session-access-token")
-        );
-        assert_eq!(
-            requests[1]
+            requests[0]
                 .headers
                 .get("ChatGPT-Account-Id")
                 .map(String::as_str),
@@ -1187,7 +1196,7 @@ mod tests {
         let transport = Arc::new(OptionalEndpointFailureTransport {
             requests: Mutex::new(Vec::new()),
         });
-        let auth = Arc::new(StaticBrowserAuth(browser_session_material()));
+        let auth = Arc::new(StaticOAuthAuth(oauth_material()));
         let adapter = WhamUsageAdapter::new(transport.clone(), auth, true, true).unwrap();
         let account = AccountRecord::create(
             "codex",
@@ -1221,37 +1230,17 @@ mod tests {
             assert_eq!(diagnostic.retry_after_seconds, Some(17));
             assert!(!diagnostic.message.contains("private response body"));
         }
-        assert_eq!(transport.requests.lock().unwrap().len(), 5);
+        assert_eq!(transport.requests.lock().unwrap().len(), 4);
     }
 
     #[tokio::test]
-    async fn mismatched_browser_identity_is_rejected_before_usage_query() {
-        let transport = Arc::new(BrowserSessionTransport::new(
-            r#"{"user":{"email":"other@example.com"},"accessToken":"other-token"}"#,
-        ));
-        let auth = Arc::new(StaticBrowserAuth(browser_session_material()));
-        let adapter = WhamUsageAdapter::new(transport.clone(), auth, false, false).unwrap();
-        let account =
-            AccountRecord::create("codex", "codex@example.com", None, OPENAI, None).unwrap();
-
-        let result = adapter.probe(&account).await.unwrap();
-
-        assert_eq!(
-            result.error.unwrap().code,
-            UsageAdapterErrorCode::AccountMismatch
-        );
-        let requests = transport.requests.lock().unwrap();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].url.path(), "/api/auth/session");
-    }
-
-    #[tokio::test]
-    async fn token_without_imported_browser_cookies_is_not_a_codex_usage_source() {
-        let transport = Arc::new(BrowserSessionTransport::new(
-            r#"{"user":{"email":"codex@example.com"}}"#,
-        ));
-        let auth = Arc::new(StaticBrowserAuth(AccountAuthMaterial {
-            bearer_token: Some("token-only".to_owned()),
+    async fn cookie_only_material_is_rejected_without_a_browser_session_request() {
+        let transport = Arc::new(CodexUsageTransport::default());
+        let auth = Arc::new(StaticOAuthAuth(AccountAuthMaterial {
+            cookies: vec![crate::auth::CookieValue {
+                name: "session".to_owned(),
+                value: "browser-cookie".to_owned(),
+            }],
             ..AccountAuthMaterial::default()
         }));
         let adapter = WhamUsageAdapter::new(transport.clone(), auth, false, false).unwrap();
@@ -1267,20 +1256,17 @@ mod tests {
         assert!(transport.requests.lock().unwrap().is_empty());
     }
 
-    fn browser_session_material() -> AccountAuthMaterial {
+    fn oauth_material() -> AccountAuthMaterial {
         AccountAuthMaterial {
-            cookies: vec![CookieValue {
-                name: "__Secure-next-auth.session-token".to_owned(),
-                value: "browser-session-cookie".to_owned(),
-            }],
+            bearer_token: Some("account-scoped-oauth-token".to_owned()),
             ..AccountAuthMaterial::default()
         }
     }
 
-    struct StaticBrowserAuth(AccountAuthMaterial);
+    struct StaticOAuthAuth(AccountAuthMaterial);
 
     #[async_trait]
-    impl AccountAuthMaterialProvider for StaticBrowserAuth {
+    impl AccountAuthMaterialProvider for StaticOAuthAuth {
         async fn get(
             &self,
             _account: &AccountRecord,
@@ -1289,18 +1275,9 @@ mod tests {
         }
     }
 
-    struct BrowserSessionTransport {
-        session_body: String,
+    #[derive(Default)]
+    struct CodexUsageTransport {
         requests: Mutex<Vec<UsageHttpRequest>>,
-    }
-
-    impl BrowserSessionTransport {
-        fn new(session_body: &str) -> Self {
-            Self {
-                session_body: session_body.to_owned(),
-                requests: Mutex::new(Vec::new()),
-            }
-        }
     }
 
     struct OptionalEndpointFailureTransport {
@@ -1316,11 +1293,6 @@ mod tests {
             let path = request.url.path().to_owned();
             self.requests.lock().unwrap().push(request);
             let (status_code, body, headers) = match path.as_str() {
-                "/api/auth/session" => (
-                    200,
-                    r#"{"user":{"email":"codex@example.com"}}"#.to_owned(),
-                    BTreeMap::new(),
-                ),
                 "/backend-api/wham/usage" => (
                     200,
                     r#"{"account_id":"acct-1","plan_type":"team","rate_limit":{"primary_window":{"used_percent":40,"reset_at":"2030-01-01T00:00:00Z","limit_window_seconds":18000}}}"#.to_owned(),
@@ -1341,20 +1313,20 @@ mod tests {
     }
 
     #[async_trait]
-    impl UsageHttpTransport for BrowserSessionTransport {
+    impl UsageHttpTransport for CodexUsageTransport {
         async fn send(
             &self,
             request: UsageHttpRequest,
         ) -> Result<UsageHttpResponse, TransportError> {
             let path = request.url.path().to_owned();
             self.requests.lock().unwrap().push(request);
-            let (status_code, body) = match path.as_str() {
-                "/api/auth/session" => (200, self.session_body.clone()),
-                "/backend-api/wham/usage" => (
+            let (status_code, body) = if path == "/backend-api/wham/usage" {
+                (
                     200,
                     r#"{"account_id":"acct-1","plan_type":"plus","rate_limit":{"primary_window":{"used_percent":40,"reset_at":"2030-01-01T00:00:00Z","limit_window_seconds":18000}}}"#.to_owned(),
-                ),
-                _ => (404, String::new()),
+                )
+            } else {
+                (404, String::new())
             };
             Ok(UsageHttpResponse {
                 status_code,

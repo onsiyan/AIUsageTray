@@ -751,7 +751,7 @@ impl UsageRefreshCoordinator {
                                 prior,
                                 UsageAdapterError {
                                     code: UsageAdapterErrorCode::InvalidPayload,
-                                    message: "Codex weekly reset was not corroborated by a matching browser-session observation".to_owned(),
+                                    message: "Codex weekly reset was not corroborated by a matching account-scoped OAuth observation".to_owned(),
                                     http_status_code: None,
                                     retry_after_seconds: None,
                                 },
@@ -1315,7 +1315,7 @@ mod tests {
             limit_window_seconds: 7 * 24 * 60 * 60,
         });
         snapshot.observed_email = Some("codex@example.com".to_owned());
-        snapshot.source = Some("browser-session".to_owned());
+        snapshot.source = Some("codex-oauth".to_owned());
         snapshot
     }
 
@@ -1369,7 +1369,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn confirmed_weekly_reset_publishes_the_second_browser_observation() {
+    async fn confirmed_weekly_reset_publishes_the_second_oauth_observation() {
         let account =
             AccountRecord::create("test", "codex@example.com", None, OPENAI, None).unwrap();
         let accounts = Arc::new(InMemoryAccountStore::default());
