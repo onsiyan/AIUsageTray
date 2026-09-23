@@ -2,7 +2,7 @@ use codex_usage_core::{
     accounts::{AccountRecord, AccountStore, OPENAI},
     auth::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
-        StoredAuthMaterialProvider,
+        OAuthBrowserLauncher, StoredAuthMaterialProvider,
     },
     providers::registry::ProviderRegistryConfig,
     refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
@@ -12,8 +12,12 @@ use codex_usage_core::{
     usage::UsageSnapshotStore,
 };
 use codex_usage_windows_auth::{
-    WindowsCredentialManagerAuthMaterialStore,
-    browser_cookies::{BrowserKind, BrowserLoginOptions, WindowsBrowserCookieImporter},
+    WindowsCredentialManagerAuthMaterialStore, WindowsDefaultBrowserLauncher,
+    browser_bridge::BrowserBridgeSession,
+    browser_cookies::{
+        BrowserCookieError, BrowserCookieImportRequest, BrowserKind, BrowserLoginOptions,
+        WindowsBrowserCookieImporter,
+    },
 };
 use reqwest::Method;
 use serde_json::Value;
@@ -64,25 +68,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let account_store: Arc<dyn AccountStore> = sqlite.clone();
     let snapshot_store: Arc<dyn UsageSnapshotStore> = sqlite;
     let transport = Arc::new(ReqwestUsageHttpTransport::new(Duration::from_secs(45))?);
+    let mut import_request = BrowserCookieImportRequest::for_provider(OPENAI)?;
+    import_request.browser = browser;
+    import_request.profile_id = profile_id.clone();
     let login_url = Url::parse("https://chatgpt.com/")?;
-
-    println!("Opening ChatGPT in your default browser if no signed-in session is available.");
-    println!("No password is handled by this tool; only the existing browser session is imported.");
-    let login = importer
-        .open_and_wait_for_provider(
-            OPENAI,
-            &login_url,
-            BrowserLoginOptions {
-                browser,
-                profile_id: profile_id.clone(),
-                ..BrowserLoginOptions::default()
+    let direct_import = match importer.import(&import_request) {
+        Ok(imported) => Ok(imported),
+        Err(error) if browser.is_none() && profile_id.is_none() => {
+            if matches!(&error, BrowserCookieError::UnsupportedEncryption(_)) {
+                Err(error)
+            } else {
+                println!("Opening ChatGPT in your default browser and waiting for its session.");
+                match importer
+                    .open_and_wait_for_provider(OPENAI, &login_url, BrowserLoginOptions::default())
+                    .await
+                {
+                    Ok(login) => Ok(login.imported),
+                    Err(error) => Err(error),
+                }
+            }
+        }
+        Err(error) => Err(error),
+    };
+    let (material, imported_browser, imported_profile) = match direct_import {
+        Ok(imported) => (
+            AccountAuthMaterial {
+                cookies: imported.cookies,
+                user_agent: Some("CodexUsageMonitor/0.1".to_owned()),
+                ..AccountAuthMaterial::default()
             },
-        )
-        .await?;
-    let material = AccountAuthMaterial {
-        cookies: login.imported.cookies,
-        user_agent: Some("CodexUsageMonitor/0.1".to_owned()),
-        ..AccountAuthMaterial::default()
+            Some(imported.browser.as_str().to_owned()),
+            Some(imported.profile_id),
+        ),
+        Err(error) if browser.is_none() && profile_id.is_none() => {
+            println!("The browser profile cannot be imported directly ({error}).");
+            println!(
+                "Opening ChatGPT in your default browser; the pending add request will receive the signed-in session automatically."
+            );
+            println!(
+                "No password is handled, and the local bridge closes after one session or timeout."
+            );
+            let bridge = BrowserBridgeSession::bind(OPENAI).await?;
+            let bootstrap_url = Url::parse(&bridge.bootstrap_url())?;
+            WindowsDefaultBrowserLauncher.open(&bootstrap_url).await?;
+            let payload = bridge.wait(Duration::from_secs(300)).await?;
+            println!("ChatGPT browser session received automatically; verifying its identity.");
+            (
+                AccountAuthMaterial {
+                    cookies: payload.cookies,
+                    user_agent: payload.user_agent,
+                    ..AccountAuthMaterial::default()
+                },
+                payload.browser,
+                payload.profile_id,
+            )
+        }
+        Err(error) => return Err(error.into()),
     };
     let session_identity = fetch_browser_identity(transport.as_ref(), &material).await?;
 
@@ -99,8 +140,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|| format!("Codex — {}", session_identity.email));
         AccountRecord::create(label, &session_identity.email, None, OPENAI, None)?
     };
-    account.browser_kind = Some(login.imported.browser.as_str().to_owned());
-    account.browser_profile_id = Some(login.imported.profile_id);
+    if let Some(browser) = imported_browser {
+        account.browser_kind = Some(browser);
+    }
+    if let Some(profile_id) = imported_profile {
+        account.browser_profile_id = Some(profile_id);
+    }
     account_store.upsert(&account).await?;
 
     let secure_store = Arc::new(WindowsCredentialManagerAuthMaterialStore);
@@ -267,7 +312,7 @@ fn parse_arguments_from(
             "--list-profiles" => arguments.list_profiles = true,
             "--help" | "-h" => {
                 println!(
-                    "Usage: codex-usage-codex-probe [--database PATH] [--label LABEL] [--browser chrome|edge|brave|chromium] [--profile-id ID]\n       codex-usage-codex-probe --list-profiles [--browser chrome|edge|brave|chromium]\n\nImports the signed-in ChatGPT session from a supported Chromium profile, verifies its email, stores cookies per account in Windows Credential Manager, and queries WHAM directly. Use --list-profiles to find a profile id when more than one profile is available. It does not read Codex auth files or launch Codex CLI/app-server."
+                    "Usage: codex-usage-codex-probe [--database PATH] [--label LABEL] [--browser chrome|edge|brave|chromium] [--profile-id ID]\n       codex-usage-codex-probe --list-profiles [--browser chrome|edge|brave|chromium]\n\nAdds a Codex account through the signed-in ChatGPT browser session. It first imports or waits for browser cookies directly; if Chromium app-bound encryption blocks import, it uses the one-shot browser extension bridge to transfer the session automatically. The email is verified before cookies are stored per account in Windows Credential Manager and WHAM is queried. It does not read Codex auth files or launch Codex CLI/app-server."
                 );
                 std::process::exit(0);
             }

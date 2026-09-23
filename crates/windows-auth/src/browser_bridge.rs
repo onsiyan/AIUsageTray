@@ -1,14 +1,13 @@
-//! User-driven browser bridge for Chromium app-bound cookie stores.
+//! Account-add-only browser bridge for Chromium app-bound cookie stores.
 //!
 //! Chromium's app-bound (`v20`) cookie values cannot be read by a separate
-//! desktop process.  This module provides the narrow replacement: a one-shot
-//! loopback HTTP listener accepts cookies only after the user presses the
-//! extension button.  The listener is bound to `127.0.0.1`, protected by a
-//! random bearer code, and closes after one accepted payload or timeout.
+//! desktop process. This module provides a one-shot loopback HTTP listener
+//! protected by a random bearer code. The extension can submit only the
+//! pending provider's cookies, after its provider session becomes available.
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use codex_usage_core::{
-    accounts::normalize_provider_id,
+    accounts::{OPENAI, OPENCODE_GO, normalize_provider_id},
     auth::{AuthError, CookieValue},
 };
 use rand::random;
@@ -23,6 +22,7 @@ use tokio::{
 
 const BRIDGE_PATH: &str = "/v1/browser-bridge";
 const BOOTSTRAP_PATH: &str = "/v1/browser-bridge/start";
+const OPENAI_LOGIN_URL: &str = "https://chatgpt.com/";
 const OPENCODE_LOGIN_URL: &str = "https://opencode.ai/auth";
 const MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
 const MAX_HTTP_BODY_BYTES: usize = 512 * 1024;
@@ -115,9 +115,9 @@ impl BrowserBridgeSession {
     pub async fn bind(provider_id: &str) -> Result<Self, BrowserBridgeError> {
         let provider_id = normalize_provider_id(provider_id)
             .map_err(|error| BrowserBridgeError::InvalidConfiguration(error.to_string()))?;
-        if provider_id != "opencodego" {
+        if !matches!(provider_id.as_str(), OPENAI | OPENCODE_GO) {
             return Err(BrowserBridgeError::InvalidConfiguration(
-                "the browser bridge currently supports OpenCode Go only".to_owned(),
+                "the browser bridge supports Codex and OpenCode Go only".to_owned(),
             ));
         }
         let listener = TcpListener::bind(("127.0.0.1", 0))
@@ -151,12 +151,13 @@ impl BrowserBridgeSession {
 
     /// A local bootstrap URL. The pairing code stays in the URL fragment, so
     /// it is not sent in the HTTP request or recorded as a server query.
-    /// The extension stores it, then the page redirects to OpenCode login.
+    /// The extension stores it, then the page redirects to provider login.
     pub fn bootstrap_url(&self) -> String {
         format!(
-            "http://{}/{}#pairing={}",
+            "http://{}/{}#provider_id={}&pairing={}",
             self.local_addr,
             BOOTSTRAP_PATH.trim_start_matches('/'),
+            self.provider_id,
             self.pairing_code
         )
     }
@@ -222,7 +223,7 @@ impl BrowserBridgeSession {
             return Err(BrowserBridgeError::ResponseHandled);
         }
         if request.method == "GET" && request.path == BOOTSTRAP_PATH {
-            write_bootstrap_response(stream).await?;
+            write_bootstrap_response(stream, &self.provider_id).await?;
             return Err(BrowserBridgeError::ResponseHandled);
         }
         if request.method != "POST" || request.path != BRIDGE_PATH {
@@ -366,10 +367,14 @@ async fn write_options_response(stream: &mut TcpStream) -> Result<(), BrowserBri
         .map_err(BrowserBridgeError::Io)
 }
 
-async fn write_bootstrap_response(stream: &mut TcpStream) -> Result<(), BrowserBridgeError> {
+async fn write_bootstrap_response(
+    stream: &mut TcpStream,
+    provider_id: &str,
+) -> Result<(), BrowserBridgeError> {
+    let login_url = provider_login_url(provider_id)?;
     let body = format!(
-        "<!doctype html><meta charset=\"utf-8\"><title>OpenCode bridge</title><p>يتم فتح صفحة تسجيل الدخول...</p><script>setTimeout(() => location.replace('{}'), 1200)</script>",
-        OPENCODE_LOGIN_URL
+        "<!doctype html><meta charset=\"utf-8\"><title>Account bridge</title><p>يتم فتح صفحة تسجيل الدخول...</p><script>setTimeout(() => location.replace('{}'), 1200)</script>",
+        login_url
     );
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
@@ -379,6 +384,16 @@ async fn write_bootstrap_response(stream: &mut TcpStream) -> Result<(), BrowserB
         .write_all(response.as_bytes())
         .await
         .map_err(BrowserBridgeError::Io)
+}
+
+fn provider_login_url(provider_id: &str) -> Result<&'static str, BrowserBridgeError> {
+    match provider_id {
+        OPENAI => Ok(OPENAI_LOGIN_URL),
+        OPENCODE_GO => Ok(OPENCODE_LOGIN_URL),
+        _ => Err(BrowserBridgeError::InvalidConfiguration(
+            "the browser bridge provider is not supported".to_owned(),
+        )),
+    }
 }
 
 async fn write_json_response(
@@ -414,8 +429,20 @@ fn validate_payload(
             "payload provider does not match the pending account".to_owned(),
         ));
     }
-    let allowed_domains = ["opencode.ai", "app.opencode.ai"];
-    let required_names = ["auth", "__host-auth", "__host-console_session"];
+    let (allowed_domains, required_names, provider_name): (&[&str], &[&str], &str) =
+        match expected_provider {
+            OPENAI => (&["chatgpt.com", "openai.com"], &[], "ChatGPT"),
+            OPENCODE_GO => (
+                &["opencode.ai", "app.opencode.ai"],
+                &["auth", "__host-auth", "__host-console_session"],
+                "OpenCode",
+            ),
+            _ => {
+                return Err(BrowserBridgeError::InvalidPayload(
+                    "provider is not supported by the browser bridge".to_owned(),
+                ));
+            }
+        };
     if incoming.cookies.is_empty() || incoming.cookies.len() > MAX_COOKIE_COUNT {
         return Err(BrowserBridgeError::InvalidPayload(
             "cookie count is outside the allowed range".to_owned(),
@@ -432,9 +459,9 @@ fn validate_payload(
             .iter()
             .any(|allowed| host_matches(&domain, allowed))
         {
-            return Err(BrowserBridgeError::InvalidPayload(
-                "payload contains a cookie outside OpenCode domains".to_owned(),
-            ));
+            return Err(BrowserBridgeError::InvalidPayload(format!(
+                "payload contains a cookie outside {provider_name} domains"
+            )));
         }
         let name = cookie.name.trim();
         let value = cookie.value.trim();
@@ -463,9 +490,10 @@ fn validate_payload(
             });
         }
     }
-    if !required_names
-        .iter()
-        .any(|required| names.contains(*required))
+    if !required_names.is_empty()
+        && !required_names
+            .iter()
+            .any(|required| names.contains(*required))
     {
         return Err(BrowserBridgeError::InvalidPayload(
             "no OpenCode authentication cookie was supplied".to_owned(),
@@ -519,8 +547,12 @@ mod tests {
     use super::*;
 
     fn request(cookies: Vec<BrowserBridgeCookie>) -> BrowserBridgeRequest {
+        request_for(OPENCODE_GO, cookies)
+    }
+
+    fn request_for(provider_id: &str, cookies: Vec<BrowserBridgeCookie>) -> BrowserBridgeRequest {
         BrowserBridgeRequest {
-            provider_id: "opencodego".to_owned(),
+            provider_id: provider_id.to_owned(),
             cookies,
             user_agent: None,
             browser: None,
@@ -639,5 +671,76 @@ mod tests {
         let result = waiter.await.unwrap().unwrap();
         assert_eq!(result.provider_id, "opencodego");
         assert_eq!(result.cookies[0].name, "auth");
+    }
+
+    #[test]
+    fn codex_payload_accepts_only_chatgpt_and_openai_domains() {
+        let payload = validate_payload(
+            request_for(
+                OPENAI,
+                vec![
+                    BrowserBridgeCookie {
+                        name: "session-cookie".to_owned(),
+                        value: "session".to_owned(),
+                        domain: ".chatgpt.com".to_owned(),
+                        path: "/".to_owned(),
+                    },
+                    BrowserBridgeCookie {
+                        name: "device-cookie".to_owned(),
+                        value: "device".to_owned(),
+                        domain: ".openai.com".to_owned(),
+                        path: "/".to_owned(),
+                    },
+                ],
+            ),
+            OPENAI,
+        )
+        .unwrap();
+
+        assert_eq!(payload.provider_id, OPENAI);
+        assert_eq!(payload.cookies.len(), 2);
+    }
+
+    #[test]
+    fn codex_payload_rejects_unrelated_cookie_domains() {
+        let error = validate_payload(
+            request_for(
+                OPENAI,
+                vec![BrowserBridgeCookie {
+                    name: "session-cookie".to_owned(),
+                    value: "session".to_owned(),
+                    domain: "evil.example".to_owned(),
+                    path: "/".to_owned(),
+                }],
+            ),
+            OPENAI,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("outside ChatGPT"));
+    }
+
+    #[tokio::test]
+    async fn codex_bootstrap_redirects_to_chatgpt_and_keeps_pairing_in_fragment() {
+        let session = BrowserBridgeSession::bind(OPENAI).await.unwrap();
+        let address = session.local_addr;
+        let bootstrap_url = session.bootstrap_url();
+        assert!(bootstrap_url.contains("#provider_id=openai&pairing="));
+        let waiter = tokio::spawn(async move { session.wait(Duration::from_secs(1)).await });
+
+        let mut bootstrap = TcpStream::connect(address).await.unwrap();
+        bootstrap
+            .write_all(
+                format!(
+                    "GET {BOOTSTRAP_PATH} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        bootstrap.read_to_end(&mut response).await.unwrap();
+        assert!(String::from_utf8_lossy(&response).contains(OPENAI_LOGIN_URL));
+        waiter.abort();
     }
 }

@@ -1,5 +1,5 @@
 const DEFAULT_ENDPOINT = "http://127.0.0.1:0/v1/browser-bridge";
-const PROVIDER_ID = "opencodego";
+const OPENCODE_PROVIDER_ID = "opencodego";
 const ALLOWED_HOSTS = new Set(["opencode.ai", "app.opencode.ai"]);
 const MAX_COOKIES = 128;
 
@@ -7,6 +7,9 @@ const endpointInput = document.getElementById("endpoint");
 const pairingInput = document.getElementById("pairing");
 const connectButton = document.getElementById("connect");
 const statusElement = document.getElementById("status");
+const titleElement = document.getElementById("title");
+const hintElement = document.getElementById("hint");
+const opencodeControls = document.getElementById("opencode-controls");
 
 function setStatus(message, isError = false) {
   statusElement.textContent = message;
@@ -56,6 +59,10 @@ async function connect() {
   connectButton.disabled = true;
   setStatus("يتم جمع كوكيز OpenCode وإرسالها محليًا...");
   try {
+    const settings = await chrome.storage.local.get({ providerId: OPENCODE_PROVIDER_ID });
+    if (settings.providerId === "openai") {
+      throw new Error("سيُنقل حساب Codex تلقائيًا بعد اكتمال تسجيل الدخول.");
+    }
     const endpoint = endpointInput.value.trim().replace(/\/$/, "");
     const pairing = pairingInput.value.trim();
     if (!endpoint || endpoint.includes(":0/") || !pairing) {
@@ -75,7 +82,7 @@ async function connect() {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        provider_id: PROVIDER_ID,
+        provider_id: settings.providerId || OPENCODE_PROVIDER_ID,
         cookies,
         user_agent: navigator.userAgent,
         browser: "chromium"
@@ -86,7 +93,7 @@ async function connect() {
     }
     setStatus("تم إرسال الجلسة. يمكنك إغلاق هذه النافذة.");
     pairingInput.value = "";
-    await chrome.storage.local.remove("pairing");
+    await chrome.storage.local.remove(["pairing", "pairingExpiresAt"]);
   } catch (error) {
     setStatus(error instanceof Error ? error.message : String(error), true);
   } finally {
@@ -95,9 +102,29 @@ async function connect() {
 }
 
 async function loadSettings() {
-  const settings = await chrome.storage.local.get({ endpoint: DEFAULT_ENDPOINT, pairing: "" });
+  const settings = await chrome.storage.local.get({
+    endpoint: DEFAULT_ENDPOINT,
+    pairing: "",
+    providerId: OPENCODE_PROVIDER_ID,
+    bridgeStatus: ""
+  });
   endpointInput.value = settings.endpoint;
   pairingInput.value = settings.pairing;
+  if (settings.providerId === "openai") {
+    titleElement.textContent = "إضافة حساب Codex";
+    hintElement.textContent = "أكمل تسجيل الدخول في ChatGPT؛ سينقل البرنامج الجلسة تلقائيًا أثناء طلب الإضافة.";
+    opencodeControls.hidden = true;
+    const message = settings.bridgeStatus === "session-sent"
+      ? "أُرسلت جلسة ChatGPT إلى البرنامج."
+      : settings.bridgeStatus === "expired"
+        ? "انتهت مهلة الإضافة؛ ابدأ إضافة الحساب من البرنامج مجددًا."
+        : "بانتظار اكتمال تسجيل الدخول في ChatGPT…";
+    setStatus(message);
+    return;
+  }
+  titleElement.textContent = "ربط حساب OpenCode Go";
+  hintElement.textContent = "اضغط الزر مرة واحدة بعد إكمال تسجيل الدخول في هذه النافذة.";
+  opencodeControls.hidden = false;
 }
 
 endpointInput.addEventListener("change", () => {
@@ -105,3 +132,8 @@ endpointInput.addEventListener("change", () => {
 });
 connectButton.addEventListener("click", connect);
 loadSettings().catch((error) => setStatus(String(error), true));
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === "local" && (changes.providerId || changes.bridgeStatus)) {
+    loadSettings().catch((error) => setStatus(String(error), true));
+  }
+});

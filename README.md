@@ -141,13 +141,15 @@ OpenCode Go keeps the provider sources separate and account-scoped:
   source. Optional failures are recorded in `source_diagnostics` while a
   valid quota snapshot remains usable.
 
-On Windows, the OpenCode Go account-add flow uses the user's normal default
-browser plus the unpacked extension in
-`opencode-browser-bridge-extension`. This is required for Chromium app-bound
-(`v20`) cookies: the desktop process never decrypts or weakens the browser's
-profile protection. The extension sends only OpenCode-domain cookies after an
-explicit **Connect** click to a one-shot loopback endpoint protected by a
-pairing code; the validated material is then stored in Windows Credential
+On Windows, Codex and OpenCode Go account-add flows use the user's normal
+default browser plus the unpacked extension in
+`opencode-browser-bridge-extension`. This is required when Chromium app-bound
+(`v20`) cookies prevent direct import: the desktop process never decrypts or
+weakens the browser's profile protection. For Codex, while a one-shot local
+Add Account request is pending, the extension waits for ChatGPT's own session
+endpoint to report a signed-in email and then transfers ChatGPT/OpenAI cookies
+automatically to the paired loopback listener. OpenCode Go retains its explicit
+**Connect** click. The validated material is stored in Windows Credential
 Manager and the endpoint closes.
 
 The local estimate is explicitly marked `data_confidence = "estimated"`; it
