@@ -474,7 +474,10 @@ impl OAuthCallbackResult {
 #[derive(Debug, Clone)]
 pub struct OAuthUserIdentity {
     pub email: Option<String>,
+    /// Stable identity for the individual provider user when available.
     pub provider_account_id: Option<String>,
+    /// Selected provider workspace/account scope, distinct from the user.
+    pub workspace_id: Option<String>,
     pub display_name: Option<String>,
 }
 

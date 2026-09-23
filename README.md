@@ -76,8 +76,10 @@ with PKCE and a short-lived localhost callback (`/auth/callback`, preferred
 port 1455 with 1457 as the documented fallback). The authorization code is
 exchanged directly; the account's refresh token is stored in Windows Credential
 Manager under its local account id and rotated by the account-scoped OAuth
-service. WHAM requests use that account's bearer token and ChatGPT account id;
-they do not read browser cookies or call `/api/auth/session`. Codex `auth.json`,
+service. The Codex user identity and selected workspace id are stored
+separately and together identify a local account; the workspace id is sent as
+`ChatGPT-Account-Id` for WHAM. Requests do not read browser cookies or call
+`/api/auth/session`. Codex `auth.json`,
 CLI, and app-server are not usage or authentication sources. The normalized snapshot includes primary,
 weekly, and model-specific windows, reset-credit inventory, optional workspace
 spend/balance enrichments, and absolute reset timestamps. Over-quota percentages

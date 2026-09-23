@@ -240,8 +240,9 @@ pub trait AccountStore: Send + Sync {
     async fn get(&self, account_id: AccountId) -> Result<Option<AccountRecord>, AccountStoreError>;
     async fn upsert(&self, account: &AccountRecord) -> Result<(), AccountStoreError>;
     /// Saves a provider account without creating a second local row when that
-    /// provider's stable account identity is already linked. Providers that
-    /// do not supply a stable identity continue to use the local account id.
+    /// provider's stable identity and selected workspace are already linked.
+    /// Providers that do not supply a stable identity continue to use the local
+    /// account id.
     async fn upsert_or_get_by_provider_identity(
         &self,
         account: &AccountRecord,
@@ -286,6 +287,7 @@ impl AccountStore for InMemoryAccountStore {
                     existing.id != account.id
                         && existing.provider_id == account.provider_id
                         && existing.provider_account_id.as_deref() == Some(identity)
+                        && existing.workspace_id == account.workspace_id
                 })
             })
         {
@@ -306,6 +308,7 @@ impl AccountStore for InMemoryAccountStore {
                 .filter(|existing| {
                     existing.provider_id == account.provider_id
                         && existing.provider_account_id.as_deref() == Some(identity)
+                        && existing.workspace_id == account.workspace_id
                 })
                 .max_by(|left, right| {
                     left.updated_at_utc

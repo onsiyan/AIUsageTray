@@ -131,9 +131,7 @@ impl WhamUsageAdapter {
                 .unwrap_or("CodexUsageMonitor/0.1"),
         );
         if include_account_header {
-            if let Some(account_id) =
-                account.and_then(|account| account.provider_account_id.as_deref())
-            {
+            if let Some(account_id) = account.and_then(|account| account.workspace_id.as_deref()) {
                 headers.insert("ChatGPT-Account-Id".to_owned(), account_id.to_owned());
             }
         }
@@ -229,7 +227,7 @@ impl UsageAdapter for WhamUsageAdapter {
         }
 
         let workspace_account_id = account
-            .provider_account_id
+            .workspace_id
             .clone()
             .or_else(|| snapshot.response_account_id.clone());
         if is_backend_api_base(&base_url) && is_workspace_plan(snapshot.plan_type.as_deref()) {
@@ -321,7 +319,7 @@ impl UsageAdapter for WhamUsageAdapter {
         snapshot.source_diagnostics = source_diagnostics;
         let identity = VerifiedIdentity {
             email: Some(account.email.clone()),
-            provider_account_id: snapshot.response_account_id.clone(),
+            provider_account_id: account.provider_account_id.clone(),
             plan_type: snapshot.plan_type.clone(),
         };
         Ok(UsageProbeResult::success(snapshot, Some(identity)))
@@ -405,7 +403,7 @@ fn parse_wham_usage(
         .map_err(|error| TransportError::Serialization(error.to_string()))?;
     let response_account_id = json_string(&root, &["account_id", "accountId"]);
     if let (Some(expected), Some(actual)) = (
-        account.provider_account_id.as_deref(),
+        account.workspace_id.as_deref(),
         response_account_id.as_deref(),
     ) && expected != actual
     {
@@ -1010,9 +1008,9 @@ mod tests {
         let account = AccountRecord::create(
             "codex",
             "codex@example.com",
-            Some("acct-1".to_owned()),
+            Some("chatgpt-user-1".to_owned()),
             OPENAI,
-            None,
+            Some("acct-1".to_owned()),
         )
         .unwrap();
         let body = r#"{
@@ -1159,15 +1157,22 @@ mod tests {
         let account = AccountRecord::create(
             "codex",
             "codex@example.com",
-            Some("acct-1".to_owned()),
+            Some("chatgpt-user-1".to_owned()),
             OPENAI,
-            None,
+            Some("acct-1".to_owned()),
         )
         .unwrap();
 
         let result = adapter.probe(&account).await.unwrap();
 
         assert!(result.succeeded());
+        assert_eq!(
+            result
+                .identity
+                .as_ref()
+                .and_then(|identity| identity.provider_account_id.as_deref()),
+            Some("chatgpt-user-1")
+        );
         let snapshot = result.snapshot.unwrap();
         assert_eq!(snapshot.source.as_deref(), Some("codex-oauth"));
         assert_eq!(
@@ -1201,9 +1206,9 @@ mod tests {
         let account = AccountRecord::create(
             "codex",
             "codex@example.com",
-            Some("acct-1".to_owned()),
+            Some("chatgpt-user-1".to_owned()),
             OPENAI,
-            None,
+            Some("acct-1".to_owned()),
         )
         .unwrap();
 
@@ -1254,6 +1259,35 @@ mod tests {
             UsageAdapterErrorCode::AuthenticationUnavailable
         );
         assert!(transport.requests.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn wham_account_id_is_validated_against_workspace_not_user_identity() {
+        let account = AccountRecord::create(
+            "codex",
+            "codex@example.com",
+            Some("chatgpt-user-1".to_owned()),
+            OPENAI,
+            Some("workspace-1".to_owned()),
+        )
+        .unwrap();
+
+        let matching = parse_wham_usage(
+            &account,
+            r#"{"account_id":"workspace-1","plan_type":"team","rate_limit":{"primary_window":{"used_percent":10,"reset_at":4102444800,"limit_window_seconds":18000}}}"#,
+        )
+        .unwrap();
+        assert!(matches!(matching, Ok(Some(_))));
+
+        let mismatched = parse_wham_usage(
+            &account,
+            r#"{"account_id":"other-workspace","plan_type":"team","rate_limit":{"primary_window":{"used_percent":10,"reset_at":4102444800,"limit_window_seconds":18000}}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            mismatched,
+            Err(error) if error.code == UsageAdapterErrorCode::AccountMismatch
+        ));
     }
 
     fn oauth_material() -> AccountAuthMaterial {

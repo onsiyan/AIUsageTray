@@ -114,26 +114,31 @@ impl SqliteStore {
         connection
             .execute_batch(
                 r#"
-                CREATE TRIGGER IF NOT EXISTS trg_accounts_provider_identity_unique_insert
+                DROP TRIGGER IF EXISTS trg_accounts_provider_identity_unique_insert;
+                DROP TRIGGER IF EXISTS trg_accounts_provider_identity_unique_update;
+
+                CREATE TRIGGER trg_accounts_provider_identity_unique_insert
                 BEFORE INSERT ON accounts
                 WHEN NEW.provider_account_id IS NOT NULL
                     AND EXISTS (
                         SELECT 1 FROM accounts
                         WHERE provider_id = NEW.provider_id
                             AND provider_account_id = NEW.provider_account_id
+                            AND workspace_id IS NEW.workspace_id
                             AND account_id <> NEW.account_id
                     )
                 BEGIN
                     SELECT RAISE(ABORT, 'duplicate provider identity');
                 END;
 
-                CREATE TRIGGER IF NOT EXISTS trg_accounts_provider_identity_unique_update
-                BEFORE UPDATE OF provider_id, provider_account_id ON accounts
+                CREATE TRIGGER trg_accounts_provider_identity_unique_update
+                BEFORE UPDATE OF provider_id, provider_account_id, workspace_id ON accounts
                 WHEN NEW.provider_account_id IS NOT NULL
                     AND EXISTS (
                         SELECT 1 FROM accounts
                         WHERE provider_id = NEW.provider_id
                             AND provider_account_id = NEW.provider_account_id
+                            AND workspace_id IS NEW.workspace_id
                             AND account_id <> NEW.account_id
                     )
                 BEGIN
@@ -199,8 +204,8 @@ impl AccountStore for SqliteStore {
         let existing = if let Some(provider_account_id) = account.provider_account_id.as_deref() {
             transaction
                 .query_row(
-                    "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, codex_home, status, created_at_utc, updated_at_utc FROM accounts WHERE provider_id = ?1 AND provider_account_id = ?2 ORDER BY updated_at_utc DESC, created_at_utc, account_id LIMIT 1",
-                    params![account.provider_id, provider_account_id],
+                    "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, codex_home, status, created_at_utc, updated_at_utc FROM accounts WHERE provider_id = ?1 AND provider_account_id = ?2 AND workspace_id IS ?3 ORDER BY updated_at_utc DESC, created_at_utc, account_id LIMIT 1",
+                    params![account.provider_id, provider_account_id, account.workspace_id],
                     read_account,
                 )
                 .optional()
@@ -270,7 +275,7 @@ fn write_account(connection: &Connection, account: &AccountRecord) -> Result<(),
             account.workspace_id,
             account.codex_home,
             (account.provider_id == OPENAI)
-                .then(|| account.provider_account_id.clone())
+                .then(|| account.workspace_id.clone())
                 .flatten(),
             account.status as i32,
             account.created_at_utc.to_rfc3339(),

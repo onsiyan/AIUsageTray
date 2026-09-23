@@ -965,7 +965,7 @@ async fn sqlite_store_round_trips_account_and_snapshot() {
 }
 
 #[tokio::test]
-async fn sqlite_account_identity_upsert_reuses_only_the_same_provider_identity() {
+async fn sqlite_account_identity_upsert_reuses_only_the_same_provider_and_workspace() {
     let directory = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(directory.path().join("accounts.db")).unwrap();
     let first = AccountRecord::create(
@@ -1029,7 +1029,106 @@ async fn sqlite_account_identity_upsert_reuses_only_the_same_provider_identity()
         .await
         .unwrap();
     assert_eq!(saved_other_provider.id, other_provider_same_subject.id);
-    assert_eq!(store.list().await.unwrap().len(), 3);
+
+    let openai_workspace_one = AccountRecord::create(
+        "OpenAI account in workspace one",
+        "user@example.com",
+        Some("chatgpt-user-1".to_owned()),
+        OPENAI,
+        Some("workspace-1".to_owned()),
+    )
+    .unwrap();
+    let saved_openai_workspace_one = store
+        .upsert_or_get_by_provider_identity(&openai_workspace_one)
+        .await
+        .unwrap();
+    assert_eq!(saved_openai_workspace_one.id, openai_workspace_one.id);
+
+    let same_user_other_workspace = AccountRecord::create(
+        "OpenAI account in another workspace",
+        "user@example.com",
+        Some("chatgpt-user-1".to_owned()),
+        OPENAI,
+        Some("workspace-2".to_owned()),
+    )
+    .unwrap();
+    let saved_other_workspace = store
+        .upsert_or_get_by_provider_identity(&same_user_other_workspace)
+        .await
+        .unwrap();
+    assert_eq!(saved_other_workspace.id, same_user_other_workspace.id);
+    assert_eq!(store.list().await.unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn sqlite_open_migrates_legacy_identity_triggers_to_include_workspace() {
+    let directory = tempfile::tempdir().unwrap();
+    let database_path = directory.path().join("accounts.db");
+    let store = SqliteStore::open(&database_path).unwrap();
+    let first_workspace = AccountRecord::create(
+        "OpenAI first workspace",
+        "user@example.com",
+        Some("chatgpt-user-1".to_owned()),
+        OPENAI,
+        Some("workspace-1".to_owned()),
+    )
+    .unwrap();
+    store.upsert(&first_workspace).await.unwrap();
+    drop(store);
+
+    let legacy_connection = rusqlite::Connection::open(&database_path).unwrap();
+    legacy_connection
+        .execute_batch(
+            r#"
+            DROP TRIGGER IF EXISTS trg_accounts_provider_identity_unique_insert;
+            DROP TRIGGER IF EXISTS trg_accounts_provider_identity_unique_update;
+
+            CREATE TRIGGER trg_accounts_provider_identity_unique_insert
+            BEFORE INSERT ON accounts
+            WHEN NEW.provider_account_id IS NOT NULL
+                AND EXISTS (
+                    SELECT 1 FROM accounts
+                    WHERE provider_id = NEW.provider_id
+                        AND provider_account_id = NEW.provider_account_id
+                        AND account_id <> NEW.account_id
+                )
+            BEGIN
+                SELECT RAISE(ABORT, 'duplicate provider identity');
+            END;
+
+            CREATE TRIGGER trg_accounts_provider_identity_unique_update
+            BEFORE UPDATE OF provider_id, provider_account_id ON accounts
+            WHEN NEW.provider_account_id IS NOT NULL
+                AND EXISTS (
+                    SELECT 1 FROM accounts
+                    WHERE provider_id = NEW.provider_id
+                        AND provider_account_id = NEW.provider_account_id
+                        AND account_id <> NEW.account_id
+                )
+            BEGIN
+                SELECT RAISE(ABORT, 'duplicate provider identity');
+            END;
+            "#,
+        )
+        .unwrap();
+    drop(legacy_connection);
+
+    let migrated_store = SqliteStore::open(&database_path).unwrap();
+    let second_workspace = AccountRecord::create(
+        "OpenAI second workspace",
+        "user@example.com",
+        Some("chatgpt-user-1".to_owned()),
+        OPENAI,
+        Some("workspace-2".to_owned()),
+    )
+    .unwrap();
+    let saved_second_workspace = migrated_store
+        .upsert_or_get_by_provider_identity(&second_workspace)
+        .await
+        .unwrap();
+
+    assert_eq!(saved_second_workspace.id, second_workspace.id);
+    assert_eq!(migrated_store.list().await.unwrap().len(), 2);
 }
 
 #[derive(Default)]

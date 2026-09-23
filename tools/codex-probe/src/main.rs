@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         email,
         identity.provider_account_id.clone(),
         OPENAI,
-        None,
+        identity.workspace_id.clone(),
     ) {
         Ok(account) => account,
         Err(error) => {
@@ -126,30 +126,75 @@ async fn persist_oauth_login_account(
     provisional_account_id: AccountId,
     credential: &StoredOAuthCredential,
 ) -> Result<AccountRecord, Box<dyn std::error::Error>> {
-    let existing_without_stable_identity = if account.provider_account_id.is_none() {
-        account_store.list().await?.into_iter().find(|existing| {
+    let existing_accounts = account_store.list().await?;
+    let existing_by_identity = account.provider_account_id.as_deref().and_then(|identity| {
+        existing_accounts.iter().find(|existing| {
             existing.provider_id == account.provider_id
-                && existing.email.eq_ignore_ascii_case(&account.email)
+                && existing.provider_account_id.as_deref() == Some(identity)
+                && existing.workspace_id == account.workspace_id
+        })
+    });
+    let legacy_workspace_identity = if account.provider_id == OPENAI {
+        account.workspace_id.as_deref().and_then(|workspace_id| {
+            existing_accounts.iter().find(|existing| {
+                existing.provider_id == OPENAI
+                    && existing.provider_account_id.as_deref() == Some(workspace_id)
+                    && existing.workspace_id.is_none()
+                    && existing.email.eq_ignore_ascii_case(&account.email)
+            })
         })
     } else {
         None
     };
-    let resolved_result = if let Some(existing) = existing_without_stable_identity {
-        Ok(existing)
+    let existing_without_stable_identity = if account.provider_account_id.is_none() {
+        existing_accounts.iter().find(|existing| {
+            existing.provider_id == account.provider_id
+                && existing.email.eq_ignore_ascii_case(&account.email)
+                && existing.workspace_id == account.workspace_id
+        })
     } else {
-        account_store
-            .upsert_or_get_by_provider_identity(&account)
-            .await
+        None
     };
+    let resolved_result: Result<AccountRecord, Box<dyn std::error::Error>> =
+        if let Some(existing) = existing_by_identity {
+            existing
+                .with_identity(Some(&account.email), account.provider_account_id.as_deref())
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
+        } else if let Some(legacy) = legacy_workspace_identity {
+            // The first Rust Codex OAuth implementation mistakenly stored the
+            // selected workspace id as the provider identity. Repair that row by
+            // exact email + workspace match without merging other workspace users.
+            legacy
+                .with_identity(Some(&account.email), account.provider_account_id.as_deref())
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
+        } else if let Some(existing) = existing_without_stable_identity {
+            Ok(existing.clone())
+        } else {
+            account_store
+                .upsert_or_get_by_provider_identity(&account)
+                .await
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
+        };
     let resolved = match resolved_result {
         Ok(account) => account,
         Err(error) => {
             if let Err(cleanup_error) = credential_store.remove(provisional_account_id).await {
                 eprintln!("Warning: temporary OAuth credential cleanup failed: {cleanup_error}");
             }
-            return Err(error.into());
+            return Err(error);
         }
     };
+    let resolved = if let Some(workspace_id) = account.workspace_id.as_deref() {
+        resolved.with_workspace_id(Some(workspace_id))
+    } else {
+        resolved
+    };
+    if let Err(error) = account_store.upsert(&resolved).await {
+        if let Err(cleanup_error) = credential_store.remove(provisional_account_id).await {
+            eprintln!("Warning: temporary OAuth credential cleanup failed: {cleanup_error}");
+        }
+        return Err(error.into());
+    }
 
     if let Err(error) = credential_store.save(resolved.id, credential).await {
         if resolved.id != provisional_account_id
@@ -327,7 +372,11 @@ mod tests {
     };
     use std::{collections::BTreeMap, ffi::OsString, sync::Arc};
 
-    fn credential(refresh_token: &str, provider_account_id: Option<&str>) -> StoredOAuthCredential {
+    fn credential(
+        refresh_token: &str,
+        provider_account_id: Option<&str>,
+        workspace_id: Option<&str>,
+    ) -> StoredOAuthCredential {
         StoredOAuthCredential {
             provider_id: OPENAI.to_owned(),
             refresh_token: refresh_token.to_owned(),
@@ -335,7 +384,7 @@ mod tests {
             client_secret: None,
             id_token: None,
             provider_account_id: provider_account_id.map(str::to_owned),
-            workspace_id: None,
+            workspace_id: workspace_id.map(str::to_owned),
             metadata: BTreeMap::new(),
         }
     }
@@ -387,16 +436,20 @@ mod tests {
         let existing = AccountRecord::create(
             "Codex personal",
             "codex@example.com",
-            Some("chatgpt-account-1".to_owned()),
+            Some("chatgpt-user-1".to_owned()),
             OPENAI,
-            None,
+            Some("workspace-1".to_owned()),
         )
         .unwrap();
         accounts.upsert(&existing).await.unwrap();
         credentials
             .save(
                 existing.id,
-                &credential("old-refresh-token", Some("chatgpt-account-1")),
+                &credential(
+                    "old-refresh-token",
+                    Some("chatgpt-user-1"),
+                    Some("workspace-1"),
+                ),
             )
             .await
             .unwrap();
@@ -404,15 +457,19 @@ mod tests {
         let provisional = AccountRecord::create(
             "Codex account",
             "codex@example.com",
-            Some("chatgpt-account-1".to_owned()),
+            Some("chatgpt-user-1".to_owned()),
             OPENAI,
-            None,
+            Some("workspace-1".to_owned()),
         )
         .unwrap();
         credentials
             .save(
                 provisional.id,
-                &credential("new-refresh-token", Some("chatgpt-account-1")),
+                &credential(
+                    "new-refresh-token",
+                    Some("chatgpt-user-1"),
+                    Some("workspace-1"),
+                ),
             )
             .await
             .unwrap();
@@ -422,7 +479,11 @@ mod tests {
             credentials.as_ref(),
             provisional.clone(),
             provisional.id,
-            &credential("new-refresh-token", Some("chatgpt-account-1")),
+            &credential(
+                "new-refresh-token",
+                Some("chatgpt-user-1"),
+                Some("workspace-1"),
+            ),
         )
         .await
         .unwrap();
@@ -452,7 +513,7 @@ mod tests {
         let provisional =
             AccountRecord::create("Codex account", "codex@example.com", None, OPENAI, None)
                 .unwrap();
-        let new_credential = credential("new-refresh-token", None);
+        let new_credential = credential("new-refresh-token", None, None);
         credentials
             .save(provisional.id, &new_credential)
             .await
@@ -478,6 +539,155 @@ mod tests {
                 .unwrap()
                 .refresh_token,
             "new-refresh-token"
+        );
+    }
+
+    #[tokio::test]
+    async fn different_users_in_the_same_workspace_remain_separate_accounts() {
+        let accounts = Arc::new(InMemoryAccountStore::default());
+        let credentials = Arc::new(InMemoryOAuthCredentialStore::default());
+        let first = AccountRecord::create(
+            "Codex first seat",
+            "first@example.com",
+            Some("chatgpt-user-1".to_owned()),
+            OPENAI,
+            Some("shared-workspace".to_owned()),
+        )
+        .unwrap();
+        accounts.upsert(&first).await.unwrap();
+        let provisional = AccountRecord::create(
+            "Codex second seat",
+            "second@example.com",
+            Some("chatgpt-user-2".to_owned()),
+            OPENAI,
+            Some("shared-workspace".to_owned()),
+        )
+        .unwrap();
+        let second_credential = credential(
+            "second-refresh-token",
+            Some("chatgpt-user-2"),
+            Some("shared-workspace"),
+        );
+
+        let resolved = persist_oauth_login_account(
+            accounts.as_ref(),
+            credentials.as_ref(),
+            provisional.clone(),
+            provisional.id,
+            &second_credential,
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(resolved.id, first.id);
+        assert_eq!(
+            resolved.provider_account_id.as_deref(),
+            Some("chatgpt-user-2")
+        );
+        assert_eq!(resolved.workspace_id.as_deref(), Some("shared-workspace"));
+        assert_eq!(accounts.list().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn same_user_in_different_workspaces_remains_separate_accounts() {
+        let accounts = Arc::new(InMemoryAccountStore::default());
+        let credentials = Arc::new(InMemoryOAuthCredentialStore::default());
+        let first = AccountRecord::create(
+            "Codex workspace one",
+            "user@example.com",
+            Some("chatgpt-user-1".to_owned()),
+            OPENAI,
+            Some("workspace-1".to_owned()),
+        )
+        .unwrap();
+        accounts.upsert(&first).await.unwrap();
+        let provisional = AccountRecord::create(
+            "Codex workspace two",
+            "user@example.com",
+            Some("chatgpt-user-1".to_owned()),
+            OPENAI,
+            Some("workspace-2".to_owned()),
+        )
+        .unwrap();
+        let second_credential = credential(
+            "workspace-two-refresh-token",
+            Some("chatgpt-user-1"),
+            Some("workspace-2"),
+        );
+
+        let resolved = persist_oauth_login_account(
+            accounts.as_ref(),
+            credentials.as_ref(),
+            provisional.clone(),
+            provisional.id,
+            &second_credential,
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(resolved.id, first.id);
+        assert_eq!(
+            resolved.provider_account_id.as_deref(),
+            Some("chatgpt-user-1")
+        );
+        assert_eq!(resolved.workspace_id.as_deref(), Some("workspace-2"));
+        assert_eq!(accounts.list().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn legacy_workspace_keyed_codex_row_is_repaired_by_email_and_workspace() {
+        let accounts = Arc::new(InMemoryAccountStore::default());
+        let credentials = Arc::new(InMemoryOAuthCredentialStore::default());
+        let legacy = AccountRecord::create(
+            "Codex legacy",
+            "codex@example.com",
+            Some("workspace-1".to_owned()),
+            OPENAI,
+            None,
+        )
+        .unwrap();
+        accounts.upsert(&legacy).await.unwrap();
+        let provisional = AccountRecord::create(
+            "Codex account",
+            "codex@example.com",
+            Some("chatgpt-user-1".to_owned()),
+            OPENAI,
+            Some("workspace-1".to_owned()),
+        )
+        .unwrap();
+        let new_credential = credential(
+            "new-refresh-token",
+            Some("chatgpt-user-1"),
+            Some("workspace-1"),
+        );
+
+        let resolved = persist_oauth_login_account(
+            accounts.as_ref(),
+            credentials.as_ref(),
+            provisional.clone(),
+            provisional.id,
+            &new_credential,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resolved.id, legacy.id);
+        assert_eq!(
+            resolved.provider_account_id.as_deref(),
+            Some("chatgpt-user-1")
+        );
+        assert_eq!(resolved.workspace_id.as_deref(), Some("workspace-1"));
+        assert_eq!(accounts.list().await.unwrap().len(), 1);
+        assert!(credentials.get(provisional.id).await.unwrap().is_none());
+        assert_eq!(
+            credentials
+                .get(legacy.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .provider_account_id
+                .as_deref(),
+            Some("chatgpt-user-1")
         );
     }
 }

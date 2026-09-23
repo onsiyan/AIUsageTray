@@ -99,7 +99,9 @@ where
             provider_account_id: identity
                 .as_ref()
                 .and_then(|identity| identity.provider_account_id.clone()),
-            workspace_id: None,
+            workspace_id: identity
+                .as_ref()
+                .and_then(|identity| identity.workspace_id.clone()),
             metadata: BTreeMap::new(),
         };
         self.credentials.save(account_id, &credential).await?;
@@ -298,6 +300,9 @@ where
                         .as_ref()
                         .and_then(|identity| identity.provider_account_id.clone())
                 }),
+            workspace_id: token_identity
+                .as_ref()
+                .and_then(|identity| identity.workspace_id.clone()),
             display_name: value
                 .get("name")
                 .or_else(|| value.get("display_name"))
@@ -412,12 +417,17 @@ fn identity_from_id_token(provider_id: &str, id_token: Option<&str>) -> Option<O
             .map(str::to_owned),
         provider_account_id: if provider_id == OPENAI {
             openai_auth
-                .and_then(|auth| auth.get("chatgpt_account_id"))
+                .and_then(|auth| auth.get("chatgpt_user_id").or_else(|| auth.get("user_id")))
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         } else {
             value.get("sub").and_then(Value::as_str).map(str::to_owned)
         },
+        workspace_id: (provider_id == OPENAI)
+            .then(|| openai_auth.and_then(|auth| auth.get("chatgpt_account_id")))
+            .flatten()
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         display_name: value.get("name").and_then(Value::as_str).map(str::to_owned),
     })
 }
@@ -527,10 +537,10 @@ mod tests {
     }
 
     #[test]
-    fn codex_id_token_identity_uses_the_chatgpt_account_claim_not_jwt_subject() {
+    fn codex_id_token_separates_workspace_id_from_chatgpt_user_identity() {
         let provider = codex_oauth_definition();
         let payload = URL_SAFE_NO_PAD.encode(
-            br#"{"email":"codex@example.com","sub":"user-subject","https://api.openai.com/auth":{"chatgpt_account_id":"chatgpt-account"}}"#,
+            br#"{"email":"codex@example.com","sub":"oidc-subject","https://api.openai.com/auth":{"chatgpt_user_id":"chatgpt-user","chatgpt_account_id":"team-workspace"}}"#,
         );
         let token = format!("header.{payload}.signature");
 
@@ -539,8 +549,26 @@ mod tests {
         assert_eq!(identity.email.as_deref(), Some("codex@example.com"));
         assert_eq!(
             identity.provider_account_id.as_deref(),
-            Some("chatgpt-account")
+            Some("chatgpt-user")
         );
+        assert_eq!(identity.workspace_id.as_deref(), Some("team-workspace"));
+    }
+
+    #[test]
+    fn codex_id_token_uses_legacy_user_id_claim_as_user_identity() {
+        let provider = codex_oauth_definition();
+        let payload = URL_SAFE_NO_PAD.encode(
+            br#"{"https://api.openai.com/auth":{"user_id":"chatgpt-user","chatgpt_account_id":"team-workspace"}}"#,
+        );
+        let token = format!("header.{payload}.signature");
+
+        let identity = identity_from_id_token(&provider.provider_id, Some(&token)).unwrap();
+
+        assert_eq!(
+            identity.provider_account_id.as_deref(),
+            Some("chatgpt-user")
+        );
+        assert_eq!(identity.workspace_id.as_deref(), Some("team-workspace"));
     }
 
     #[test]
@@ -555,5 +583,6 @@ mod tests {
 
         assert_eq!(identity.email.as_deref(), Some("codex@example.com"));
         assert_eq!(identity.provider_account_id, None);
+        assert_eq!(identity.workspace_id, None);
     }
 }
