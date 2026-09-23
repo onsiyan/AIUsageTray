@@ -855,13 +855,23 @@ fn parse_console_snapshot(
                 parse_window(value, UsageWindowKind::Secondary, "Weekly", false, true)
             })
         });
-    let monthly = first_named(meters, &["month", "monthly"])
+    let mut monthly = first_named(meters, &["month", "monthly"])
         .and_then(|value| parse_window(value, UsageWindowKind::Additional, "Monthly", false, true))
         .or_else(|| {
             find_window(root, WindowRole::Monthly).and_then(|value| {
                 parse_window(value, UsageWindowKind::Additional, "Monthly", false, true)
             })
         });
+    let renews_at = root
+        .get("access")
+        .and_then(|access| access.get("endsAt"))
+        .and_then(|value| parse_date_value(value, Utc::now()));
+    if let (Some(monthly), Some(renews_at)) = (monthly.as_mut(), renews_at) {
+        if monthly.window.reset_at_utc.is_none() {
+            monthly.window.reset_at_utc = Some(renews_at);
+            monthly.window.limit_window_seconds = (renews_at - Utc::now()).num_seconds().max(0);
+        }
+    }
     let mut identity_root = root.clone();
     if let Value::Object(object) = &mut identity_root {
         object.insert(
@@ -877,7 +887,7 @@ fn parse_console_snapshot(
         weekly,
         monthly,
         None,
-        None,
+        renews_at,
         "authoritative",
         Vec::new(),
     ))
@@ -1921,6 +1931,85 @@ mod tests {
         let snapshot = result.snapshot.unwrap();
         assert_eq!(snapshot.primary.unwrap().used_percent, 50.0);
         assert_eq!(snapshot.secondary.unwrap().used_percent, 30.0);
+    }
+
+    #[test]
+    fn console_status_uses_access_end_as_monthly_reset_fallback() {
+        let renews_at = (Utc::now() + Duration::days(30)).to_rfc3339();
+        let root = json!({
+            "access": {
+                "endsAt": renews_at,
+                "meters": {
+                    "fiveHour": {"usedMicroCents": 6_000_000, "limitMicroCents": 12_000_000},
+                    "month": {"usedMicroCents": 30_000_000, "limitMicroCents": 100_000_000}
+                }
+            }
+        });
+        let account = AccountRecord::create(
+            "go",
+            "go@example.com",
+            None,
+            OPENCODE_GO,
+            Some("wrk_123".to_owned()),
+        )
+        .unwrap();
+
+        let snapshot = parse_console_snapshot(&root, &account, "wrk_123")
+            .unwrap()
+            .snapshot
+            .unwrap();
+        let monthly = snapshot
+            .additional_windows
+            .iter()
+            .find(|window| window.key == "monthly")
+            .unwrap();
+        let expected = parse_date_value(&json!(renews_at), Utc::now()).unwrap();
+        assert_eq!(monthly.window.reset_at_utc, Some(expected));
+        assert!(monthly.window.limit_window_seconds > 0);
+        assert!(snapshot.metrics.iter().any(|metric| {
+            metric.key == "subscription-renewal" && metric.reset_at_utc == Some(expected)
+        }));
+    }
+
+    #[test]
+    fn console_status_prefers_month_meter_reset_over_access_end() {
+        let month_reset = (Utc::now() + Duration::days(5)).to_rfc3339();
+        let renews_at = (Utc::now() + Duration::days(10)).to_rfc3339();
+        let root = json!({
+            "access": {
+                "endsAt": renews_at,
+                "meters": {
+                    "fiveHour": {"usedMicroCents": 6_000_000, "limitMicroCents": 12_000_000},
+                    "month": {
+                        "usedMicroCents": 30_000_000,
+                        "limitMicroCents": 100_000_000,
+                        "resetsAt": month_reset
+                    }
+                }
+            }
+        });
+        let account = AccountRecord::create(
+            "go",
+            "go@example.com",
+            None,
+            OPENCODE_GO,
+            Some("wrk_123".to_owned()),
+        )
+        .unwrap();
+
+        let snapshot = parse_console_snapshot(&root, &account, "wrk_123")
+            .unwrap()
+            .snapshot
+            .unwrap();
+        let monthly = snapshot
+            .additional_windows
+            .iter()
+            .find(|window| window.key == "monthly")
+            .unwrap();
+        assert_eq!(
+            monthly.window.reset_at_utc,
+            parse_date_value(&json!(month_reset), Utc::now())
+        );
     }
 
     #[test]
