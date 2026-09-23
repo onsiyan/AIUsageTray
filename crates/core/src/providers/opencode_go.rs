@@ -44,6 +44,7 @@ const WORKSPACES_SERVER_ID: &str =
 const BILLING_SERVER_ID: &str = "c83b78a614689c38ebee981f9b39a8b377716db85c1fd7dbab604adc02d3313d";
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 const LOCAL_SOURCE: &str = "local-estimate";
+const MAX_OPEN_CODE_REDIRECTS: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OpenCodeGoSourceMode {
@@ -75,6 +76,81 @@ struct ParsedWindow {
     window: RateLimitWindow,
     used_amount: Option<f64>,
     limit_amount: Option<f64>,
+}
+
+async fn send_with_guarded_redirects(
+    transport: &dyn UsageHttpTransport,
+    mut request: UsageHttpRequest,
+) -> Result<UsageHttpResponse, TransportError> {
+    let mut redirects_followed = 0;
+    loop {
+        let response = transport.send(request.clone()).await?;
+        if !matches!(response.status_code, 301 | 302 | 303 | 307 | 308) {
+            return Ok(response);
+        }
+        if redirects_followed >= MAX_OPEN_CODE_REDIRECTS {
+            return Ok(response);
+        }
+        let Some(location) = response
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("location"))
+            .map(|(_, value)| value)
+        else {
+            return Ok(response);
+        };
+        let destination = request
+            .url
+            .join(location)
+            .map_err(|error| TransportError::InvalidUrl(error.to_string()))?;
+        if !is_allowed_redirect_target(&request.url, &destination) {
+            return Ok(response);
+        }
+        let Some(next_request) =
+            request_after_redirect(&request, response.status_code, destination)
+        else {
+            return Ok(response);
+        };
+        request = next_request;
+        redirects_followed += 1;
+    }
+}
+
+fn is_allowed_redirect_target(source: &Url, destination: &Url) -> bool {
+    source.scheme() == "https"
+        && destination.scheme() == "https"
+        && source.origin() == destination.origin()
+        && destination.username().is_empty()
+        && destination.password().is_none()
+}
+
+fn request_after_redirect(
+    request: &UsageHttpRequest,
+    status_code: u16,
+    destination: Url,
+) -> Option<UsageHttpRequest> {
+    let mut redirected = request.clone();
+    redirected.url = destination;
+    let rewrite_to_get = match status_code {
+        301 | 302 if request.method == Method::POST => true,
+        301 | 302 => matches!(request.method, Method::GET | Method::HEAD),
+        303 => request.method != Method::HEAD,
+        307 | 308 => return Some(redirected),
+        _ => false,
+    };
+    if !rewrite_to_get && !matches!(request.method, Method::GET | Method::HEAD) {
+        return None;
+    }
+    if rewrite_to_get {
+        redirected.method = Method::GET;
+        redirected.body = None;
+        redirected.headers.retain(|name, _| {
+            !name.eq_ignore_ascii_case("content-type")
+                && !name.eq_ignore_ascii_case("content-length")
+                && !name.eq_ignore_ascii_case("transfer-encoding")
+        });
+    }
+    Some(redirected)
 }
 
 impl OpenCodeGoUsageAdapter {
@@ -116,14 +192,16 @@ impl OpenCodeGoUsageAdapter {
         for (name, value) in extra_headers {
             headers.insert(name, value);
         }
-        self.transport
-            .send(UsageHttpRequest {
+        send_with_guarded_redirects(
+            self.transport.as_ref(),
+            UsageHttpRequest {
                 method: Method::GET,
                 url,
                 headers,
                 body: None,
-            })
-            .await
+            },
+        )
+        .await
     }
 
     async fn request_server(
@@ -180,14 +258,16 @@ impl OpenCodeGoUsageAdapter {
             request_headers.insert("Content-Type".to_owned(), "application/json".to_owned());
             args.map(str::to_owned)
         };
-        self.transport
-            .send(UsageHttpRequest {
+        send_with_guarded_redirects(
+            self.transport.as_ref(),
+            UsageHttpRequest {
                 method,
                 url,
                 headers: request_headers,
                 body,
-            })
-            .await
+            },
+        )
+        .await
     }
 
     async fn probe_api(
@@ -1843,6 +1923,44 @@ fn add_snapshot_diagnostic(result: &mut UsageProbeResult, item: UsageSourceDiagn
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{collections::VecDeque, sync::Mutex};
+
+    struct RedirectSequenceTransport {
+        responses: Mutex<VecDeque<UsageHttpResponse>>,
+        requests: Mutex<Vec<UsageHttpRequest>>,
+    }
+
+    #[async_trait]
+    impl UsageHttpTransport for RedirectSequenceTransport {
+        async fn send(
+            &self,
+            request: UsageHttpRequest,
+        ) -> Result<UsageHttpResponse, TransportError> {
+            self.requests.lock().unwrap().push(request);
+            Ok(self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("test response should be queued"))
+        }
+    }
+
+    fn redirect_response(status_code: u16, location: &str) -> UsageHttpResponse {
+        UsageHttpResponse {
+            status_code,
+            body: String::new(),
+            headers: [("Location".to_owned(), location.to_owned())].into(),
+        }
+    }
+
+    fn success_response() -> UsageHttpResponse {
+        UsageHttpResponse {
+            status_code: 200,
+            body: "ok".to_owned(),
+            headers: Default::default(),
+        }
+    }
 
     #[test]
     fn api_direct_percent_one_is_one_percent_not_one_hundred() {
@@ -1850,6 +1968,169 @@ mod tests {
         let parsed =
             parse_window(&value, UsageWindowKind::Primary, "Rolling", true, false).unwrap();
         assert_eq!(parsed.window.used_percent, 1.0);
+    }
+
+    #[test]
+    fn redirect_policy_requires_https_and_the_same_origin() {
+        let source = Url::parse("https://opencode.ai/console/api/orgs").unwrap();
+        assert!(is_allowed_redirect_target(
+            &source,
+            &Url::parse("https://opencode.ai/console/api/orgs-v2").unwrap()
+        ));
+        assert!(!is_allowed_redirect_target(
+            &source,
+            &Url::parse("http://opencode.ai/console/api/orgs").unwrap()
+        ));
+        assert!(!is_allowed_redirect_target(
+            &source,
+            &Url::parse("https://opencode.ai:8443/console/api/orgs").unwrap()
+        ));
+        assert!(!is_allowed_redirect_target(
+            &source,
+            &Url::parse("https://user@opencode.ai/console/api/orgs").unwrap()
+        ));
+    }
+
+    #[tokio::test]
+    async fn same_origin_https_redirect_is_followed_with_session_headers() {
+        let transport = RedirectSequenceTransport {
+            responses: Mutex::new(VecDeque::from([
+                redirect_response(302, "/console/api/orgs-v2"),
+                success_response(),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        };
+        let request = UsageHttpRequest {
+            method: Method::GET,
+            url: Url::parse("https://opencode.ai/console/api/orgs").unwrap(),
+            headers: [("Cookie".to_owned(), "session=secret".to_owned())].into(),
+            body: None,
+        };
+
+        let response = send_with_guarded_redirects(&transport, request)
+            .await
+            .unwrap();
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(response.status_code, 200);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].url.path(), "/console/api/orgs-v2");
+        assert_eq!(requests[1].headers.get("Cookie").unwrap(), "session=secret");
+    }
+
+    #[tokio::test]
+    async fn cross_origin_redirect_is_not_followed_with_account_credentials() {
+        let transport = RedirectSequenceTransport {
+            responses: Mutex::new(VecDeque::from([
+                redirect_response(302, "https://attacker.example/collect"),
+                success_response(),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        };
+        let request = UsageHttpRequest {
+            method: Method::GET,
+            url: Url::parse("https://opencode.ai/console/api/orgs").unwrap(),
+            headers: [("Cookie".to_owned(), "session=secret".to_owned())].into(),
+            body: None,
+        };
+
+        let response = send_with_guarded_redirects(&transport, request)
+            .await
+            .unwrap();
+        assert_eq!(response.status_code, 302);
+        assert_eq!(transport.requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn post_redirect_rewrites_to_get_and_drops_body_headers() {
+        let transport = RedirectSequenceTransport {
+            responses: Mutex::new(VecDeque::from([
+                redirect_response(303, "/server-v2"),
+                success_response(),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        };
+        let request = UsageHttpRequest {
+            method: Method::POST,
+            url: Url::parse("https://opencode.ai/_server").unwrap(),
+            headers: [
+                ("Content-Type".to_owned(), "application/json".to_owned()),
+                ("Authorization".to_owned(), "Bearer secret".to_owned()),
+            ]
+            .into(),
+            body: Some("[]".to_owned()),
+        };
+
+        let response = send_with_guarded_redirects(&transport, request)
+            .await
+            .unwrap();
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(response.status_code, 200);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].method, Method::GET);
+        assert!(requests[1].body.is_none());
+        assert!(
+            !requests[1]
+                .headers
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case("content-type"))
+        );
+        assert_eq!(
+            requests[1].headers.get("Authorization").unwrap(),
+            "Bearer secret"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_307_redirect_preserves_method_and_body() {
+        let transport = RedirectSequenceTransport {
+            responses: Mutex::new(VecDeque::from([
+                redirect_response(307, "/server-preserved"),
+                success_response(),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        };
+        let request = UsageHttpRequest {
+            method: Method::POST,
+            url: Url::parse("https://opencode.ai/_server").unwrap(),
+            headers: [("Content-Type".to_owned(), "application/json".to_owned())].into(),
+            body: Some("[]".to_owned()),
+        };
+
+        let response = send_with_guarded_redirects(&transport, request)
+            .await
+            .unwrap();
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(response.status_code, 200);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].method, Method::POST);
+        assert_eq!(requests[1].body.as_deref(), Some("[]"));
+    }
+
+    #[tokio::test]
+    async fn redirect_chain_is_bounded() {
+        let transport = RedirectSequenceTransport {
+            responses: Mutex::new(
+                (0..=MAX_OPEN_CODE_REDIRECTS)
+                    .map(|_| redirect_response(302, "/loop"))
+                    .collect(),
+            ),
+            requests: Mutex::new(Vec::new()),
+        };
+        let request = UsageHttpRequest {
+            method: Method::GET,
+            url: Url::parse("https://opencode.ai/loop").unwrap(),
+            headers: Default::default(),
+            body: None,
+        };
+
+        let response = send_with_guarded_redirects(&transport, request)
+            .await
+            .unwrap();
+        assert_eq!(response.status_code, 302);
+        assert_eq!(
+            transport.requests.lock().unwrap().len(),
+            MAX_OPEN_CODE_REDIRECTS + 1
+        );
     }
 
     #[test]
