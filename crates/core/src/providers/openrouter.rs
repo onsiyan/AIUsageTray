@@ -245,7 +245,11 @@ impl UsageAdapter for OpenRouterUsageAdapter {
         let now = Utc::now();
         let cumulative_usage = non_negative(json_number(data, &["usage"]));
         let limit = non_negative(json_number(data, &["limit"]));
-        let explicit_remaining = non_negative(json_number(data, &["limit_remaining"]));
+        let explicit_remaining = json_number(data, &["limit_remaining"])
+            .filter(|value| value.is_finite())
+            .map(|remaining| {
+                limit.map_or_else(|| remaining.max(0.0), |limit| remaining.clamp(0.0, limit))
+            });
         let reset_label = json_string(data, &["limit_reset"])
             .map(|value| value.trim().to_ascii_lowercase())
             .filter(|value| !value.is_empty());
@@ -588,8 +592,10 @@ fn key_limit_used_percent(
     cumulative_usage: Option<f64>,
 ) -> Option<f64> {
     let limit = limit.filter(|value| *value > 0.0)?;
-    if let Some(remaining) = explicit_remaining.filter(|value| *value <= limit) {
-        return Some(normalize_percent((limit - remaining) / limit * 100.0));
+    if let Some(remaining) = explicit_remaining.filter(|value| value.is_finite()) {
+        return Some(normalize_percent(
+            (limit - remaining.clamp(0.0, limit)) / limit * 100.0,
+        ));
     }
     period_usage
         .or(cumulative_usage)
@@ -953,6 +959,18 @@ mod tests {
     fn key_limit_prefers_server_remaining_over_cumulative_usage() {
         let percent = key_limit_used_percent(Some(100.0), Some(74.5), Some(25.5), Some(400.0));
         assert_eq!(percent, Some(25.5));
+    }
+
+    #[test]
+    fn key_limit_clamps_server_remaining_to_the_limit_bounds() {
+        assert_eq!(
+            key_limit_used_percent(Some(100.0), Some(120.0), Some(40.0), Some(80.0)),
+            Some(0.0)
+        );
+        assert_eq!(
+            key_limit_used_percent(Some(100.0), Some(-5.0), Some(40.0), Some(80.0)),
+            Some(100.0)
+        );
     }
 
     #[test]
