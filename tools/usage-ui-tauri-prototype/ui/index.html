@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <!-- Static UI preview only; no provider data is loaded here. -->
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>مراقبة الاستخدام</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="popover" aria-label="معاينة مراقبة الاستخدام">
+      <header class="topbar">
+        <div class="brand-mark" aria-hidden="true"><span>U</span></div>
+        <div class="heading">
+          <h1>مراقبة الاستخدام</h1>
+          <p>نظرة سريعة على حساباتك</p>
+        </div>
+        <button class="icon-button close-button" id="close" aria-label="إغلاق النافذة" title="إغلاق">×</button>
+      </header>
+
+      <section class="codex-card" aria-labelledby="codex-title">
+        <div class="card-heading">
+          <div class="provider-name">
+            <span class="provider-icon codex-icon">✳</span>
+            <div>
+              <div class="title-line"><h2 id="codex-title">Codex</h2><span class="tag primary-tag">الأهم</span></div>
+              <p>الحساب الأساسي · Plus</p>
+            </div>
+          </div>
+          <button class="more-button" aria-label="خيارات Codex">•••</button>
+        </div>
+
+        <div class="quota-block">
+          <div class="quota-caption"><span>حد 5 ساعات</span><span><b>24%</b> متبقٍ</span></div>
+          <div class="meter"><span class="meter-fill codex-fill" style="width: 24%"></span></div>
+          <div class="reset-caption"><span>إعادة التعيين</span><span>بعد 2 س و 18 د</span></div>
+        </div>
+
+        <div class="quota-block compact-quota">
+          <div class="quota-caption"><span>الحد الأسبوعي</span><span><b>68%</b> متبقٍ</span></div>
+          <div class="meter"><span class="meter-fill codex-fill secondary-fill" style="width: 68%"></span></div>
+          <div class="reset-caption"><span>إعادة التعيين</span><span>بعد 4 أيام</span></div>
+        </div>
+      </section>
+
+      <div class="section-label"><span>مزودون آخرون</span><span class="provider-count">4</span></div>
+
+      <section class="provider-list" aria-label="استخدام المزودين الآخرين">
+        <article class="provider-row">
+          <span class="provider-icon antigravity-icon">✦</span>
+          <div class="provider-info"><h3>Antigravity</h3><p>Google AI Pro</p></div>
+          <div class="row-usage"><strong>43%</strong><span>أسبوعي متبقٍ</span></div>
+          <span class="status-dot green-dot" title="متاح"></span>
+        </article>
+
+        <article class="provider-row">
+          <span class="provider-icon claude-icon">✳</span>
+          <div class="provider-info"><h3>Claude</h3><p>الحساب المجاني</p></div>
+          <div class="row-usage"><strong>57%</strong><span>أسبوعي متبقٍ</span></div>
+          <span class="status-dot green-dot" title="متاح"></span>
+        </article>
+
+        <article class="provider-row">
+          <span class="provider-icon openrouter-icon">◈</span>
+          <div class="provider-info"><h3>OpenRouter</h3><p>رصيد الحساب</p></div>
+          <div class="row-usage"><strong>$3.20</strong><span>متبقٍ</span></div>
+          <span class="status-dot blue-dot" title="رصيد"></span>
+        </article>
+
+        <article class="provider-row last-row">
+          <span class="provider-icon opencode-icon">⌘</span>
+          <div class="provider-info"><h3>OpenCode Go</h3><p>الخطة الشهرية</p></div>
+          <div class="row-usage"><strong>72%</strong><span>متبقٍ</span></div>
+          <span class="status-dot amber-dot" title="استخدام جارٍ"></span>
+        </article>
+      </section>
+
+      <footer class="footer">
+        <span class="demo-state"><i></i> بيانات عرض ثابتة</span>
+        <button class="refresh-button" type="button" disabled><span>↻</span> تحديث</button>
+      </footer>
+    </main>
+    <script src="./main.js"></script>
+  </body>
+</html>

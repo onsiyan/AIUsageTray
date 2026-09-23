@@ -10,4 +10,7 @@ members = [
     "tools/oauth-probe",
     "tools/usage-cli",
 ]
-exclude = ["tools/usage-ui-prototype"]
+exclude = [
+    "tools/usage-ui-prototype",
+    "tools/usage-ui-tauri-prototype",
+]

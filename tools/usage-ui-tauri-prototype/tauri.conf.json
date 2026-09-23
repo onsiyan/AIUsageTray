@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Usage Monitor Preview",
+  "version": "0.1.0",
+  "identifier": "com.example.usage-monitor-preview",
+  "build": {
+    "frontendDist": "ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Usage Monitor — Tauri Preview",
+        "width": 440,
+        "height": 650,
+        "minWidth": 440,
+        "minHeight": 650,
+        "visible": false,
+        "center": false,
+        "resizable": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": true,
+        "backgroundColor": "#10131aff"
+      }
+    ]
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["target/preview.ico"]
+  }
+}
