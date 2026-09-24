@@ -41,6 +41,12 @@ fn main() -> iced::Result {
     )
     .title("Usage Monitor Preview")
     .theme(Theme::Dark)
+    .style(|_, theme| {
+        // Let the rounded frame reveal the desktop outside its opaque bounds.
+        let mut style = iced::theme::default(theme);
+        style.background_color = Color::TRANSPARENT;
+        style
+    })
     .font(LUCIDE_FONT_BYTES)
     .window(window::Settings {
         size: Size::new(WINDOW_WIDTH, WINDOW_HEIGHT),
