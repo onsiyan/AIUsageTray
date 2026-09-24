@@ -143,6 +143,8 @@ struct SelectorArgs {
 
 #[derive(Debug, Subcommand)]
 enum UsageCommand {
+    /// Keep the adaptive usage refresh scheduler running until this process exits.
+    Watch,
     /// Refresh the selected account, then display its latest usage snapshot.
     Get(SelectorArgs),
     /// Explicitly contact the provider and save the resulting snapshot.
@@ -715,6 +717,7 @@ async fn execute_usage_command(
     let account_store: Arc<dyn AccountStore> = store.clone();
     let snapshot_store: Arc<dyn UsageSnapshotStore> = store.clone();
     match command {
+        UsageCommand::Watch => run_usage_scheduler(account_store, snapshot_store).await,
         UsageCommand::Get(arguments) => {
             let accounts = account_store
                 .list()
@@ -800,6 +803,70 @@ async fn execute_usage_command(
             refresh_accounts(&targets, &account_store, &snapshot_store, json_output).await
         }
     }
+}
+
+async fn run_usage_scheduler(
+    account_store: Arc<dyn AccountStore>,
+    snapshot_store: Arc<dyn UsageSnapshotStore>,
+) -> Result<i32, CliFailure> {
+    let accounts = account_store
+        .list()
+        .await
+        .map_err(|error| CliFailure::runtime(error.to_string()))?;
+    if accounts.is_empty() {
+        return Err(CliFailure::no_accounts());
+    }
+
+    let transport = Arc::new(
+        ReqwestUsageHttpTransport::new(Duration::from_secs(45))
+            .map_err(|error| CliFailure::runtime(error.to_string()))?,
+    );
+    let oauth_store = Arc::new(WindowsCredentialManagerStore);
+    let auth_store = Arc::new(WindowsCredentialManagerAuthMaterialStore);
+    let auth = build_auth_provider(
+        Arc::clone(&transport),
+        Arc::clone(&oauth_store),
+        Arc::clone(&auth_store),
+    );
+    let session_refresher = Arc::new(
+        WindowsBrowserCookieImporter::from_process()
+            .map_err(|error| CliFailure::runtime(error.to_string()))?,
+    ) as Arc<dyn AccountBrowserSessionRefresher>;
+    let provider_config = ProviderRegistryConfig {
+        // Claude accounts use the OAuth sign-in path; do not fall back to a
+        // global CLI session or an unselected web session in the scheduler.
+        claude_source_mode: ClaudeSourceMode::OAuth,
+        // Automatic mode selects each OpenCode Go account's own saved source.
+        opencode_go_source_mode: OpenCodeGoSourceMode::Automatic,
+        enable_antigravity_local_probe: false,
+        ..ProviderRegistryConfig::default()
+    };
+    let runtime = UsageRuntime::from_dependencies_with_auth_store_and_session_refresher(
+        account_store,
+        snapshot_store,
+        Arc::clone(&transport) as Arc<dyn UsageHttpTransport>,
+        auth,
+        auth_store as Arc<dyn AccountAuthMaterialStore>,
+        session_refresher,
+        provider_config,
+        RefreshCoordinatorConfig {
+            cadence: RefreshCadence::Adaptive,
+            ..RefreshCoordinatorConfig::default()
+        },
+    )
+    .map_err(|error| CliFailure::runtime(error.to_string()))?;
+
+    eprintln!(
+        "[scheduler] started for {} saved accounts (adaptive cadence; initial refresh begins now). Stop this process to stop scheduled refreshes.",
+        accounts.len()
+    );
+    runtime
+        .coordinator()
+        .clone()
+        .run()
+        .await
+        .map_err(|error| CliFailure::runtime(error.to_string()))?;
+    Ok(0)
 }
 
 async fn execute_status(

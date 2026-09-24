@@ -116,9 +116,18 @@ cargo build --workspace
 .\target\debug\codex-usage.exe usage get ch1 --json
 .\target\debug\codex-usage.exe usage refresh ch1
 .\target\debug\codex-usage.exe usage refresh --all --provider codex --json
+.\target\debug\codex-usage.exe usage watch
 .\target\debug\codex-usage.exe account alias set ch1 "Personal"
 .\target\debug\codex-usage.exe status --json
 ```
+
+`usage watch` owns the adaptive refresh loop for as long as the process stays
+running. It refreshes all saved accounts immediately on startup, then follows
+the coordinator's adaptive cadence and provider reset-boundary deadlines. With
+no interaction/activity signals, the idle cadence is 30 minutes. Stop the
+foreground command with Ctrl+C; if it is launched hidden, stop that process to
+end scheduled refreshes. This command does not install a Windows service or
+configure automatic startup.
 
 Add accounts through their existing provider-specific login flows:
 
