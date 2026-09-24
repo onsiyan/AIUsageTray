@@ -292,7 +292,6 @@ dependencies = [
  "codex-usage-core",
  "codex-usage-windows-auth",
  "tokio",
- "url",
 ]
 
 [[package]]

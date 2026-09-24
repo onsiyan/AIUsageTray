@@ -8,4 +8,3 @@ publish = false
 codex-usage-core = { path = "../../crates/core" }
 codex-usage-windows-auth = { path = "../../crates/windows-auth" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-url = "2"

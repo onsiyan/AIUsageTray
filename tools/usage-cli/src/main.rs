@@ -103,12 +103,6 @@ struct AccountAddArgs {
     /// Optional display alias assigned after sign-in succeeds.
     #[arg(long)]
     alias: Option<String>,
-    /// Claude browser choice: chrome, edge, brave, or chromium.
-    #[arg(long)]
-    browser: Option<String>,
-    /// Optional Chromium profile id, for Claude browser login.
-    #[arg(long)]
-    profile: Option<String>,
     /// Read OpenRouter's primary API key from stdin instead of a command-line argument.
     #[arg(long, conflicts_with = "credentials_stdin")]
     api_key_stdin: bool,
@@ -432,16 +426,9 @@ fn build_account_add_arguments(
 
     match provider {
         AccountAddProvider::Codex => {}
-        AccountAddProvider::Claude => {
-            // Claude probe defaults to its interactive browser login; it does
-            // not expose a `--login` flag (only `--probe-existing` disables it).
-            if let Some(browser) = arguments.browser.as_deref() {
-                result.extend(["--browser".into(), browser.into()]);
-            }
-            if let Some(profile) = arguments.profile.as_deref() {
-                result.extend(["--profile".into(), profile.into()]);
-            }
-        }
+        // The Claude probe owns its single official Claude Code OAuth login
+        // flow and always uses the system-default browser.
+        AccountAddProvider::Claude => {}
         AccountAddProvider::OpenRouter => {
             // Each explicit add gets its own credential slot; a repeated label
             // must not silently replace another key.
@@ -515,15 +502,6 @@ async fn execute_account_add(
         return Err(CliFailure::new(
             "invalid_arguments",
             "--alias cannot be empty or whitespace.",
-            2,
-        ));
-    }
-    if provider != AccountAddProvider::Claude
-        && (arguments.browser.is_some() || arguments.profile.is_some())
-    {
-        return Err(CliFailure::new(
-            "invalid_arguments",
-            "--browser and --profile are only supported when adding Claude.",
             2,
         ));
     }
@@ -1035,7 +1013,10 @@ fn provider_config_for(
             } else if has_admin_key {
                 ClaudeSourceMode::AdminApi
             } else {
-                ClaudeSourceMode::Web
+                // Fail closed to the sole supported user sign-in path. A
+                // missing token must not fall back to a free Web session or
+                // an ambient local Claude Code login.
+                ClaudeSourceMode::OAuth
             };
         }
         OPENCODE_GO => {
@@ -1630,12 +1611,10 @@ mod tests {
     }
 
     #[test]
-    fn claude_account_add_uses_default_browser_login_without_unsupported_flag() {
+    fn claude_account_add_uses_only_the_provider_owned_oauth_login() {
         let arguments = AccountAddArgs {
             provider: "claude".to_owned(),
             alias: Some("Work Claude".to_owned()),
-            browser: Some("chrome".to_owned()),
-            profile: Some("Profile 2".to_owned()),
             api_key_stdin: false,
             credentials_stdin: false,
         };
@@ -1659,12 +1638,8 @@ mod tests {
                 .windows(2)
                 .any(|pair| pair == ["--label", "Work Claude"])
         );
-        assert!(built.windows(2).any(|pair| pair == ["--browser", "chrome"]));
-        assert!(
-            built
-                .windows(2)
-                .any(|pair| pair == ["--profile", "Profile 2"])
-        );
+        assert!(!built.iter().any(|value| value == "--browser"));
+        assert!(!built.iter().any(|value| value == "--profile"));
         assert!(!built.iter().any(|value| value == "--login"));
         assert!(!built.iter().any(|value| value == "--probe-existing"));
     }
@@ -1674,8 +1649,6 @@ mod tests {
         let arguments = AccountAddArgs {
             provider: "openrouter".to_owned(),
             alias: Some("Test key".to_owned()),
-            browser: None,
-            profile: None,
             api_key_stdin: true,
             credentials_stdin: false,
         };
@@ -1705,8 +1678,6 @@ mod tests {
         let arguments = AccountAddArgs {
             provider: "openrouter".to_owned(),
             alias: None,
-            browser: None,
-            profile: None,
             api_key_stdin: false,
             credentials_stdin: false,
         };
@@ -1832,10 +1803,15 @@ mod tests {
     }
 
     #[test]
-    fn refresh_modes_do_not_fall_back_to_global_cli_or_local_usage() {
+    fn refresh_modes_do_not_fall_back_to_claude_web_or_global_cli() {
         let claude = account(CLAUDE, "cc1", "Claude", "claude@example.com", None, None);
         let config = provider_config_for(&claude, None);
-        assert_eq!(config.claude_source_mode, ClaudeSourceMode::Web);
+        assert_eq!(config.claude_source_mode, ClaudeSourceMode::OAuth);
+        let web_material = AccountAuthMaterial::from_cookie_header("sessionKey=web-session", None);
+        assert_eq!(
+            provider_config_for(&claude, Some(&web_material)).claude_source_mode,
+            ClaudeSourceMode::OAuth
+        );
 
         let opencode = account(
             OPENCODE_GO,

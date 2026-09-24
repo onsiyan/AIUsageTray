@@ -20,11 +20,11 @@ under this `rust/` workspace.
   provider keys use the separate
   `CodexUsageMonitor-Rust/Auth/<account-id>` namespace.
 - `codex-usage-oauth-probe`: real Antigravity OAuth and usage probe.
-- `codex-usage-claude-probe`: Claude Web account registration and usage probe.
-  It first reuses an existing `sessionKey`; only when the profile is readable
-  and no session exists does it open `claude.ai/login` in the user's default
-  browser. A locked live profile is reported as busy instead of being treated
-  as a missing session and opening an unnecessary login page.
+- `codex-usage-claude-probe`: Claude Code OAuth account registration and usage
+  probe. It runs Claude Code's official sign-in command in the system-default
+  browser, using a unique temporary config directory for each account. The
+  verified OAuth credentials are stored in Windows Credential Manager and the
+  temporary plaintext profile is removed before usage refresh.
 - `codex-usage-openrouter-probe`: account-scoped OpenRouter API-key probe. It
   reads the primary key from a process environment variable or stdin, stores
   it in Windows Credential Manager, and never writes it to SQLite or prints it.
@@ -45,18 +45,17 @@ sources are:
 - provider-owned Antigravity `.gemini/oauth_creds.json` and OpenCode Go
   `auth.json` files,
 - Codex OAuth refresh credentials, bound to one local account id,
-- provider-owned Claude `~/.claude/.credentials.json` OAuth/session material,
 - explicitly account-bound environment variables (`OPENROUTER_API_KEY`,
-  `OPENROUTER_MANAGEMENT_API_KEY`, `OPENCODE_API_KEY`, or
-  `CLAUDE_SESSION_KEY` / `CLAUDE_OAUTH_TOKEN` / `ANTHROPIC_ADMIN_KEY`).
+  `OPENROUTER_MANAGEMENT_API_KEY`, or `OPENCODE_API_KEY`).
 
-Claude OAuth tokens use Anthropic's `/api/oauth/usage` contract. Claude Web
-login is a user-driven browser bridge: the host opens the normal browser, reads
-only a private copy of the Chromium cookie database, and waits for the
-provider's `sessionKey`. It never receives a password, embeds a WebView, or
-keeps a browser process alive during polling. The session is written to the
-account-scoped Windows Credential Manager target and is then used by the Web
-adapter for usage, reset times, optional extra usage, and prepaid credits.
+Claude account registration has one supported user sign-in path: Claude Code's
+official OAuth login. Each login gets a separate temporary `CLAUDE_CONFIG_DIR`,
+so it neither reuses nor changes the user's regular Claude Code profile. The
+OAuth profile endpoint verifies the signed-in identity, credentials are stored
+per account in Windows Credential Manager, and the temporary plaintext login
+profile is deleted. Claude Web cookies, `sessionKey` import, and free-account
+Web login are not used as fallbacks. Normal refresh uses the OAuth usage
+contract and account-scoped token refresh.
 
 The CLI cooldown is persisted as a timestamp only (no credentials or usage
 payloads) in `%LOCALAPPDATA%\CodexUsageMonitor\claude-cli-state.json` by
@@ -175,17 +174,18 @@ To run the real Windows OAuth probe:
 cargo run -p codex-usage-oauth-probe
 ```
 
-To add a Claude account through the official browser login flow and probe its
-OAuth usage (the `claude` CLI must already be installed):
+To add a Claude account through Claude Code's official browser OAuth login and
+probe its usage (the `claude` CLI must already be installed):
 
 ```powershell
 cargo run -p codex-usage-claude-probe
 ```
 
-The command opens the default browser itself. Complete the login there; the
-probe then calls `/api/oauth/profile`, registers the verified account, and runs
-the normal account-scoped runtime. To probe an existing Claude CLI login
-without opening the browser again, pass `--probe-existing`.
+The command opens the system-default browser itself. Complete sign-in there;
+the probe then verifies the identity through `/api/oauth/profile`, stores the
+per-account credentials, removes its isolated temporary profile, and runs the
+normal OAuth-only account refresh. To refresh an already-added account from
+its secure stored credentials, pass `--probe-existing`.
 
 The probe uses `%LOCALAPPDATA%\CodexUsageMonitor-Rust\accounts.db` and does
 not reuse or overwrite the original application's credential namespace.

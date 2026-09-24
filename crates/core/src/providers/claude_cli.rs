@@ -286,16 +286,36 @@ pub struct ClaudeCliLoginResult {
     pub auth_link: Option<String>,
 }
 
+/// Builds an environment for a provider-owned Claude login whose credential
+/// files are isolated from the user's normal Claude Code profile.
+pub fn login_environment(
+    environment: &HashMap<String, String>,
+    config_directory: &Path,
+) -> HashMap<String, String> {
+    let mut isolated = environment.clone();
+    isolated.retain(|key, _| {
+        !key.eq_ignore_ascii_case("CLAUDE_CONFIG_DIR")
+            && !key.eq_ignore_ascii_case("CLAUDE_SECURESTORAGE_CONFIG_DIR")
+    });
+    isolated.insert(
+        "CLAUDE_CONFIG_DIR".to_owned(),
+        config_directory.to_string_lossy().into_owned(),
+    );
+    isolated
+}
+
 /// Runs Claude Code's official browser login flow in an isolated PTY.
 ///
 /// The PTY is needed because Claude Code may prompt with "press ENTER to open
 /// in browser" and may render the success marker only after the browser flow
-/// returns. No credentials are read or printed by this function.
+/// returns. The caller supplies a unique config directory so each account
+/// signs in independently. No credentials are read or printed by this function.
 pub async fn login(
     environment: &HashMap<String, String>,
+    config_directory: &Path,
     timeout: Duration,
 ) -> Result<ClaudeCliLoginResult, ClaudeCliError> {
-    let environment = environment.clone();
+    let environment = login_environment(environment, config_directory);
     tokio::task::spawn_blocking(move || login_blocking(&environment, timeout))
         .await
         .map_err(|error| ClaudeCliError::Launch(error.to_string()))?
@@ -1370,6 +1390,27 @@ fn normalize_terminal_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn login_environment_overrides_ambient_claude_profiles() {
+        let environment = HashMap::from([
+            ("CLAUDE_CONFIG_DIR".to_owned(), "global-profile".to_owned()),
+            (
+                "CLAUDE_SECURESTORAGE_CONFIG_DIR".to_owned(),
+                "other-profile".to_owned(),
+            ),
+            ("PATH".to_owned(), "system-path".to_owned()),
+        ]);
+
+        let isolated = login_environment(&environment, Path::new("account-profile"));
+
+        assert_eq!(
+            isolated.get("CLAUDE_CONFIG_DIR").unwrap(),
+            "account-profile"
+        );
+        assert!(!isolated.contains_key("CLAUDE_SECURESTORAGE_CONFIG_DIR"));
+        assert_eq!(isolated.get("PATH").unwrap(), "system-path");
+    }
 
     #[test]
     fn parses_session_weekly_scoped_models_and_relative_resets() {

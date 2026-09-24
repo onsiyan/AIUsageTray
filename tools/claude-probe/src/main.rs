@@ -1,19 +1,19 @@
-//! Exercise the real Claude Web add-account flow on Windows.
+//! Add Claude accounts through Claude Code's official browser OAuth login.
 //!
-//! The user signs in through the normal default browser. The probe never asks
-//! for a password, embeds a WebView, or keeps a browser process alive: after
-//! opening `claude.ai/login`, the Windows auth layer polls a private copy of
-//! the selected Chromium cookie database until `sessionKey` is available.
+//! Each add-account attempt uses a temporary, account-isolated
+//! `CLAUDE_CONFIG_DIR`. Credentials are copied to Windows Credential Manager
+//! and the temporary plaintext profile is removed before usage is refreshed.
 
 use codex_usage_core::{
-    accounts::{AccountRecord, AccountStore, CLAUDE, VerifiedIdentity},
+    accounts::{AccountId, AccountRecord, AccountStore, CLAUDE, VerifiedIdentity},
     auth::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
-        AccountBrowserSessionRefresher, CompositeAuthMaterialProvider, StoredAuthMaterialProvider,
+        StoredAuthMaterialProvider,
     },
-    auth_sources::{EnvironmentAuthMaterialProvider, LocalFileAuthMaterialProvider},
+    auth_sources::LocalFileAuthMaterialProvider,
     providers::{
-        claude::{ClaudeSourceMode, fetch_web_identity},
+        claude::{ClaudeSourceMode, fetch_oauth_identity},
+        claude_cli,
         registry::ProviderRegistryConfig,
     },
     refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
@@ -22,12 +22,8 @@ use codex_usage_core::{
     transport::ReqwestUsageHttpTransport,
     usage::UsageSnapshotStore,
 };
-use codex_usage_windows_auth::{
-    WindowsCredentialManagerAuthMaterialStore,
-    browser_cookies::{BrowserKind, BrowserLoginOptions, WindowsBrowserCookieImporter},
-};
-use std::{env, path::PathBuf, sync::Arc, time::Duration};
-use url::Url;
+use codex_usage_windows_auth::WindowsCredentialManagerAuthMaterialStore;
+use std::{collections::HashMap, env, fs, io::ErrorKind, path::PathBuf, sync::Arc, time::Duration};
 
 #[derive(Debug, Default)]
 struct Arguments {
@@ -36,8 +32,6 @@ struct Arguments {
     email: Option<String>,
     force_new: bool,
     login: bool,
-    browser: Option<BrowserKind>,
-    profile_id: Option<String>,
     timeout_seconds: u64,
 }
 
@@ -55,76 +49,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let account_store: Arc<dyn AccountStore> = sqlite.clone();
     let snapshot_store: Arc<dyn UsageSnapshotStore> = sqlite;
     let secure_material_store = Arc::new(WindowsCredentialManagerAuthMaterialStore);
-    let browser_importer = WindowsBrowserCookieImporter::from_process()?;
     let transport = Arc::new(ReqwestUsageHttpTransport::new(Duration::from_secs(45))?);
 
-    let (identity, browser_material, imported_browser) = if arguments.login {
+    let mut login_config_directory = None;
+    let (identity, material) = if arguments.login {
         let timeout = Duration::from_secs(arguments.timeout_seconds.max(1));
-        let login_url = Url::parse("https://claude.ai/login")?;
-        println!("Checking for an existing Claude Web session first.");
-        let result = browser_importer
-            .open_and_wait_for_provider(
-                CLAUDE,
-                &login_url,
-                BrowserLoginOptions {
-                    browser: arguments.browser,
-                    profile_id: arguments.profile_id.clone(),
-                    timeout,
-                    ..BrowserLoginOptions::default()
-                },
-            )
-            .await?;
-        if result.opened_browser {
-            println!(
-                "Browser session captured from {} profile {} after {}s.",
-                result.imported.browser,
-                result.imported.profile_id,
-                result.elapsed.as_secs()
-            );
-        } else {
-            println!(
-                "Reusing the existing {} browser session from profile {}.",
-                result.imported.browser, result.imported.profile_id
-            );
-        }
-        let session_key = result
-            .imported
-            .cookies
-            .iter()
-            .find(|cookie| cookie.name.eq_ignore_ascii_case("sessionKey"))
-            .map(|cookie| cookie.value.as_str())
-            .ok_or("Claude browser session did not contain sessionKey")?;
-        let identity = fetch_web_identity(transport.as_ref(), session_key).await?;
-        let material = AccountAuthMaterial {
-            cookies: result.imported.cookies,
-            user_agent: result.imported.user_agent,
-            ..AccountAuthMaterial::default()
-        };
-        (
-            identity,
-            material,
-            Some((result.imported.browser, result.imported.profile_id)),
+        let config_directory = ClaudeLoginConfigDirectory::create()?;
+        let environment = env::vars().collect::<HashMap<_, _>>();
+        let login_environment =
+            claude_cli::login_environment(&environment, config_directory.path());
+        println!(
+            "Starting the official Claude Code sign-in. Complete authentication in the browser it opens."
+        );
+        claude_cli::login(&environment, config_directory.path(), timeout).await?;
+        let material = LocalFileAuthMaterialProvider::with_home_directory(
+            AccountId::new(),
+            PathBuf::new(),
+            login_environment,
         )
+        .read_claude_oauth_material()
+        .ok_or("Claude Code sign-in finished, but isolated OAuth credentials were not found")?;
+        require_claude_code_oauth_material(&material)?;
+        let access_token = material
+            .bearer_token
+            .as_deref()
+            .expect("OAuth material validation requires an access token");
+        let identity = fetch_oauth_identity(transport.as_ref(), access_token).await?;
+        login_config_directory = Some(config_directory);
+        (identity, material)
     } else {
         let account =
             find_existing_account(account_store.as_ref(), arguments.email.as_deref()).await?;
         let material = secure_material_store
             .get(account.id)
             .await?
-            .ok_or("the selected Claude account has no stored browser session")?;
+            .ok_or("the selected Claude account has no stored Claude Code OAuth credentials")?;
+        require_claude_code_oauth_material(&material)?;
         let identity = VerifiedIdentity {
             email: Some(account.email.clone()),
             provider_account_id: account.provider_account_id.clone(),
             plan_type: None,
         };
-        (identity, material, None)
+        (identity, material)
     };
 
     let email = identity
         .email
         .as_deref()
         .filter(|value| !value.trim().is_empty())
-        .ok_or("Claude Web account did not return an email address")?;
+        .ok_or("Claude OAuth profile did not return an email address")?;
     if let Some(expected_email) = arguments.email.as_deref()
         && !expected_email.eq_ignore_ascii_case(email)
     {
@@ -142,49 +115,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         find_existing_account(account_store.as_ref(), arguments.email.as_deref()).await?
     };
-    if let Some((browser, profile_id)) = imported_browser.as_ref() {
-        account.browser_kind = Some(browser.as_str().to_owned());
-        account.browser_profile_id = Some(profile_id.to_owned());
-    }
+    account.browser_kind = None;
+    account.browser_profile_id = None;
     account_store.upsert(&account).await?;
 
-    let mut material_to_store = browser_material;
-    if let Some(existing) = secure_material_store.get(account.id).await? {
-        material_to_store.fill_missing_from(&existing);
+    secure_material_store.save(account.id, &material).await?;
+    if let Some(config_directory) = login_config_directory.as_mut() {
+        config_directory.cleanup()?;
     }
-    secure_material_store
-        .save(account.id, &material_to_store)
-        .await?;
     let account = account_store
         .get(account.id)
         .await?
-        .ok_or("Claude account disappeared after its browser session was saved")?;
+        .ok_or("Claude account disappeared after its OAuth credentials were saved")?;
     announce_cli_account_reference(&account);
 
     let stored_material = Arc::new(StoredAuthMaterialProvider::new(
         secure_material_store.clone(),
     )) as Arc<dyn AccountAuthMaterialProvider>;
-    let account_file_material = Arc::new(LocalFileAuthMaterialProvider::from_process(account.id))
-        as Arc<dyn AccountAuthMaterialProvider>;
-    let environment_material = Arc::new(EnvironmentAuthMaterialProvider::from_process(account.id))
-        as Arc<dyn AccountAuthMaterialProvider>;
-    let auth = Arc::new(CompositeAuthMaterialProvider::new([
-        stored_material,
-        account_file_material,
-        environment_material,
-    ])) as Arc<dyn AccountAuthMaterialProvider>;
+    let auth = stored_material as Arc<dyn AccountAuthMaterialProvider>;
 
-    let runtime = UsageRuntime::from_dependencies_with_auth_store_and_session_refresher(
+    let runtime = UsageRuntime::from_dependencies_with_auth_store(
         account_store,
         snapshot_store,
         transport,
         auth,
         secure_material_store as Arc<dyn AccountAuthMaterialStore>,
-        Arc::new(browser_importer) as Arc<dyn AccountBrowserSessionRefresher>,
         ProviderRegistryConfig {
-            claude_source_mode: ClaudeSourceMode::Web,
+            claude_source_mode: ClaudeSourceMode::OAuth,
             fetch_claude_account_identity: true,
-            fetch_claude_web_extras: true,
+            fetch_claude_web_extras: false,
             fetch_claude_prepaid_credits: true,
             ..ProviderRegistryConfig::default()
         },
@@ -229,6 +188,77 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn require_claude_code_oauth_material(
+    material: &AccountAuthMaterial,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let has_access_token = material
+        .bearer_token
+        .as_deref()
+        .is_some_and(|token| token.starts_with("sk-ant-oat"));
+    let has_refresh_token = material
+        .oauth_refresh_token
+        .as_deref()
+        .is_some_and(|token| !token.trim().is_empty());
+    if !has_access_token || !has_refresh_token {
+        return Err(
+            "Claude Code sign-in did not provide both OAuth access and refresh credentials".into(),
+        );
+    }
+    Ok(())
+}
+
+struct ClaudeLoginConfigDirectory {
+    path: Option<PathBuf>,
+}
+
+impl ClaudeLoginConfigDirectory {
+    fn create() -> Result<Self, std::io::Error> {
+        let data_directory = env::var_os("LOCALAPPDATA")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(env::temp_dir);
+        let login_root = data_directory
+            .join("CodexUsageMonitor-Rust")
+            .join("claude-login");
+        fs::create_dir_all(&login_root)?;
+
+        let path = login_root.join(AccountId::new().to_string());
+        fs::create_dir(&path)?;
+        Ok(Self { path: Some(path) })
+    }
+
+    fn path(&self) -> &std::path::Path {
+        self.path
+            .as_deref()
+            .expect("Claude login config directory is still active")
+    }
+
+    fn cleanup(&mut self) -> Result<(), std::io::Error> {
+        let Some(path) = self.path.as_deref() else {
+            return Ok(());
+        };
+        match fs::remove_dir_all(path) {
+            Ok(()) => {
+                self.path = None;
+                Ok(())
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                self.path = None;
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl Drop for ClaudeLoginConfigDirectory {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.as_deref() {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
+
 fn announce_cli_account_reference(account: &AccountRecord) {
     if env::var_os("CODEX_USAGE_CLI_CHILD").is_some()
         && let Some(account_ref) = account.account_ref.as_deref()
@@ -247,7 +277,7 @@ async fn find_or_create_account(
         .email
         .as_deref()
         .filter(|value| !value.trim().is_empty())
-        .ok_or("Claude Web account did not return an email address")?;
+        .ok_or("Claude OAuth profile did not return an email address")?;
     if !force_new {
         if let Some(account) = store.list().await?.into_iter().find(|account| {
             account.provider_id == CLAUDE
@@ -324,23 +354,6 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
                         .into_owned(),
                 );
             }
-            "--browser" => {
-                let value = values
-                    .next()
-                    .ok_or("--browser requires chrome, edge, brave, or chromium")?
-                    .to_string_lossy()
-                    .to_ascii_lowercase();
-                arguments.browser = Some(parse_browser(&value)?);
-            }
-            "--profile" => {
-                arguments.profile_id = Some(
-                    values
-                        .next()
-                        .ok_or("--profile requires a Chromium profile id")?
-                        .to_string_lossy()
-                        .into_owned(),
-                );
-            }
             "--timeout-seconds" => {
                 arguments.timeout_seconds = values
                     .next()
@@ -353,7 +366,7 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
             "--probe-existing" => arguments.login = false,
             "--help" | "-h" => {
                 println!(
-                    "Usage: codex-usage-claude-probe [--database PATH] [--label LABEL] [--email EMAIL] [--new] [--browser chrome|edge|brave|chromium] [--profile PROFILE] [--timeout-seconds N] [--probe-existing]\n\nOpens the normal browser at claude.ai/login, waits for a sessionKey, stores it in Windows Credential Manager, and probes Claude Web usage."
+                    "Usage: codex-usage-claude-probe [--database PATH] [--label LABEL] [--email EMAIL] [--new] [--timeout-seconds N] [--probe-existing]\n\nRuns Claude Code's official OAuth sign-in in the default browser, verifies the account with Claude's OAuth profile endpoint, stores per-account credentials in Windows Credential Manager, removes the temporary login profile, and probes OAuth usage."
                 );
                 std::process::exit(0);
             }
@@ -363,9 +376,41 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
     Ok(arguments)
 }
 
-fn parse_browser(value: &str) -> Result<BrowserKind, Box<dyn std::error::Error>> {
-    BrowserKind::ALL
-        .into_iter()
-        .find(|browser| browser.as_str() == value)
-        .ok_or_else(|| format!("unsupported browser: {value}").into())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_probe_accepts_only_refreshable_oauth_material() {
+        let oauth = AccountAuthMaterial {
+            bearer_token: Some("sk-ant-oat-test".to_owned()),
+            oauth_refresh_token: Some("refresh-test".to_owned()),
+            ..AccountAuthMaterial::default()
+        };
+        assert!(require_claude_code_oauth_material(&oauth).is_ok());
+
+        let web_session = AccountAuthMaterial::from_cookie_header("sessionKey=web-session", None);
+        assert!(require_claude_code_oauth_material(&web_session).is_err());
+
+        let non_refreshable_oauth = AccountAuthMaterial {
+            bearer_token: Some("sk-ant-oat-test".to_owned()),
+            ..AccountAuthMaterial::default()
+        };
+        assert!(require_claude_code_oauth_material(&non_refreshable_oauth).is_err());
+    }
+
+    #[test]
+    fn temporary_login_profile_is_removed_after_credential_import() {
+        let mut directory = ClaudeLoginConfigDirectory::create().unwrap();
+        let path = directory.path().to_owned();
+        fs::write(
+            path.join(".credentials.json"),
+            "temporary-secret-placeholder",
+        )
+        .unwrap();
+
+        directory.cleanup().unwrap();
+
+        assert!(!path.exists());
+    }
 }
