@@ -244,22 +244,15 @@ impl App {
 
         let title_bar_separator = container(Space::new().width(Fill).height(Length::Fill))
             .width(Fill)
-            .height(3)
+            .height(1)
             .style(|_| container::Style {
                 background: Some(Background::Color(Color::WHITE)),
                 ..Default::default()
             });
 
-        let separator_row = row![
-            Space::new().width(18),
-            title_bar_separator,
-            Space::new().width(18)
-        ]
-        .width(Fill);
-
         let content = column![
             title_bar,
-            separator_row,
+            title_bar_separator,
             Space::new().width(Fill).height(Fill)
         ]
         .spacing(0)
