@@ -64,7 +64,7 @@ fn main() -> iced::Result {
         level: window::Level::Normal,
         exit_on_close_request: false,
         platform_specific: window::settings::PlatformSpecific {
-            skip_taskbar: false,
+            skip_taskbar: true,
             ..Default::default()
         },
         ..Default::default()
