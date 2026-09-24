@@ -67,7 +67,7 @@ enum Command {
         #[command(subcommand)]
         command: AccountCommand,
     },
-    /// Read cached usage or explicitly refresh a provider.
+    /// Refresh and display usage for a provider account.
     Usage {
         #[command(subcommand)]
         command: UsageCommand,
