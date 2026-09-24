@@ -9,7 +9,7 @@ use iced::{
     Alignment, Background, Border, Color, Element, Event, Fill, Length, Point, Shadow, Size,
     Subscription, Task, Theme, event,
     futures::{SinkExt, Stream},
-    widget::{button, column, container, mouse_area, progress_bar, row, scrollable, text},
+    widget::{button, column, container, mouse_area, row, text, Space},
     window,
 };
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -64,7 +64,6 @@ fn main() -> iced::Result {
 struct App {
     tray_sender: Sender<TrayIconEvent>,
     window_id: Option<window::Id>,
-    tray_error: Option<String>,
 }
 
 impl App {
@@ -72,7 +71,6 @@ impl App {
         Self {
             tray_sender,
             window_id: None,
-            tray_error: None,
         }
     }
 
@@ -129,7 +127,6 @@ impl App {
             }
             Message::TrayFailed(error) => {
                 preview_log(format!("tray failed: {error}"));
-                self.tray_error = Some(error);
                 Task::none()
             }
             Message::TrayEvent(TrayIconEvent::Click {
@@ -246,14 +243,8 @@ impl App {
                 ]
                 .spacing(3)
                 .align_y(Alignment::Center),
-                mouse_area(
-                    container(text("Usage Monitor Preview").size(12).color(muted()))
-                        .width(Fill)
-                        .height(Length::Fill)
-                        .align_x(Alignment::End)
-                        .align_y(Alignment::Center),
-                )
-                .on_press(Message::DragWindow),
+                mouse_area(Space::new().width(Fill).height(Length::Fill))
+                    .on_press(Message::DragWindow),
             ]
             .spacing(8)
             .align_y(Alignment::Center)
@@ -263,111 +254,11 @@ impl App {
         .height(40)
         .padding([4, 8]);
 
-        let header = row![
-            column![
-                text("مراقبة الاستخدام").size(19).color(Color::WHITE),
-                text("الحسابات والخطط").size(12).color(muted()),
-            ]
-            .spacing(2)
-            .align_x(Alignment::End),
-            container(text("U").size(15).color(Color::WHITE))
-                .width(34)
-                .height(34)
-                .align_x(Alignment::Center)
-                .align_y(Alignment::Center)
-                .style(|_| surface_style(Color::from_rgb8(100, 86, 228))),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center);
-
-        let summary = container(
-            row![
-                column![
-                    text("٥ مزوّدين").size(12).color(muted()),
-                    text("ملخص الاستخدام").size(17).color(Color::WHITE),
-                ]
-                .spacing(5)
-                .align_x(Alignment::End),
-                container(
-                    text("محدّث الآن")
-                        .size(11)
-                        .color(Color::from_rgb8(119, 226, 183))
-                )
-                .padding([5, 9])
-                .style(|_| surface_style(Color::from_rgb8(32, 62, 55))),
-            ]
-            .align_y(Alignment::Center)
-            .width(Fill),
-        )
-        .padding(16)
-        .style(|_| card_style());
-
-        let accounts = column![
-            provider_card(
-                "OpenAI Codex",
-                "Pro · maj***@gmail.com",
-                24,
-                76,
-                5,
-                "5 ساعات",
-                "أسبوعي",
-                0
-            ),
-            provider_card(
-                "Antigravity",
-                "Google · الحساب الأساسي",
-                43,
-                97,
-                10,
-                "أسبوعي",
-                "5 ساعات",
-                1
-            ),
-            provider_card(
-                "Claude",
-                "Free · account@example.com",
-                57,
-                100,
-                12,
-                "أسبوعي",
-                "5 ساعات",
-                2
-            ),
-            provider_card("OpenRouter", "الرصيد المتاح", 82, 0, 0, "الرصيد", "", 3),
-            provider_card("OpenCode Go", "خطة Go", 61, 0, 0, "الاستخدام", "", 4),
-        ]
-        .spacing(9);
-
-        let footer = row![
-            text("واجهة تجريبية · بيانات غير حقيقية")
-                .size(11)
-                .color(muted()),
-            container(
-                text("إدارة الحسابات  ↗")
-                    .size(12)
-                    .color(Color::from_rgb8(174, 165, 255))
-            )
-            .width(Fill)
-            .align_x(Alignment::End),
-        ]
-        .align_y(Alignment::Center);
-
-        let provider_content = column![accounts, footer].spacing(15);
-        let provider_content = if let Some(error) = &self.tray_error {
-            provider_content.push(text(error).size(11).color(Color::from_rgb8(255, 160, 150)))
-        } else {
-            provider_content
-        };
-
-        let content = column![
-            title_bar,
-            header,
-            summary,
-            scrollable(provider_content).height(Fill),
-        ]
-        .spacing(15)
+        let content = column![title_bar, Space::new().width(Fill).height(Fill)]
+        .spacing(0)
         .padding(18)
-        .width(Fill);
+        .width(Fill)
+        .height(Fill);
 
         container(content)
             .width(Fill)
@@ -600,110 +491,6 @@ fn popup_position(
     Point::new(x / scale_factor, y / scale_factor)
 }
 
-fn provider_card(
-    name: &'static str,
-    detail: &'static str,
-    primary_percent: u16,
-    secondary_percent: u16,
-    secondary_reset: u16,
-    primary_name: &'static str,
-    secondary_name: &'static str,
-    accent_index: usize,
-) -> Element<'static, Message> {
-    let accent = match accent_index {
-        0 => Color::from_rgb8(137, 125, 255),
-        1 => Color::from_rgb8(86, 204, 138),
-        2 => Color::from_rgb8(241, 157, 97),
-        3 => Color::from_rgb8(88, 175, 255),
-        _ => Color::from_rgb8(220, 121, 202),
-    };
-
-    let primary = row![
-        text(format!("{primary_percent}%"))
-            .size(14)
-            .color(Color::WHITE),
-        text(primary_name).size(11).color(muted()),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-
-    let primary_bar = progress_bar(0.0..=100.0, primary_percent as f32)
-        .style(move |_| progress_style(accent, false));
-
-    let mut metrics = column![primary, primary_bar].spacing(5);
-    if !secondary_name.is_empty() {
-        let secondary = row![
-            text(format!("{secondary_percent}%"))
-                .size(12)
-                .color(muted()),
-            text(secondary_name).size(11).color(muted()),
-            container(
-                text(format!("يعاد خلال {secondary_reset}س"))
-                    .size(10)
-                    .color(muted())
-            )
-            .width(Fill)
-            .align_x(Alignment::End),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center);
-        let secondary_bar = progress_bar(0.0..=100.0, secondary_percent as f32)
-            .style(move |_| progress_style(accent, true));
-        metrics = metrics.push(secondary).push(secondary_bar);
-    }
-
-    container(
-        column![
-            row![
-                container(text("●").size(13).color(accent)).width(22),
-                column![
-                    text(name).size(14).color(Color::WHITE),
-                    text(detail).size(10).color(muted()),
-                ]
-                .spacing(3)
-                .align_x(Alignment::End),
-                container(text("⋯").size(20).color(muted()))
-                    .width(Fill)
-                    .align_x(Alignment::End),
-            ]
-            .align_y(Alignment::Center),
-            metrics,
-        ]
-        .spacing(10),
-    )
-    .padding([12, 14])
-    .style(|_| card_style())
-    .into()
-}
-
-fn surface_style(color: Color) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(color)),
-        border: Border {
-            color: Color::from_rgb8(45, 48, 59),
-            width: 1.0,
-            radius: 14.0.into(),
-        },
-        text_color: None,
-        shadow: Shadow::default(),
-        snap: false,
-    }
-}
-
-fn card_style() -> container::Style {
-    container::Style {
-        background: Some(Background::Color(Color::from_rgb8(27, 29, 38))),
-        border: Border {
-            color: Color::from_rgb8(45, 48, 59),
-            width: 1.0,
-            radius: 12.0.into(),
-        },
-        text_color: None,
-        shadow: Shadow::default(),
-        snap: false,
-    }
-}
-
 fn window_control_button(
     label: &'static str,
     message: Message,
@@ -745,27 +532,6 @@ fn window_frame_style() -> container::Style {
         shadow: Shadow::default(),
         snap: false,
     }
-}
-
-fn progress_style(accent: Color, subdued: bool) -> progress_bar::Style {
-    progress_bar::Style {
-        background: Background::Color(Color::from_rgb8(43, 45, 56)),
-        bar: Background::Color(if subdued {
-            Color::from_rgba8(
-                (accent.r * 255.0) as u8,
-                (accent.g * 255.0) as u8,
-                (accent.b * 255.0) as u8,
-                0.5,
-            )
-        } else {
-            accent
-        }),
-        border: Border::default().rounded(4.0),
-    }
-}
-
-fn muted() -> Color {
-    Color::from_rgb8(145, 148, 162)
 }
 
 fn preview_log(message: impl std::fmt::Display) {
