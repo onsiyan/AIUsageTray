@@ -242,7 +242,19 @@ impl App {
         .height(40)
         .padding([4, 8]);
 
-        let content = column![title_bar, Space::new().width(Fill).height(Fill)]
+        let title_bar_separator = container(Space::new().width(Fill).height(Length::Fill))
+            .width(Fill)
+            .height(3)
+            .style(|_| container::Style {
+                background: Some(Background::Color(Color::WHITE)),
+                ..Default::default()
+            });
+
+        let content = column![
+            title_bar,
+            title_bar_separator,
+            Space::new().width(Fill).height(Fill)
+        ]
         .spacing(0)
         .padding(18)
         .width(Fill)
