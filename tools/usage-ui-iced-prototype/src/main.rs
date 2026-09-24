@@ -9,10 +9,13 @@ use iced::{
     Alignment, Background, Border, Color, Element, Event, Fill, Length, Point, Shadow, Size,
     Subscription, Task, Theme, event,
     futures::{SinkExt, Stream},
-    widget::{Space, button, column, container, mouse_area, row},
+    widget::{Space, button, column, container, mouse_area, row, scrollable, stack, text},
     window,
 };
-use lucide_icons::{LUCIDE_FONT_BYTES, iced::icon_x};
+use lucide_icons::{
+    LUCIDE_FONT_BYTES,
+    iced::{icon_palette, icon_x},
+};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 const WINDOW_WIDTH: f32 = 424.0;
@@ -40,7 +43,7 @@ fn main() -> iced::Result {
         App::view,
     )
     .title("Usage Monitor Preview")
-    .theme(Theme::Dark)
+    .theme(|app: &App| app.theme.clone())
     .style(|_, theme| {
         // Let the rounded frame reveal the desktop outside its opaque bounds.
         let mut style = iced::theme::default(theme);
@@ -72,6 +75,8 @@ fn main() -> iced::Result {
 struct App {
     tray_sender: Sender<TrayIconEvent>,
     window_id: Option<window::Id>,
+    theme: Theme,
+    theme_menu_open: bool,
 }
 
 impl App {
@@ -79,6 +84,8 @@ impl App {
         Self {
             tray_sender,
             window_id: None,
+            theme: Theme::Dark,
+            theme_menu_open: false,
         }
     }
 
@@ -179,6 +186,19 @@ impl App {
             Message::RuntimeEvent(_) => Task::none(),
             Message::DragWindow => self.window_id.map(window::drag).unwrap_or_else(Task::none),
             Message::CloseButton => self.hide_popup(),
+            Message::ToggleThemeMenu => {
+                self.theme_menu_open = !self.theme_menu_open;
+                Task::none()
+            }
+            Message::DismissThemeMenu => {
+                self.theme_menu_open = false;
+                Task::none()
+            }
+            Message::SelectTheme(theme) => {
+                self.theme = theme;
+                self.theme_menu_open = false;
+                Task::none()
+            }
         }
     }
 
@@ -238,9 +258,10 @@ impl App {
             row![
                 mouse_area(Space::new().width(Fill).height(Length::Fill))
                     .on_press(Message::DragWindow),
+                theme_button(self.theme_menu_open),
                 close_window_button(),
             ]
-            .spacing(0)
+            .spacing(4)
             .align_y(Alignment::Center)
             .width(Fill),
         )
@@ -251,8 +272,8 @@ impl App {
         let title_bar_separator = container(Space::new().width(Fill).height(Length::Fill))
             .width(Fill)
             .height(1)
-            .style(|_| container::Style {
-                background: Some(Background::Color(Color::WHITE)),
+            .style(|theme| container::Style {
+                background: Some(Background::Color(title_bar_separator_color(theme))),
                 ..Default::default()
             });
 
@@ -265,10 +286,34 @@ impl App {
         .width(Fill)
         .height(Fill);
 
+        let content: Element<'_, Message> = if self.theme_menu_open {
+            let dismiss_area = column![
+                Space::new().width(Fill).height(45),
+                mouse_area(Space::new().width(Fill).height(Fill))
+                    .on_press(Message::DismissThemeMenu),
+            ]
+            .width(Fill)
+            .height(Fill);
+
+            let theme_menu_layer = container(theme_dropdown(&self.theme))
+                .width(Fill)
+                .height(Fill)
+                .align_x(Alignment::End)
+                .align_y(Alignment::Start)
+                .padding([49, 10]);
+
+            stack![content, dismiss_area, theme_menu_layer]
+                .width(Fill)
+                .height(Fill)
+                .into()
+        } else {
+            content.into()
+        };
+
         container(content)
             .width(Fill)
             .height(Fill)
-            .style(|_| window_frame_style())
+            .style(|theme| window_frame_style(theme))
             .into()
     }
 }
@@ -285,6 +330,9 @@ enum Message {
     RuntimeEvent(Event),
     DragWindow,
     CloseButton,
+    ToggleThemeMenu,
+    DismissThemeMenu,
+    SelectTheme(Theme),
 }
 
 fn install_tray(sender: Sender<TrayIconEvent>) -> Result<(), String> {
@@ -494,15 +542,22 @@ fn popup_position(
     Point::new(x / scale_factor, y / scale_factor)
 }
 
-fn close_window_button() -> Element<'static, Message> {
-    button(icon_x().size(18))
-        .on_press(Message::CloseButton)
+fn theme_button(menu_open: bool) -> Element<'static, Message> {
+    button(icon_palette().size(18))
+        .on_press(Message::ToggleThemeMenu)
         .width(36)
         .height(36)
-        .style(|theme, status| {
+        .style(move |theme: &Theme, status| {
+            let palette = theme.extended_palette();
             let mut style = button::text(theme, status);
-            style.background = None;
-            style.text_color = Color::WHITE;
+            style.background = if menu_open
+                || matches!(status, button::Status::Hovered | button::Status::Pressed)
+            {
+                Some(Background::Color(palette.background.strong.color))
+            } else {
+                None
+            };
+            style.text_color = palette.background.base.text;
             style.border = Border::default();
             style.shadow = Shadow::default();
             style
@@ -510,11 +565,106 @@ fn close_window_button() -> Element<'static, Message> {
         .into()
 }
 
-fn window_frame_style() -> container::Style {
+fn theme_dropdown(current_theme: &Theme) -> Element<'static, Message> {
+    let choices = Theme::ALL.iter().cloned().map(|theme| {
+        let selected = theme == *current_theme;
+        let label = theme.to_string();
+
+        button(container(text(label)).width(Fill).padding([7, 10]))
+            .on_press(Message::SelectTheme(theme))
+            .width(Fill)
+            .style(move |active_theme, status| {
+                theme_choice_button_style(active_theme, status, selected)
+            })
+            .into()
+    });
+
+    let choices = scrollable(column(choices).spacing(2)).height(320);
+
+    container(choices)
+        .width(220)
+        .padding(8)
+        .style(|theme| {
+            let palette = theme.extended_palette();
+            container::Style {
+                background: Some(Background::Color(palette.background.base.color)),
+                border: Border {
+                    color: palette.background.strong.color,
+                    width: 1.0,
+                    radius: 10.0.into(),
+                },
+                ..Default::default()
+            }
+        })
+        .into()
+}
+
+fn theme_choice_button_style(
+    theme: &Theme,
+    status: button::Status,
+    selected: bool,
+) -> button::Style {
+    let palette = theme.extended_palette();
+    let mut style = button::text(theme, status);
+    style.background = if selected {
+        Some(Background::Color(palette.primary.base.color))
+    } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+        Some(Background::Color(palette.background.strong.color))
+    } else {
+        None
+    };
+    style.text_color = if selected {
+        palette.primary.base.text
+    } else {
+        palette.background.base.text
+    };
+    style.border = Border {
+        radius: 5.0.into(),
+        ..Border::default()
+    };
+    style.shadow = Shadow::default();
+    style
+}
+
+fn close_window_button() -> Element<'static, Message> {
+    button(icon_x().size(18))
+        .on_press(Message::CloseButton)
+        .width(36)
+        .height(36)
+        .style(|active_theme, status| {
+            let mut style = button::text(active_theme, status);
+            style.background = None;
+            style.text_color = active_theme.extended_palette().background.base.text;
+            style.border = Border::default();
+            style.shadow = Shadow::default();
+            style
+        })
+        .into()
+}
+
+fn title_bar_separator_color(theme: &Theme) -> Color {
+    if *theme == Theme::Dark {
+        Color::WHITE
+    } else {
+        theme.extended_palette().background.strong.color
+    }
+}
+
+fn window_frame_style(theme: &Theme) -> container::Style {
+    let (background, border) = if *theme == Theme::Dark {
+        (Color::from_rgb8(18, 20, 27), Color::WHITE)
+    } else {
+        let palette = theme.extended_palette();
+        (
+            palette.background.base.color,
+            palette.background.strong.color,
+        )
+    };
+
     container::Style {
-        background: Some(Background::Color(Color::from_rgb8(18, 20, 27))),
+        background: Some(Background::Color(background)),
         border: Border {
-            color: Color::WHITE,
+            color: border,
             width: 1.0,
             radius: 16.0.into(),
         },
@@ -540,6 +690,18 @@ fn preview_log(message: impl std::fmt::Display) {
 mod tests {
     use super::*;
     use tray_icon::menu::dpi::{PhysicalPosition, PhysicalSize};
+
+    #[test]
+    fn selecting_theme_updates_application_and_closes_menu() {
+        let (sender, _receiver) = async_channel::bounded(1);
+        let mut app = App::new(sender);
+        app.theme_menu_open = true;
+
+        let _ = app.update(Message::SelectTheme(Theme::Light));
+
+        assert_eq!(app.theme, Theme::Light);
+        assert!(!app.theme_menu_open);
+    }
 
     #[test]
     fn popup_stays_inside_work_area_above_bottom_taskbar() {
