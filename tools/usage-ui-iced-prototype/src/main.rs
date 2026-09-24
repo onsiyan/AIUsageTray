@@ -230,17 +230,17 @@ impl App {
     fn view(&self) -> Element<'_, Message> {
         let title_bar = container(
             row![
-                close_window_button(),
                 mouse_area(Space::new().width(Fill).height(Length::Fill))
                     .on_press(Message::DragWindow),
+                close_window_button(),
             ]
             .spacing(0)
             .align_y(Alignment::Center)
             .width(Fill),
         )
         .width(Fill)
-        .height(56)
-        .padding([6, 10]);
+        .height(44)
+        .padding([4, 10]);
 
         let title_bar_separator = container(Space::new().width(Fill).height(Length::Fill))
             .width(Fill)
@@ -489,10 +489,10 @@ fn popup_position(
 }
 
 fn close_window_button() -> Element<'static, Message> {
-    button(icon_x().size(22))
+    button(icon_x().size(18))
         .on_press(Message::CloseButton)
-        .width(44)
-        .height(44)
+        .width(36)
+        .height(36)
         .style(|theme, status| {
             let mut style = button::text(theme, status);
             style.background = None;
