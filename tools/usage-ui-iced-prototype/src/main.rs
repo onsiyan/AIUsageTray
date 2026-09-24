@@ -234,13 +234,13 @@ impl App {
                 mouse_area(Space::new().width(Fill).height(Length::Fill))
                     .on_press(Message::DragWindow),
             ]
-            .spacing(8)
+            .spacing(0)
             .align_y(Alignment::Center)
             .width(Fill),
         )
         .width(Fill)
-        .height(40)
-        .padding([4, 8]);
+        .height(56)
+        .padding([6, 10]);
 
         let title_bar_separator = container(Space::new().width(Fill).height(Length::Fill))
             .width(Fill)
@@ -250,13 +250,19 @@ impl App {
                 ..Default::default()
             });
 
+        let separator_row = row![
+            Space::new().width(18),
+            title_bar_separator,
+            Space::new().width(18)
+        ]
+        .width(Fill);
+
         let content = column![
             title_bar,
-            title_bar_separator,
+            separator_row,
             Space::new().width(Fill).height(Fill)
         ]
         .spacing(0)
-        .padding(18)
         .width(Fill)
         .height(Fill);
 
@@ -490,21 +496,16 @@ fn popup_position(
 }
 
 fn close_window_button() -> Element<'static, Message> {
-    button(icon_x().size(15))
+    button(icon_x().size(22))
         .on_press(Message::CloseButton)
-        .width(30)
-        .height(27)
+        .width(44)
+        .height(44)
         .style(|theme, status| {
             let mut style = button::text(theme, status);
-            let is_hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-            let background = if is_hovered {
-                Color::from_rgb8(150, 50, 56)
-            } else {
-                Color::TRANSPARENT
-            };
-            style.background = Some(Background::Color(background));
-            style.text_color = Color::from_rgb8(255, 185, 185);
-            style.border = Border::default().rounded(6.0);
+            style.background = None;
+            style.text_color = Color::WHITE;
+            style.border = Border::default();
+            style.shadow = Shadow::default();
             style
         })
         .into()
