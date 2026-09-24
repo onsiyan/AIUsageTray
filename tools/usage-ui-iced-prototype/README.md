@@ -20,4 +20,5 @@ rectangle after startup.
 
 Iced is MIT-licensed. This evaluation enables its tiny-skia software renderer
 and advanced text shaping instead of its default wgpu renderer. The tray uses
-`tray-icon`, licensed MIT OR Apache-2.0.
+`tray-icon`, licensed MIT OR Apache-2.0. The close icon uses the Lucide icon
+font through the `lucide-icons` crate (MIT AND ISC).

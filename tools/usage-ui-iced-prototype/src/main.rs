@@ -9,9 +9,10 @@ use iced::{
     Alignment, Background, Border, Color, Element, Event, Fill, Length, Point, Shadow, Size,
     Subscription, Task, Theme, event,
     futures::{SinkExt, Stream},
-    widget::{button, column, container, mouse_area, row, text, Space},
+    widget::{Space, button, column, container, mouse_area, row},
     window,
 };
+use lucide_icons::{LUCIDE_FONT_BYTES, iced::icon_x};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 const WINDOW_WIDTH: f32 = 424.0;
@@ -40,6 +41,7 @@ fn main() -> iced::Result {
     )
     .title("Usage Monitor Preview")
     .theme(Theme::Dark)
+    .font(LUCIDE_FONT_BYTES)
     .window(window::Settings {
         size: Size::new(WINDOW_WIDTH, WINDOW_HEIGHT),
         visible: false,
@@ -228,7 +230,7 @@ impl App {
     fn view(&self) -> Element<'_, Message> {
         let title_bar = container(
             row![
-                window_control_button("×", Message::CloseButton, true),
+                close_window_button(),
                 mouse_area(Space::new().width(Fill).height(Length::Fill))
                     .on_press(Message::DragWindow),
             ]
@@ -475,29 +477,21 @@ fn popup_position(
     Point::new(x / scale_factor, y / scale_factor)
 }
 
-fn window_control_button(
-    label: &'static str,
-    message: Message,
-    is_close: bool,
-) -> Element<'static, Message> {
-    button(text(label).size(15))
-        .on_press(message)
+fn close_window_button() -> Element<'static, Message> {
+    button(icon_x().size(15))
+        .on_press(Message::CloseButton)
         .width(30)
         .height(27)
-        .style(move |theme, status| {
+        .style(|theme, status| {
             let mut style = button::text(theme, status);
             let is_hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-            let background = match (is_close, is_hovered) {
-                (true, true) => Color::from_rgb8(150, 50, 56),
-                (false, true) => Color::from_rgb8(51, 54, 66),
-                _ => Color::TRANSPARENT,
+            let background = if is_hovered {
+                Color::from_rgb8(150, 50, 56)
+            } else {
+                Color::TRANSPARENT
             };
             style.background = Some(Background::Color(background));
-            style.text_color = if is_close {
-                Color::from_rgb8(255, 185, 185)
-            } else {
-                Color::from_rgb8(230, 232, 238)
-            };
+            style.text_color = Color::from_rgb8(255, 185, 185);
             style.border = Border::default().rounded(6.0);
             style
         })
