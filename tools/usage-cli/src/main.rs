@@ -433,7 +433,8 @@ fn build_account_add_arguments(
     match provider {
         AccountAddProvider::Codex => {}
         AccountAddProvider::Claude => {
-            result.push("--login".into());
+            // Claude probe defaults to its interactive browser login; it does
+            // not expose a `--login` flag (only `--probe-existing` disables it).
             if let Some(browser) = arguments.browser.as_deref() {
                 result.extend(["--browser".into(), browser.into()]);
             }
@@ -1626,6 +1627,46 @@ mod tests {
             Some(AccountAddProvider::OpenCodeGo)
         );
         assert!(AccountAddProvider::parse("unknown").is_none());
+    }
+
+    #[test]
+    fn claude_account_add_uses_default_browser_login_without_unsupported_flag() {
+        let arguments = AccountAddArgs {
+            provider: "claude".to_owned(),
+            alias: Some("Work Claude".to_owned()),
+            browser: Some("chrome".to_owned()),
+            profile: Some("Profile 2".to_owned()),
+            api_key_stdin: false,
+            credentials_stdin: false,
+        };
+        let built = build_account_add_arguments(
+            AccountAddProvider::Claude,
+            Path::new("accounts.db"),
+            &arguments,
+        );
+        let built = built
+            .iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(
+            built
+                .windows(2)
+                .any(|pair| pair == ["--database", "accounts.db"])
+        );
+        assert!(
+            built
+                .windows(2)
+                .any(|pair| pair == ["--label", "Work Claude"])
+        );
+        assert!(built.windows(2).any(|pair| pair == ["--browser", "chrome"]));
+        assert!(
+            built
+                .windows(2)
+                .any(|pair| pair == ["--profile", "Profile 2"])
+        );
+        assert!(!built.iter().any(|value| value == "--login"));
+        assert!(!built.iter().any(|value| value == "--probe-existing"));
     }
 
     #[test]
