@@ -9,12 +9,13 @@ use iced::{
     Alignment, Background, Border, Color, Element, Event, Fill, Length, Point, Shadow, Size,
     Subscription, Task, Theme, event,
     futures::{SinkExt, Stream},
-    widget::{Space, button, column, container, mouse_area, row, scrollable, stack, text},
+    keyboard,
+    widget::{Space, button, column, container, mouse_area, row, stack, text},
     window,
 };
 use lucide_icons::{
     LUCIDE_FONT_BYTES,
-    iced::{icon_palette, icon_x},
+    iced::{icon_check, icon_palette, icon_x},
 };
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
@@ -182,6 +183,13 @@ impl App {
                     window::Event::CloseRequested => self.hide_popup(),
                     _ => Task::none(),
                 }
+            }
+            Message::RuntimeEvent(Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                ..
+            })) if self.theme_menu_open => {
+                self.theme_menu_open = false;
+                Task::none()
             }
             Message::RuntimeEvent(_) => Task::none(),
             Message::DragWindow => self.window_id.map(window::drag).unwrap_or_else(Task::none),
@@ -566,24 +574,49 @@ fn theme_button(menu_open: bool) -> Element<'static, Message> {
 }
 
 fn theme_dropdown(current_theme: &Theme) -> Element<'static, Message> {
-    let choices = Theme::ALL.iter().cloned().map(|theme| {
-        let selected = theme == *current_theme;
-        let label = theme.to_string();
+    let choices = Theme::ALL.chunks(2).map(|themes| {
+        let first = theme_choice_card(themes[0].clone(), current_theme.clone());
+        let second = themes
+            .get(1)
+            .map(|theme| theme_choice_card(theme.clone(), current_theme.clone()))
+            .unwrap_or_else(|| Space::new().width(Fill).height(40).into());
 
-        button(container(text(label)).width(Fill).padding([7, 10]))
-            .on_press(Message::SelectTheme(theme))
-            .width(Fill)
-            .style(move |active_theme, status| {
-                theme_choice_button_style(active_theme, status, selected)
-            })
+        row![first, second]
+            .spacing(8)
+            .align_y(Alignment::Center)
             .into()
     });
 
-    let choices = scrollable(column(choices).spacing(2)).height(320);
+    let palette = current_theme.extended_palette();
+    let heading = row![
+        column![
+            text("Appearance").size(15),
+            text("Choose a theme")
+                .size(11)
+                .color(palette.background.weak.text),
+        ]
+        .spacing(3),
+        Space::new().width(Fill),
+        container(text(format!("{} themes", Theme::ALL.len())).size(10))
+            .padding([4, 8])
+            .style(|theme: &Theme| container::Style {
+                background: Some(Background::Color(
+                    theme.extended_palette().background.weak.color,
+                )),
+                border: Border {
+                    radius: 10.0.into(),
+                    ..Border::default()
+                },
+                ..Default::default()
+            }),
+    ]
+    .align_y(Alignment::Center);
 
-    container(choices)
-        .width(220)
-        .padding(8)
+    let content = column![heading, column(choices).spacing(6)].spacing(10);
+
+    container(content)
+        .width(380)
+        .padding(12)
         .style(|theme| {
             let palette = theme.extended_palette();
             container::Style {
@@ -591,10 +624,91 @@ fn theme_dropdown(current_theme: &Theme) -> Element<'static, Message> {
                 border: Border {
                     color: palette.background.strong.color,
                     width: 1.0,
-                    radius: 10.0.into(),
+                    radius: 12.0.into(),
                 },
                 ..Default::default()
             }
+        })
+        .into()
+}
+
+fn theme_choice_card(theme_choice: Theme, current_theme: Theme) -> Element<'static, Message> {
+    let preview = theme_palette_preview(&theme_choice);
+    let selected = theme_choice == current_theme;
+    let current_palette = current_theme.extended_palette();
+    let label_color = if selected {
+        current_palette.primary.weak.text
+    } else {
+        current_palette.background.base.text
+    };
+    let check: Element<'static, Message> = if selected {
+        icon_check::<Theme>()
+            .size(13)
+            .color(current_palette.primary.base.color)
+            .into()
+    } else {
+        Space::new().width(13).into()
+    };
+
+    button(
+        row![
+            preview,
+            text(theme_choice.to_string())
+                .size(11)
+                .color(label_color)
+                .width(Fill),
+            check,
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .on_press(Message::SelectTheme(theme_choice))
+    .width(Fill)
+    .height(40)
+    .padding([4, 7])
+    .style(move |active_theme, status| theme_choice_button_style(active_theme, status, selected))
+    .into()
+}
+
+fn theme_palette_preview(theme: &Theme) -> Element<'static, Message> {
+    let palette = theme.extended_palette();
+    let colors = [
+        palette.background.base.color,
+        palette.primary.base.color,
+        palette.secondary.base.color,
+    ];
+    let background = palette.background.weak.color;
+    let border = palette.background.strong.color;
+    let samples = row![
+        theme_color_sample(colors[0]),
+        theme_color_sample(colors[1]),
+        theme_color_sample(colors[2]),
+    ]
+    .spacing(2);
+
+    container(samples)
+        .padding([3, 4])
+        .style(move |_| container::Style {
+            background: Some(Background::Color(background)),
+            border: Border {
+                color: border,
+                width: 1.0,
+                radius: 5.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn theme_color_sample(color: Color) -> Element<'static, Message> {
+    container(Space::new().width(7).height(13))
+        .style(move |_| container::Style {
+            background: Some(Background::Color(color)),
+            border: Border {
+                radius: 3.0.into(),
+                ..Border::default()
+            },
+            ..Default::default()
         })
         .into()
 }
@@ -607,20 +721,29 @@ fn theme_choice_button_style(
     let palette = theme.extended_palette();
     let mut style = button::text(theme, status);
     style.background = if selected {
-        Some(Background::Color(palette.primary.base.color))
-    } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-        Some(Background::Color(palette.background.strong.color))
+        Some(Background::Color(palette.primary.weak.color))
     } else {
-        None
+        Some(Background::Color(
+            if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                palette.background.strong.color
+            } else {
+                palette.background.weak.color
+            },
+        ))
     };
     style.text_color = if selected {
-        palette.primary.base.text
+        palette.primary.weak.text
     } else {
         palette.background.base.text
     };
     style.border = Border {
-        radius: 5.0.into(),
-        ..Border::default()
+        color: if selected {
+            palette.primary.base.color
+        } else {
+            palette.background.strong.color
+        },
+        width: 1.0,
+        radius: 8.0.into(),
     };
     style.shadow = Shadow::default();
     style
@@ -700,6 +823,26 @@ mod tests {
         let _ = app.update(Message::SelectTheme(Theme::Light));
 
         assert_eq!(app.theme, Theme::Light);
+        assert!(!app.theme_menu_open);
+    }
+
+    #[test]
+    fn escape_closes_theme_menu() {
+        let (sender, _receiver) = async_channel::bounded(1);
+        let mut app = App::new(sender);
+        app.theme_menu_open = true;
+
+        let escape = keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            modified_key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Escape),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::default(),
+            text: None,
+            repeat: false,
+        };
+        let _ = app.update(Message::RuntimeEvent(Event::Keyboard(escape)));
+
         assert!(!app.theme_menu_open);
     }
 
