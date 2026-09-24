@@ -11,10 +11,10 @@ cargo run --release --manifest-path tools/usage-ui-iced-prototype/Cargo.toml --t
 ```
 
 It starts hidden in the notification area. Left-click the icon to show or
-restore a resizable window near the actual tray rectangle. The window is not
+restore a fixed-size window near the actual tray rectangle. The window is not
 kept above other windows and appears in the taskbar. Its in-window title bar
-has drag, minimize, maximize, and close controls; Close hides it back to the
-tray. The content area is intentionally blank for UI design work. Set
+has a drag area and a close button; Close hides it back to the tray. The content
+area is intentionally blank for UI design work. Set
 `USAGE_UI_PREVIEW_OPEN_ON_START=1` to open a preview at the icon's current
 rectangle after startup.
 

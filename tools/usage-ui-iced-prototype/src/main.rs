@@ -44,7 +44,7 @@ fn main() -> iced::Result {
         size: Size::new(WINDOW_WIDTH, WINDOW_HEIGHT),
         visible: false,
         min_size: Some(Size::new(WINDOW_WIDTH, WINDOW_HEIGHT)),
-        resizable: true,
+        resizable: false,
         closeable: true,
         minimizable: true,
         decorations: false,
@@ -170,14 +170,6 @@ impl App {
             }
             Message::RuntimeEvent(_) => Task::none(),
             Message::DragWindow => self.window_id.map(window::drag).unwrap_or_else(Task::none),
-            Message::MinimizeWindow => self
-                .window_id
-                .map(|id| window::minimize(id, true))
-                .unwrap_or_else(Task::none),
-            Message::ToggleMaximize => self
-                .window_id
-                .map(window::toggle_maximize)
-                .unwrap_or_else(Task::none),
             Message::CloseButton => self.hide_popup(),
         }
     }
@@ -236,13 +228,7 @@ impl App {
     fn view(&self) -> Element<'_, Message> {
         let title_bar = container(
             row![
-                row![
-                    window_control_button("−", Message::MinimizeWindow, false),
-                    window_control_button("□", Message::ToggleMaximize, false),
-                    window_control_button("×", Message::CloseButton, true),
-                ]
-                .spacing(3)
-                .align_y(Alignment::Center),
+                window_control_button("×", Message::CloseButton, true),
                 mouse_area(Space::new().width(Fill).height(Length::Fill))
                     .on_press(Message::DragWindow),
             ]
@@ -279,8 +265,6 @@ enum Message {
     PreviewRect(Option<tray_icon::Rect>),
     RuntimeEvent(Event),
     DragWindow,
-    MinimizeWindow,
-    ToggleMaximize,
     CloseButton,
 }
 
