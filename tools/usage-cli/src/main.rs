@@ -5,7 +5,8 @@ use codex_usage_core::{
     auth::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
         AccountBrowserSessionRefresher, AccountOAuthMaterialProvider,
-        CompositeAuthMaterialProvider, OAuthCredentialProviderRegistry, StoredAuthMaterialProvider,
+        CompositeAuthMaterialProvider, OAuthCredentialProviderRegistry, OAuthCredentialStore,
+        StoredAuthMaterialProvider,
     },
     oauth_loopback::{CodexOAuthCallbackListenerFactory, LoopbackOAuthCallbackListenerFactory},
     oauth_service::OAuthAuthorizationService,
@@ -27,6 +28,7 @@ use codex_usage_windows_auth::{
 };
 use serde_json::{Value, json};
 use std::{
+    io::{IsTerminal, Write},
     path::{Path, PathBuf},
     process::{self, Stdio},
     sync::Arc,
@@ -38,6 +40,7 @@ use tokio::{
 };
 
 const EXIT_REFRESH_FAILED: i32 = 6;
+const EXIT_OPERATION_NOT_CONFIRMED: i32 = 5;
 const ACCOUNT_REF_MARKER: &str = "CODEX_USAGE_ACCOUNT_REF=";
 const ACCOUNT_ADD_CHILD_ENV: &str = "CODEX_USAGE_CLI_CHILD";
 
@@ -94,6 +97,9 @@ enum AccountCommand {
         #[command(subcommand)]
         command: AliasCommand,
     },
+    /// Remove one account and its locally saved credentials and usage history.
+    #[command(alias = "delete")]
+    Remove(AccountRemoveArgs),
 }
 
 #[derive(Debug, Args)]
@@ -139,6 +145,15 @@ struct SelectorArgs {
     /// Disambiguate by exact workspace id or workspace name.
     #[arg(long)]
     workspace: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct AccountRemoveArgs {
+    #[command(flatten)]
+    selection: SelectorArgs,
+    /// Skip the interactive confirmation (required in JSON/non-interactive use).
+    #[arg(short = 'y', long)]
+    yes: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -319,6 +334,9 @@ async fn execute_account_command(
             }
             Ok(0)
         }
+        AccountCommand::Remove(arguments) => {
+            execute_account_remove(&account_store, arguments, json_output).await
+        }
         AccountCommand::Alias { command } => {
             let (selector, alias, provider, workspace) = match command {
                 AliasCommand::Set {
@@ -367,6 +385,143 @@ async fn execute_account_command(
             Ok(0)
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RemovalConfirmationMode {
+    Prompt,
+    Confirmed,
+}
+
+fn removal_confirmation_mode(
+    yes: bool,
+    json_output: bool,
+    interactive: bool,
+) -> Result<RemovalConfirmationMode, CliFailure> {
+    if yes {
+        return Ok(RemovalConfirmationMode::Confirmed);
+    }
+    if json_output || !interactive {
+        return Err(CliFailure::new(
+            "confirmation_required",
+            "Account removal needs confirmation. Re-run with --yes to confirm explicitly.",
+            EXIT_OPERATION_NOT_CONFIRMED,
+        ));
+    }
+    Ok(RemovalConfirmationMode::Prompt)
+}
+
+fn confirm_account_removal(
+    account: &AccountRecord,
+    yes: bool,
+    json_output: bool,
+) -> Result<(), CliFailure> {
+    let interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+    match removal_confirmation_mode(yes, json_output, interactive)? {
+        RemovalConfirmationMode::Confirmed => Ok(()),
+        RemovalConfirmationMode::Prompt => {
+            eprint!(
+                "Remove local account {} ({}, {}) and its saved credentials and usage history? This does not revoke access with the provider. [y/N] ",
+                account.account_ref.as_deref().unwrap_or("?"),
+                provider_name(&account.provider_id),
+                account.email,
+            );
+            std::io::stderr()
+                .flush()
+                .map_err(|error| CliFailure::runtime(error.to_string()))?;
+            let mut answer = String::new();
+            std::io::stdin()
+                .read_line(&mut answer)
+                .map_err(|error| CliFailure::runtime(error.to_string()))?;
+            if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                Ok(())
+            } else {
+                Err(CliFailure::new(
+                    "operation_cancelled",
+                    "Account removal cancelled; no changes were made.",
+                    EXIT_OPERATION_NOT_CONFIRMED,
+                ))
+            }
+        }
+    }
+}
+
+async fn execute_account_remove(
+    account_store: &Arc<dyn AccountStore>,
+    arguments: AccountRemoveArgs,
+    json_output: bool,
+) -> Result<i32, CliFailure> {
+    let accounts = account_store
+        .list()
+        .await
+        .map_err(|error| CliFailure::runtime(error.to_string()))?;
+    let account = resolve_account(
+        &accounts,
+        &arguments.selection.selector,
+        &SelectorFilters {
+            provider: arguments.selection.provider.as_deref(),
+            workspace: arguments.selection.workspace.as_deref(),
+        },
+    )?
+    .clone();
+
+    confirm_account_removal(&account, arguments.yes, json_output)?;
+
+    let oauth_store = WindowsCredentialManagerStore;
+    let auth_store = WindowsCredentialManagerAuthMaterialStore;
+    remove_local_account_data(&account, account_store.as_ref(), &oauth_store, &auth_store).await?;
+
+    if json_output {
+        print_json(json!({
+            "schema_version": 1,
+            "removed": account_value(&account),
+            "removed_local_usage_history": true,
+            "provider_access_revoked": false,
+        }));
+    } else {
+        println!(
+            "Removed local account {} ({}). Its saved credentials and usage history were deleted; provider access was not revoked.",
+            account.account_ref.as_deref().unwrap_or("?"),
+            account.email,
+        );
+    }
+    Ok(0)
+}
+
+async fn remove_local_account_data(
+    account: &AccountRecord,
+    account_store: &dyn AccountStore,
+    oauth_store: &dyn OAuthCredentialStore,
+    auth_store: &dyn AccountAuthMaterialStore,
+) -> Result<(), CliFailure> {
+    if let Err(error) = oauth_store.remove(account.id).await {
+        return Err(CliFailure::new(
+            "account_removal_failed",
+            format!(
+                "Could not remove the saved OAuth credential: {error}. The account record and usage history were left in place; credential state may be partial."
+            ),
+            1,
+        ));
+    }
+    if let Err(error) = auth_store.remove(account.id).await {
+        return Err(CliFailure::new(
+            "account_removal_partial",
+            format!(
+                "The OAuth credential was removed, but saved authentication material could not be removed: {error}. The account record and usage history remain."
+            ),
+            1,
+        ));
+    }
+    if let Err(error) = account_store.remove(account.id).await {
+        return Err(CliFailure::new(
+            "account_removal_partial",
+            format!(
+                "Saved credentials were removed, but the account record and usage history could not be removed: {error}."
+            ),
+            1,
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1484,7 +1639,10 @@ fn print_window(key: &str, window: &codex_usage_core::usage::RateLimitWindow) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codex_usage_core::accounts::ANTIGRAVITY;
+    use codex_usage_core::{
+        accounts::{ANTIGRAVITY, InMemoryAccountStore},
+        auth::{InMemoryAuthMaterialStore, InMemoryOAuthCredentialStore, StoredOAuthCredential},
+    };
 
     fn account(
         provider: &str,
@@ -1597,6 +1755,97 @@ mod tests {
                 command: UsageCommand::Refresh { all: true, .. }
             }
         ));
+    }
+
+    #[test]
+    fn account_remove_accepts_stable_reference_confirmation_and_delete_alias() {
+        for verb in ["remove", "delete"] {
+            let parsed = Cli::try_parse_from([
+                "codex-usage",
+                "account",
+                verb,
+                "ch2",
+                "--yes",
+                "--provider",
+                "codex",
+                "--workspace",
+                "Work",
+                "--json",
+            ])
+            .unwrap();
+            assert!(parsed.json);
+            let Command::Account {
+                command: AccountCommand::Remove(arguments),
+            } = parsed.command
+            else {
+                panic!("expected account remove command");
+            };
+            assert_eq!(arguments.selection.selector, "ch2");
+            assert_eq!(arguments.selection.provider.as_deref(), Some("codex"));
+            assert_eq!(arguments.selection.workspace.as_deref(), Some("Work"));
+            assert!(arguments.yes);
+        }
+    }
+
+    #[test]
+    fn account_remove_requires_explicit_confirmation_without_an_interactive_terminal() {
+        assert_eq!(
+            removal_confirmation_mode(true, true, false).unwrap(),
+            RemovalConfirmationMode::Confirmed
+        );
+        assert_eq!(
+            removal_confirmation_mode(false, false, true).unwrap(),
+            RemovalConfirmationMode::Prompt
+        );
+        for (json_output, interactive) in [(true, true), (false, false)] {
+            let error = removal_confirmation_mode(false, json_output, interactive).unwrap_err();
+            assert_eq!(error.code, "confirmation_required");
+            assert_eq!(error.exit_code, EXIT_OPERATION_NOT_CONFIRMED);
+        }
+    }
+
+    #[tokio::test]
+    async fn local_account_removal_clears_account_and_both_credential_stores() {
+        let account_store = InMemoryAccountStore::default();
+        let oauth_store = InMemoryOAuthCredentialStore::default();
+        let auth_store = InMemoryAuthMaterialStore::default();
+        let account =
+            AccountRecord::create("Work", "work@example.com", None, OPENAI, None).unwrap();
+        account_store.upsert(&account).await.unwrap();
+        oauth_store
+            .save(
+                account.id,
+                &StoredOAuthCredential {
+                    provider_id: OPENAI.to_owned(),
+                    refresh_token: "test-refresh-token".to_owned(),
+                    client_id: None,
+                    client_secret: None,
+                    id_token: None,
+                    provider_account_id: None,
+                    workspace_id: None,
+                    metadata: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+        auth_store
+            .save(
+                account.id,
+                &AccountAuthMaterial {
+                    bearer_token: Some("test-access-token".to_owned()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        remove_local_account_data(&account, &account_store, &oauth_store, &auth_store)
+            .await
+            .unwrap();
+
+        assert!(account_store.get(account.id).await.unwrap().is_none());
+        assert!(oauth_store.get(account.id).await.unwrap().is_none());
+        assert!(auth_store.get(account.id).await.unwrap().is_none());
     }
 
     #[test]

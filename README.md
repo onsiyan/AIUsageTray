@@ -113,6 +113,8 @@ cargo build --workspace
 .\target\debug\codex-usage.exe account list
 .\target\debug\codex-usage.exe --json account list
 .\target\debug\codex-usage.exe account get ch1
+.\target\debug\codex-usage.exe account remove ch1
+.\target\debug\codex-usage.exe account remove ch1 --yes --json
 .\target\debug\codex-usage.exe usage get ch1 --json
 .\target\debug\codex-usage.exe usage refresh ch1
 .\target\debug\codex-usage.exe usage refresh --all --provider codex --json
@@ -155,8 +157,12 @@ CLI. Exact alias, label, or email selection is also supported; if more than one
 account matches, the command fails with candidate references and accepts
 `--provider` or `--workspace` to disambiguate.
 
-`account list`, `account get`, `account alias`, and `status` are local-only
-operations. `usage get` refreshes the selected account before returning its
+`account list`, `account get`, `account alias`, `account remove`, and `status`
+are local-only operations. `account remove` asks for confirmation, then deletes
+the account's local record, cached usage history, and saved Windows Credential
+Manager credentials. Pass `--yes` for scripted use; JSON and non-interactive
+invocations require it. This does not revoke provider access or sign the account
+out of the browser. `usage get` refreshes the selected account before returning its
 latest snapshot and refresh status; if the provider fails, a retained last-good
 snapshot is returned as stale and the command exits nonzero. `usage refresh`
 refreshes without the usage-focused output, while `usage refresh --all` reports
@@ -164,7 +170,8 @@ one result per account and exits nonzero if any refresh did not update. `--json`
 emits one JSON object with `schema_version: 1` on stdout, including refresh
 status and errors. Stable exit codes include 3 for no matching account, 4 for
 an ambiguous selector, 6 for a failed/partial refresh, and 1 for other runtime
-errors; argument errors use the standard parser exit code 2.
+errors; argument errors use the standard parser exit code 2. Account removal
+that is declined or lacks explicit confirmation exits with 5.
 
 The shared default database is `%LOCALAPPDATA%\CodexUsageMonitor-Rust\accounts.db`
 (or the same app folder under the system temporary directory if `LOCALAPPDATA`
@@ -174,8 +181,7 @@ Credential Manager and the account-scoped Codex/Antigravity OAuth refresh
 credentials. It does not apply ambient environment API keys or the global
 Codex/Claude CLI session to every matching account. The unified `account add`
 command delegates to the existing provider-specific login helpers so it does
-not implement a second authentication path; account deletion is not currently
-exposed by the CLI.
+not implement a second authentication path.
 
 To run the real Windows OAuth probe:
 
