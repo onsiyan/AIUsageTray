@@ -179,6 +179,33 @@ impl AntigravityUsageAdapter {
         }
     }
 
+    async fn post_remote_best_effort(
+        &self,
+        operation: &str,
+        body: Value,
+        material: &AccountAuthMaterial,
+    ) -> Result<UsageHttpResponse, TransportError> {
+        let mut last_response = None;
+        let mut last_error = None;
+        for base_url in &self.base_urls {
+            match self
+                .post_to(base_url, operation, body.clone(), material)
+                .await
+            {
+                Ok(response) if response.is_success() => return Ok(response),
+                Ok(response) => last_response = Some(response),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        if let Some(response) = last_response {
+            Ok(response)
+        } else {
+            Err(last_error.unwrap_or_else(|| {
+                TransportError::InvalidUrl("Antigravity endpoint list is empty".to_owned())
+            }))
+        }
+    }
+
     async fn probe_local(&self, account: &AccountRecord) -> Option<UsageProbeResult> {
         let transport = self.local_transport.as_ref()?;
         let endpoints = discover_local_endpoints();
@@ -508,12 +535,13 @@ impl UsageAdapter for AntigravityUsageAdapter {
                 }
             }
         }
-        let quota_summary = if remote_quota_verified {
-            // retrieveUserQuota is the account-scoped authoritative response;
-            // do not let a model-shaped remote summary overwrite it.
-            Vec::new()
-        } else {
-            self.post_remote(
+        // Fetch grouped or model-shaped quota windows as a separate,
+        // best-effort enrichment even when retrieveUserQuota succeeded. The
+        // latter remains the fallback when the summary has no valid quota
+        // values. Do not require fixed group names: Google can return either
+        // shared pools or per-model groups for the same account.
+        let quota_summary = self
+            .post_remote_best_effort(
                 "v1internal:retrieveUserQuotaSummary",
                 project_id
                     .as_deref()
@@ -527,8 +555,7 @@ impl UsageAdapter for AntigravityUsageAdapter {
             .and_then(|response| serde_json::from_str::<Value>(&response.body).ok())
             .map(|root| parse_quota_summary(&root))
             .filter(|groups| has_usable_quota_summary(groups))
-            .unwrap_or_default()
-        };
+            .unwrap_or_default();
 
         if quotas.is_empty() && quota_summary.is_empty() {
             if !models.is_success() {
@@ -832,10 +859,12 @@ fn parse_quota_summary(root: &Value) -> Vec<LocalQuotaSummaryGroup> {
 
 fn has_usable_quota_summary(groups: &[LocalQuotaSummaryGroup]) -> bool {
     groups.iter().any(|group| {
-        group
-            .buckets
-            .iter()
-            .any(|bucket| !bucket.disabled && bucket.remaining_fraction.is_some())
+        group.buckets.iter().any(|bucket| {
+            !bucket.disabled
+                && bucket.remaining_fraction.is_some_and(|remaining| {
+                    remaining.is_finite() && (0.0..=1.0).contains(&remaining)
+                })
+        })
     })
 }
 
@@ -1951,6 +1980,145 @@ fn tier_label(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{collections::VecDeque, sync::Mutex};
+
+    struct QuotaSummaryFallbackTransport {
+        statuses: Mutex<VecDeque<u16>>,
+        requested_hosts: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl UsageHttpTransport for QuotaSummaryFallbackTransport {
+        async fn send(
+            &self,
+            request: UsageHttpRequest,
+        ) -> Result<UsageHttpResponse, TransportError> {
+            self.requested_hosts
+                .lock()
+                .unwrap()
+                .push(request.url.host_str().unwrap().to_owned());
+            let status_code = self.statuses.lock().unwrap().pop_front().unwrap_or(500);
+            Ok(UsageHttpResponse {
+                status_code,
+                body: "{}".to_owned(),
+                headers: BTreeMap::new(),
+            })
+        }
+    }
+
+    struct StaticAntigravityAuth;
+
+    #[async_trait]
+    impl AccountAuthMaterialProvider for StaticAntigravityAuth {
+        async fn get(
+            &self,
+            _account: &AccountRecord,
+        ) -> Result<Option<AccountAuthMaterial>, AuthError> {
+            Ok(Some(AccountAuthMaterial {
+                bearer_token: Some("test-token".to_owned()),
+                ..AccountAuthMaterial::default()
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn quota_summary_tries_next_host_after_forbidden_response() {
+        let transport = Arc::new(QuotaSummaryFallbackTransport {
+            statuses: Mutex::new(VecDeque::from([403, 403, 200])),
+            requested_hosts: Mutex::new(Vec::new()),
+        });
+        let adapter = AntigravityUsageAdapter::new_without_local_probe(
+            transport.clone(),
+            Arc::new(StaticAntigravityAuth),
+        )
+        .unwrap();
+        let response = adapter
+            .post_remote_best_effort(
+                "v1internal:retrieveUserQuotaSummary",
+                json!({}),
+                &AccountAuthMaterial {
+                    bearer_token: Some("test-token".to_owned()),
+                    ..AccountAuthMaterial::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status_code, 200);
+        assert_eq!(
+            *transport.requested_hosts.lock().unwrap(),
+            [
+                "daily-cloudcode-pa.sandbox.googleapis.com",
+                "daily-cloudcode-pa.googleapis.com",
+                "cloudcode-pa.googleapis.com",
+            ]
+        );
+    }
+
+    #[test]
+    fn quota_summary_accepts_shared_and_model_shaped_groups_with_real_quotas() {
+        let grouped = parse_quota_summary(&json!({
+            "groups": [
+                {
+                    "displayName": "Gemini Models",
+                    "buckets": [
+                        {"bucketId": "gemini-weekly", "remainingFraction": 0.43},
+                        {"bucketId": "gemini-5h", "remainingFraction": 0.97}
+                    ]
+                },
+                {
+                    "displayName": "Claude and GPT models",
+                    "buckets": [
+                        {"bucketId": "3p-weekly", "remainingFraction": 0.57},
+                        {"bucketId": "3p-5h", "remainingFraction": 1.0}
+                    ]
+                }
+            ]
+        }));
+        assert!(has_usable_quota_summary(&grouped));
+
+        let partial = parse_quota_summary(&json!({
+            "groups": [{
+                "displayName": "Gemini Models",
+                "buckets": [{
+                    "bucketId": "gemini-5h",
+                    "remainingFraction": 0.43
+                }]
+            }]
+        }));
+        assert!(has_usable_quota_summary(&partial));
+
+        let model_shaped = parse_quota_summary(&json!({
+            "groups": [
+                {
+                    "displayName": "Gemini 3.7 Flash",
+                    "buckets": [
+                        {"bucketId": "weekly", "remainingFraction": 0.43},
+                        {"bucketId": "5h", "remainingFraction": 0.97}
+                    ]
+                },
+                {
+                    "displayName": "Claude Opus 4.6",
+                    "buckets": [
+                        {"bucketId": "weekly", "remainingFraction": 0.57},
+                        {"bucketId": "5h", "remainingFraction": 1.0}
+                    ]
+                }
+            ]
+        }));
+        assert!(has_usable_quota_summary(&model_shaped));
+
+        let invalid = parse_quota_summary(&json!({
+            "groups": [{
+                "displayName": "Gemini 3.7 Flash",
+                "buckets": [{
+                    "bucketId": "weekly",
+                    "remainingFraction": 1.2
+                }]
+            }]
+        }));
+        assert!(!has_usable_quota_summary(&invalid));
+    }
 
     #[test]
     fn local_quota_summary_preserves_families_and_cadence_windows() {
