@@ -126,10 +126,22 @@ impl AntigravityUsageAdapter {
         body: Value,
         material: &AccountAuthMaterial,
     ) -> Result<UsageHttpResponse, TransportError> {
+        self.post_to_with_user_agent(base_url, operation, body, material, &self.user_agent)
+            .await
+    }
+
+    async fn post_to_with_user_agent(
+        &self,
+        base_url: &Url,
+        operation: &str,
+        body: Value,
+        material: &AccountAuthMaterial,
+        user_agent: &str,
+    ) -> Result<UsageHttpResponse, TransportError> {
         let url = base_url
             .join(&format!("/{}", operation.trim_start_matches('/')))
             .map_err(|error| TransportError::InvalidUrl(error.to_string()))?;
-        let mut headers = bearer_headers(material, &self.user_agent);
+        let mut headers = bearer_headers(material, user_agent);
         headers.insert("Content-Type".to_owned(), "application/json".to_owned());
         let body = serde_json::to_string(&body)
             .map_err(|error| TransportError::Serialization(error.to_string()))?;
@@ -189,7 +201,13 @@ impl AntigravityUsageAdapter {
         let mut last_error = None;
         for base_url in &self.base_urls {
             match self
-                .post_to(base_url, operation, body.clone(), material)
+                .post_to_with_user_agent(
+                    base_url,
+                    operation,
+                    body.clone(),
+                    material,
+                    QUOTA_SUMMARY_USER_AGENT,
+                )
                 .await
             {
                 Ok(response) if response.is_success() => return Ok(response),
@@ -624,6 +642,9 @@ const REMOTE_BASE_URLS: [&str; 3] = [
     "https://daily-cloudcode-pa.googleapis.com/",
     "https://cloudcode-pa.googleapis.com/",
 ];
+// Antigravity Manager uses its own current release version for this native
+// quota-summary client identity, not the locally installed IDE's file version.
+const QUOTA_SUMMARY_USER_AGENT: &str = "vscode/1.X.X (Antigravity/4.7.14-beta)";
 
 fn is_retryable_remote_status(status_code: u16) -> bool {
     matches!(status_code, 404 | 408 | 425 | 429) || (500..=599).contains(&status_code)
@@ -1985,6 +2006,7 @@ mod tests {
     struct QuotaSummaryFallbackTransport {
         statuses: Mutex<VecDeque<u16>>,
         requested_hosts: Mutex<Vec<String>>,
+        requested_user_agents: Mutex<Vec<String>>,
     }
 
     #[async_trait]
@@ -1997,6 +2019,13 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(request.url.host_str().unwrap().to_owned());
+            self.requested_user_agents.lock().unwrap().push(
+                request
+                    .headers
+                    .get("User-Agent")
+                    .expect("quota requests must identify their client")
+                    .clone(),
+            );
             let status_code = self.statuses.lock().unwrap().pop_front().unwrap_or(500);
             Ok(UsageHttpResponse {
                 status_code,
@@ -2026,6 +2055,7 @@ mod tests {
         let transport = Arc::new(QuotaSummaryFallbackTransport {
             statuses: Mutex::new(VecDeque::from([403, 403, 200])),
             requested_hosts: Mutex::new(Vec::new()),
+            requested_user_agents: Mutex::new(Vec::new()),
         });
         let adapter = AntigravityUsageAdapter::new_without_local_probe(
             transport.clone(),
@@ -2052,6 +2082,10 @@ mod tests {
                 "daily-cloudcode-pa.googleapis.com",
                 "cloudcode-pa.googleapis.com",
             ]
+        );
+        assert_eq!(
+            *transport.requested_user_agents.lock().unwrap(),
+            [QUOTA_SUMMARY_USER_AGENT; 3]
         );
     }
 
