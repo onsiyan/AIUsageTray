@@ -371,14 +371,7 @@ async fn request_device_code(
     let user_code = json_string(&root, "user_code").ok_or("device response omitted user_code")?;
     let verification_url = json_string(&root, "verification_uri_complete")
         .ok_or("device response omitted verification_uri_complete")?;
-    let verification_url = Url::parse(&verification_url)?;
-    if verification_url.scheme() != "https"
-        || verification_url.host_str() != Some("opencode.ai")
-        || !verification_url.username().is_empty()
-        || verification_url.password().is_some()
-    {
-        return Err("OpenCode returned an unexpected device verification URL".into());
-    }
+    let verification_url = parse_verification_url(&verification_url)?;
     let expires_in = json_u64(&root, "expires_in")
         .filter(|value| *value > 0)
         .ok_or("device response omitted a valid expires_in")?;
@@ -393,6 +386,20 @@ async fn request_device_code(
         expires_in: Duration::from_secs(expires_in),
         interval: Duration::from_secs(interval.clamp(1, 30)),
     })
+}
+
+fn parse_verification_url(raw: &str) -> Result<Url, Box<dyn std::error::Error>> {
+    let base = Url::parse(OPENCODE_CONSOLE_BASE_URL)?;
+    let url = base.join(raw)?;
+    if url.scheme() != "https"
+        || url.host_str() != Some("opencode.ai")
+        || url.port().is_some_and(|port| port != 443)
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("OpenCode returned an unexpected device verification URL".into());
+    }
+    Ok(url)
 }
 
 async fn poll_device_token(
@@ -520,4 +527,25 @@ fn json_string(root: &Value, key: &str) -> Option<String> {
 
 fn json_u64(root: &Value, key: &str) -> Option<u64> {
     root.get(key).and_then(Value::as_u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_verification_url;
+
+    #[test]
+    fn verification_url_resolves_relative_to_the_console() {
+        let url = parse_verification_url("auth/device/verify?code=example").unwrap();
+
+        assert_eq!(
+            url.as_str(),
+            "https://opencode.ai/console/auth/device/verify?code=example"
+        );
+    }
+
+    #[test]
+    fn verification_url_rejects_non_opencode_origins() {
+        assert!(parse_verification_url("https://example.com/verify").is_err());
+        assert!(parse_verification_url("http://opencode.ai/verify").is_err());
+    }
 }
