@@ -11,7 +11,7 @@ use crate::{
     },
     usage::{
         AdditionalRateLimitWindow, RateLimitWindow, UsageAdapter, UsageMetric, UsageProbeResult,
-        UsageSnapshot, UsageWindowKind,
+        UsageSnapshot, UsageSourceDiagnostic, UsageWindowKind,
     },
 };
 use async_trait::async_trait;
@@ -558,7 +558,8 @@ impl UsageAdapter for AntigravityUsageAdapter {
         // latter remains the fallback when the summary has no valid quota
         // values. Do not require fixed group names: Google can return either
         // shared pools or per-model groups for the same account.
-        let quota_summary = self
+        let mut quota_summary_diagnostics = Vec::new();
+        let quota_summary_response = self
             .post_remote_best_effort(
                 "v1internal:retrieveUserQuotaSummary",
                 project_id
@@ -567,13 +568,34 @@ impl UsageAdapter for AntigravityUsageAdapter {
                     .unwrap_or_else(|| json!({})),
                 &material,
             )
-            .await
-            .ok()
-            .filter(UsageHttpResponse::is_success)
-            .and_then(|response| serde_json::from_str::<Value>(&response.body).ok())
-            .map(|root| parse_quota_summary(&root))
-            .filter(|groups| has_usable_quota_summary(groups))
-            .unwrap_or_default();
+            .await;
+        let quota_summary = match quota_summary_response {
+            Ok(response) if !response.is_success() => {
+                quota_summary_diagnostics.push(quota_summary_response_diagnostic(&response));
+                Vec::new()
+            }
+            Ok(response) => match serde_json::from_str::<Value>(&response.body) {
+                Ok(root) => {
+                    let groups = parse_quota_summary(&root);
+                    if has_usable_quota_summary(&groups) {
+                        groups
+                    } else {
+                        quota_summary_diagnostics
+                            .push(quota_summary_empty_diagnostic(response.status_code));
+                        Vec::new()
+                    }
+                }
+                Err(_) => {
+                    quota_summary_diagnostics
+                        .push(quota_summary_payload_diagnostic(response.status_code));
+                    Vec::new()
+                }
+            },
+            Err(error) => {
+                quota_summary_diagnostics.push(quota_summary_transport_diagnostic(&error));
+                Vec::new()
+            }
+        };
 
         if quotas.is_empty() && quota_summary.is_empty() {
             if !models.is_success() {
@@ -622,6 +644,9 @@ impl UsageAdapter for AntigravityUsageAdapter {
                 "api",
             )
         };
+        snapshot
+            .source_diagnostics
+            .extend(quota_summary_diagnostics);
         // The remote quota RPCs identify their project, not the Google user.
         // Keep that response context on the snapshot and leave the OAuth
         // identity captured during account linking untouched.
@@ -887,6 +912,77 @@ fn has_usable_quota_summary(groups: &[LocalQuotaSummaryGroup]) -> bool {
                 })
         })
     })
+}
+
+fn quota_summary_response_diagnostic(response: &UsageHttpResponse) -> UsageSourceDiagnostic {
+    let code = match response.status_code {
+        401 => crate::usage::UsageAdapterErrorCode::Unauthorized,
+        403 => crate::usage::UsageAdapterErrorCode::Forbidden,
+        429 => crate::usage::UsageAdapterErrorCode::RateLimited,
+        500..=599 => crate::usage::UsageAdapterErrorCode::TransientHttp,
+        _ => crate::usage::UsageAdapterErrorCode::HttpError,
+    };
+    UsageSourceDiagnostic {
+        source: "retrieveUserQuotaSummary".to_owned(),
+        code,
+        message: format!(
+            "Antigravity retrieveUserQuotaSummary returned HTTP {}",
+            response.status_code
+        ),
+        http_status_code: Some(response.status_code),
+        retry_after_seconds: response
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("retry-after"))
+            .and_then(|(_, value)| value.trim().parse::<u64>().ok()),
+    }
+}
+
+fn quota_summary_empty_diagnostic(status_code: u16) -> UsageSourceDiagnostic {
+    UsageSourceDiagnostic {
+        source: "retrieveUserQuotaSummary".to_owned(),
+        code: crate::usage::UsageAdapterErrorCode::Unknown,
+        message: "Antigravity retrieveUserQuotaSummary returned no usable quota buckets".to_owned(),
+        http_status_code: Some(status_code),
+        retry_after_seconds: None,
+    }
+}
+
+fn quota_summary_payload_diagnostic(status_code: u16) -> UsageSourceDiagnostic {
+    UsageSourceDiagnostic {
+        source: "retrieveUserQuotaSummary".to_owned(),
+        code: crate::usage::UsageAdapterErrorCode::InvalidPayload,
+        message: "Antigravity retrieveUserQuotaSummary returned an unreadable payload".to_owned(),
+        http_status_code: Some(status_code),
+        retry_after_seconds: None,
+    }
+}
+
+fn quota_summary_transport_diagnostic(error: &TransportError) -> UsageSourceDiagnostic {
+    let message = match error {
+        TransportError::Timeout(_) => "request timed out",
+        TransportError::Request(error) if error.is_timeout() => "request timed out",
+        TransportError::Request(_) => "request failed",
+        TransportError::Serialization(_) => "request could not be serialized",
+        TransportError::InvalidUrl(_) | TransportError::InvalidHeader { .. } => {
+            "request could not be built"
+        }
+    };
+    let code = match error {
+        TransportError::Timeout(_) => crate::usage::UsageAdapterErrorCode::NetworkFailure,
+        TransportError::Request(_) => crate::usage::UsageAdapterErrorCode::NetworkFailure,
+        TransportError::Serialization(_) => crate::usage::UsageAdapterErrorCode::InvalidPayload,
+        TransportError::InvalidUrl(_) | TransportError::InvalidHeader { .. } => {
+            crate::usage::UsageAdapterErrorCode::Unknown
+        }
+    };
+    UsageSourceDiagnostic {
+        source: "retrieveUserQuotaSummary".to_owned(),
+        code,
+        message: format!("Antigravity retrieveUserQuotaSummary {message}"),
+        http_status_code: None,
+        retry_after_seconds: None,
+    }
 }
 
 fn parse_quota_summary_group(value: &Value) -> Option<LocalQuotaSummaryGroup> {
@@ -2087,6 +2183,30 @@ mod tests {
             *transport.requested_user_agents.lock().unwrap(),
             [QUOTA_SUMMARY_USER_AGENT; 3]
         );
+    }
+
+    #[test]
+    fn quota_summary_diagnostics_report_status_without_including_response_body() {
+        let response = UsageHttpResponse {
+            status_code: 403,
+            body: "private response content".to_owned(),
+            headers: BTreeMap::from([("Retry-After".to_owned(), "17".to_owned())]),
+        };
+
+        let diagnostic = quota_summary_response_diagnostic(&response);
+
+        assert_eq!(diagnostic.source, "retrieveUserQuotaSummary");
+        assert_eq!(
+            diagnostic.code,
+            crate::usage::UsageAdapterErrorCode::Forbidden
+        );
+        assert_eq!(diagnostic.http_status_code, Some(403));
+        assert_eq!(diagnostic.retry_after_seconds, Some(17));
+        assert!(!diagnostic.message.contains("private response content"));
+
+        let empty = quota_summary_empty_diagnostic(200);
+        assert_eq!(empty.code, crate::usage::UsageAdapterErrorCode::Unknown);
+        assert_eq!(empty.http_status_code, Some(200));
     }
 
     #[test]
