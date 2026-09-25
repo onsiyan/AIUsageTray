@@ -1249,7 +1249,13 @@ fn provider_config_for(
                         .any(|name| cookie.name.eq_ignore_ascii_case(name))
                 })
             });
-            config.opencode_go_source_mode = if has_browser_session {
+            let has_console_oauth = material.is_some_and(|material| {
+                material
+                    .oauth_refresh_token
+                    .as_deref()
+                    .is_some_and(|token| !token.trim().is_empty())
+            });
+            config.opencode_go_source_mode = if has_browser_session || has_console_oauth {
                 OpenCodeGoSourceMode::Web
             } else {
                 OpenCodeGoSourceMode::Api
@@ -2145,6 +2151,16 @@ mod tests {
             AccountAuthMaterial::from_cookie_header("auth=browser-session", None);
         assert_eq!(
             provider_config_for(&opencode, Some(&browser_material)).opencode_go_source_mode,
+            OpenCodeGoSourceMode::Web
+        );
+        let console_oauth_material = AccountAuthMaterial {
+            bearer_token: Some("console-access-token".to_owned()),
+            oauth_access_token: Some("console-access-token".to_owned()),
+            oauth_refresh_token: Some("console-refresh-token".to_owned()),
+            ..AccountAuthMaterial::default()
+        };
+        assert_eq!(
+            provider_config_for(&opencode, Some(&console_oauth_material)).opencode_go_source_mode,
             OpenCodeGoSourceMode::Web
         );
         let unrelated_cookie = AccountAuthMaterial::from_cookie_header("unrelated=value", None);
