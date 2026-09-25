@@ -343,7 +343,7 @@ impl OpenCodeGoUsageAdapter {
         account: &AccountRecord,
         material: &AccountAuthMaterial,
     ) -> Result<UsageProbeResult, TransportError> {
-        if material.cookie_header().is_none() {
+        if material.cookie_header().is_none() && !material.has_bearer_token() {
             return Ok(missing_auth("OpenCode Go web"));
         }
 
@@ -739,6 +739,14 @@ impl UsageAdapter for OpenCodeGoUsageAdapter {
         match self.source_mode {
             OpenCodeGoSourceMode::Api => return self.probe_api(account, &material).await,
             OpenCodeGoSourceMode::Web => return self.probe_web(account, &material).await,
+            OpenCodeGoSourceMode::Automatic
+                if material
+                    .oauth_refresh_token
+                    .as_deref()
+                    .is_some_and(|token| !token.trim().is_empty()) =>
+            {
+                return self.probe_web(account, &material).await;
+            }
             OpenCodeGoSourceMode::Automatic => {}
         }
 
@@ -2171,6 +2179,40 @@ mod tests {
                 Some("wrk_123")
             );
         }
+    }
+
+    #[tokio::test]
+    async fn console_usage_accepts_an_account_scoped_oauth_bearer_without_cookies() {
+        let transport = Arc::new(ConsoleBillingTransport {
+            status_body: active_go_status(),
+            billing_body: json!({"balanceMicroCents": 125_000_000}).to_string(),
+            billing_delay: StdDuration::from_millis(1),
+            wait_for_billing_before_status: false,
+            billing_started: Notify::new(),
+            requests: Mutex::new(Vec::new()),
+        });
+        let adapter = OpenCodeGoUsageAdapter::new(
+            transport.clone(),
+            Arc::new(StaticAuthMaterialProvider(AccountAuthMaterial {
+                bearer_token: Some("opencode-access-token".to_owned()),
+                oauth_refresh_token: Some("opencode-refresh-token".to_owned()),
+                ..AccountAuthMaterial::default()
+            })),
+        )
+        .unwrap()
+        .with_source_mode(OpenCodeGoSourceMode::Automatic);
+
+        let result = adapter.probe(&console_probe_account()).await.unwrap();
+
+        assert!(result.succeeded(), "{result:?}");
+        assert!(result.snapshot.unwrap().primary.is_some());
+        let requests = transport.requests.lock().unwrap();
+        assert!(requests.iter().any(|request| {
+            request.url.path().ends_with(CONSOLE_STATUS_PATH)
+                && request.headers.get("Authorization").map(String::as_str)
+                    == Some("Bearer opencode-access-token")
+                && !request.headers.contains_key("Cookie")
+        }));
     }
 
     #[tokio::test]

@@ -1,32 +1,35 @@
-//! Add and exercise one OpenCode Go browser account on Windows.
+//! Add and exercise one OpenCode Go account on Windows.
 //!
-//! Login deliberately happens in the user's normal browser. This command
-//! never receives a password, embeds a WebView, or keeps a browser process
-//! alive. After the user presses Connect in the local extension, only the
-//! selected cookies are copied into the account-scoped Windows Credential
-//! Manager entry and the normal authoritative web adapter is run once.
+//! Login uses OpenCode's Console device-authorization flow in the user's
+//! normal browser. The helper never receives a password, embeds a WebView,
+//! reads browser cookies, or keeps a browser process alive. OAuth tokens are
+//! account-scoped in Windows Credential Manager.
 
+use chrono::{Duration as ChronoDuration, Utc};
 use codex_usage_core::{
     accounts::{AccountId, AccountRecord, AccountStore, OPENCODE_GO},
     auth::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
         OAuthBrowserLauncher, StoredAuthMaterialProvider,
     },
+    opencode_go_oauth::DEFAULT_OPENCODE_CONSOLE_CLIENT_ID,
     providers::{opencode_go::OpenCodeGoSourceMode, registry::ProviderRegistryConfig},
     refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
     runtime::UsageRuntime,
     storage::{SqliteStore, default_accounts_database_path},
-    transport::ReqwestUsageHttpTransport,
+    transport::{ReqwestUsageHttpTransport, UsageHttpRequest, UsageHttpTransport},
     usage::UsageSnapshotStore,
 };
 use codex_usage_windows_auth::{
     WindowsCredentialManagerAuthMaterialStore, WindowsDefaultBrowserLauncher,
-    browser_bridge::BrowserBridgeSession,
 };
+use reqwest::Method;
+use serde_json::{Value, json};
 use std::{env, path::PathBuf, sync::Arc, time::Duration};
+use tokio::time::{Instant, sleep};
 use url::Url;
 
-const PENDING_EMAIL: &str = "pending@opencode.local";
+const OPENCODE_CONSOLE_BASE_URL: &str = "https://opencode.ai/";
 
 #[derive(Debug, Default)]
 struct Arguments {
@@ -63,57 +66,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let material = secure_material_store
             .get(account.id)
             .await?
-            .ok_or("the account has no saved browser session in Credential Manager")?;
-        let mut cookie_names = material
-            .cookies
-            .iter()
-            .map(|cookie| cookie.name.clone())
-            .collect::<Vec<_>>();
-        cookie_names.sort_unstable();
-        cookie_names.dedup();
-        println!(
-            "Stored session metadata: {} cookies; names={} (values withheld).",
-            material.cookies.len(),
-            cookie_names.join(",")
-        );
-        println!("Reusing the saved OpenCode Go browser session.");
+            .ok_or("the account has no saved OpenCode credentials in Credential Manager")?;
+        if !material.has_bearer_token() {
+            return Err("the account has no saved OpenCode access token".into());
+        }
+        println!("Reusing the saved OpenCode Go OAuth session (token withheld).");
         account
     } else {
-        // The ID scopes the imported session in Windows Credential Manager.
-        // Keep both after a parsing/subscription error so the same browser
-        // login can be retried without asking the user to sign in again.
+        // Keep the authorized account and OAuth material even when the first
+        // usage probe fails, so API authorization can be tested independently.
         let label = arguments
             .label
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or("OpenCode Go account");
-        let mut account = AccountRecord::create(label, PENDING_EMAIL, None, OPENCODE_GO, None)?;
-
         let timeout = Duration::from_secs(arguments.timeout_seconds.max(1));
-        let bridge = BrowserBridgeSession::bind(OPENCODE_GO).await?;
-        let bridge_info = bridge.info();
-        println!("Opening OpenCode Go sign-in in the Windows default browser.");
-        println!("After sign-in, load the unpacked extension from:");
-        println!("  {}", extension_path().display());
-        println!(
-            "Then press Connect in the extension. The endpoint and pairing code are pre-filled automatically."
-        );
-        println!("  {}", bridge_info.pairing_code);
-        println!("Bridge endpoint: {}", bridge_info.endpoint);
-        let bootstrap_url = Url::parse(&bridge.bootstrap_url())?;
-        WindowsDefaultBrowserLauncher.open(&bootstrap_url).await?;
-        let bridged = bridge.wait(timeout).await?;
-        println!("Browser session received from the explicit extension action.");
-
-        account.browser_profile_id = bridged.profile_id.clone();
-        account_store.upsert(&account).await?;
-
-        let material = AccountAuthMaterial {
-            cookies: bridged.cookies,
-            user_agent: bridged.user_agent,
-            ..AccountAuthMaterial::default()
-        };
-        secure_material_store.save(account.id, &material).await?;
+        let login = login_with_device_code(transport.as_ref(), timeout).await?;
+        let account = AccountRecord::create(
+            label,
+            &login.email,
+            Some(login.user_id),
+            OPENCODE_GO,
+            login.workspace_id.clone(),
+        )?
+        .with_workspace_name(login.workspace_name.as_deref());
+        let account = account_store
+            .upsert_or_get_by_provider_identity(&account)
+            .await?;
+        secure_material_store
+            .save(account.id, &login.material)
+            .await?;
+        println!("OpenCode Console authorized as {}.", account.email);
         account
     };
 
@@ -129,11 +112,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let auth = Arc::new(StoredAuthMaterialProvider::new(
         secure_material_store.clone(),
     )) as Arc<dyn AccountAuthMaterialProvider>;
-    let runtime = UsageRuntime::from_dependencies(
+    let runtime = UsageRuntime::from_dependencies_with_auth_store(
         account_store.clone(),
         snapshot_store,
         transport,
         auth,
+        secure_material_store,
         ProviderRegistryConfig {
             opencode_go_source_mode: OpenCodeGoSourceMode::Web,
             ..ProviderRegistryConfig::default()
@@ -151,13 +135,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let account_ref = account.account_ref.as_deref().unwrap_or("the account");
         if let Some(error) = outcome.error {
             return Err(format!(
-                "OpenCode Go usage validation failed: {:?}: {}. The account and browser session were preserved; retry with `codex-usage usage refresh {account_ref}`.",
+                "OpenCode Go usage validation failed: {:?}: {}. The account and OAuth credentials were preserved; retry with `codex-usage usage refresh {account_ref}`.",
                 error.code, error.message
             )
             .into());
         }
         return Err(format!(
-            "OpenCode Go usage validation failed: {:?}. The account and browser session were preserved; retry with `codex-usage usage refresh {account_ref}`.",
+            "OpenCode Go usage validation failed: {:?}. The account and OAuth credentials were preserved; retry with `codex-usage usage refresh {account_ref}`.",
             outcome.status
         )
         .into());
@@ -237,7 +221,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
     let mut arguments = Arguments {
-        timeout_seconds: 300,
+        timeout_seconds: 900,
         ..Arguments::default()
     };
     let mut values = env::args_os().skip(1);
@@ -278,7 +262,7 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: codex-usage-opencode-go-probe [--database PATH] [--label LABEL] [--timeout-seconds N] [--resume-account ACCOUNT_ID]\n\nWithout --resume-account, opens the Windows default browser and waits for an explicit Connect click in the local extension. The one-shot loopback bridge stores selected OpenCode cookies in Windows Credential Manager. --resume-account retries usage against a saved account/session without reopening the browser."
+                    "Usage: codex-usage-opencode-go-probe [--database PATH] [--label LABEL] [--timeout-seconds N] [--resume-account ACCOUNT_ID]\n\nWithout --resume-account, starts OpenCode Console device authorization, opens the verification page in the Windows default browser, and waits for approval. The resulting OAuth access and refresh tokens are stored in Windows Credential Manager. --resume-account retries usage against a saved account/session without reopening the browser."
                 );
                 std::process::exit(0);
             }
@@ -296,15 +280,244 @@ fn announce_cli_account_reference(account: &AccountRecord) {
     }
 }
 
-fn extension_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("opencode-browser-bridge-extension")
-}
-
 fn format_money(value: Option<f64>) -> String {
     value
         .map(|value| format!("${value:.4}"))
         .unwrap_or_else(|| "unknown".to_owned())
+}
+
+struct DeviceLogin {
+    user_id: String,
+    email: String,
+    workspace_id: Option<String>,
+    workspace_name: Option<String>,
+    material: AccountAuthMaterial,
+}
+
+struct DeviceCode {
+    device_code: String,
+    user_code: String,
+    verification_url: Url,
+    expires_in: Duration,
+    interval: Duration,
+}
+
+struct DeviceTokens {
+    access_token: String,
+    refresh_token: String,
+    expires_in: i64,
+}
+
+async fn login_with_device_code(
+    transport: &dyn UsageHttpTransport,
+    timeout: Duration,
+) -> Result<DeviceLogin, Box<dyn std::error::Error>> {
+    let device = request_device_code(transport).await?;
+    println!("OpenCode sign-in is opening in your default browser.");
+    println!("If prompted, enter this code: {}", device.user_code);
+    WindowsDefaultBrowserLauncher
+        .open(&device.verification_url)
+        .await?;
+
+    let tokens = poll_device_token(transport, &device, timeout).await?;
+    let user = get_authed_json(transport, "api/user", &tokens.access_token).await?;
+    let user_id = json_string(&user, "id").ok_or("OpenCode user response omitted id")?;
+    let email = json_string(&user, "email").ok_or("OpenCode user response omitted email")?;
+    let orgs = get_authed_json(transport, "api/orgs", &tokens.access_token).await?;
+    let selected_org = orgs
+        .as_array()
+        .and_then(|items| items.iter().find(|org| json_string(org, "id").is_some()));
+    let workspace_id = selected_org.and_then(|org| json_string(org, "id"));
+    let workspace_name = selected_org.and_then(|org| json_string(org, "name"));
+    let expires_in = ChronoDuration::seconds(tokens.expires_in);
+    let material = AccountAuthMaterial {
+        bearer_token: Some(tokens.access_token.clone()),
+        oauth_access_token: Some(tokens.access_token),
+        oauth_refresh_token: Some(tokens.refresh_token),
+        oauth_expires_at_utc: Some(Utc::now() + expires_in),
+        ..AccountAuthMaterial::default()
+    };
+
+    Ok(DeviceLogin {
+        user_id,
+        email,
+        workspace_id,
+        workspace_name,
+        material,
+    })
+}
+
+async fn request_device_code(
+    transport: &dyn UsageHttpTransport,
+) -> Result<DeviceCode, Box<dyn std::error::Error>> {
+    let response = send_json(
+        transport,
+        Method::POST,
+        "auth/device/code",
+        Some(json!({ "client_id": DEFAULT_OPENCODE_CONSOLE_CLIENT_ID })),
+        None,
+    )
+    .await?;
+    if !response.is_success() {
+        return Err(format!(
+            "OpenCode device authorization could not start (HTTP {})",
+            response.status_code
+        )
+        .into());
+    }
+    let root: Value = serde_json::from_str(&response.body)?;
+    let device_code =
+        json_string(&root, "device_code").ok_or("device response omitted device_code")?;
+    let user_code = json_string(&root, "user_code").ok_or("device response omitted user_code")?;
+    let verification_url = json_string(&root, "verification_uri_complete")
+        .ok_or("device response omitted verification_uri_complete")?;
+    let verification_url = Url::parse(&verification_url)?;
+    if verification_url.scheme() != "https"
+        || verification_url.host_str() != Some("opencode.ai")
+        || !verification_url.username().is_empty()
+        || verification_url.password().is_some()
+    {
+        return Err("OpenCode returned an unexpected device verification URL".into());
+    }
+    let expires_in = json_u64(&root, "expires_in")
+        .filter(|value| *value > 0)
+        .ok_or("device response omitted a valid expires_in")?;
+    let interval = json_u64(&root, "interval")
+        .filter(|value| *value > 0)
+        .unwrap_or(5);
+
+    Ok(DeviceCode {
+        device_code,
+        user_code,
+        verification_url,
+        expires_in: Duration::from_secs(expires_in),
+        interval: Duration::from_secs(interval.clamp(1, 30)),
+    })
+}
+
+async fn poll_device_token(
+    transport: &dyn UsageHttpTransport,
+    device: &DeviceCode,
+    timeout: Duration,
+) -> Result<DeviceTokens, Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + timeout.min(device.expires_in);
+    let mut interval = device.interval;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(
+                "OpenCode device authorization timed out; please try adding the account again"
+                    .into(),
+            );
+        }
+        sleep(interval.min(deadline.saturating_duration_since(Instant::now()))).await;
+        let response = send_json(
+            transport,
+            Method::POST,
+            "auth/device/token",
+            Some(json!({
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": device.device_code,
+                "client_id": DEFAULT_OPENCODE_CONSOLE_CLIENT_ID,
+            })),
+            None,
+        )
+        .await?;
+        let root: Value = serde_json::from_str(&response.body).map_err(|_| {
+            format!(
+                "OpenCode device-token request returned an invalid response (HTTP {})",
+                response.status_code
+            )
+        })?;
+        if response.is_success() {
+            let access_token = json_string(&root, "access_token")
+                .ok_or("OpenCode token response omitted access_token")?;
+            let refresh_token = json_string(&root, "refresh_token")
+                .ok_or("OpenCode token response omitted refresh_token")?;
+            let expires_in = json_u64(&root, "expires_in")
+                .and_then(|value| i64::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .ok_or("OpenCode token response omitted a valid expires_in")?;
+            return Ok(DeviceTokens {
+                access_token,
+                refresh_token,
+                expires_in,
+            });
+        }
+
+        match json_string(&root, "error").as_deref() {
+            Some("authorization_pending") => {}
+            Some("slow_down") => interval = interval.saturating_add(Duration::from_secs(5)),
+            Some("expired_token") => {
+                return Err("OpenCode device code expired; please try again".into());
+            }
+            Some("access_denied") => return Err("OpenCode sign-in was denied".into()),
+            Some(code) => {
+                return Err(format!("OpenCode device authorization failed ({code})").into());
+            }
+            None => {
+                return Err(format!(
+                    "OpenCode device authorization failed (HTTP {})",
+                    response.status_code
+                )
+                .into());
+            }
+        }
+    }
+}
+
+async fn get_authed_json(
+    transport: &dyn UsageHttpTransport,
+    path: &str,
+    access_token: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let response = send_json(transport, Method::GET, path, None, Some(access_token)).await?;
+    if !response.is_success() {
+        return Err(format!(
+            "OpenCode account identity request failed (HTTP {})",
+            response.status_code
+        )
+        .into());
+    }
+    Ok(serde_json::from_str(&response.body)?)
+}
+
+async fn send_json(
+    transport: &dyn UsageHttpTransport,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+    access_token: Option<&str>,
+) -> Result<codex_usage_core::transport::UsageHttpResponse, Box<dyn std::error::Error>> {
+    let url = Url::parse(OPENCODE_CONSOLE_BASE_URL)?.join(path)?;
+    let mut headers = std::collections::BTreeMap::from([
+        ("Accept".to_owned(), "application/json".to_owned()),
+        ("User-Agent".to_owned(), "CodexUsageMonitor/0.1".to_owned()),
+    ]);
+    let body = body.map(|value| value.to_string());
+    if body.is_some() {
+        headers.insert("Content-Type".to_owned(), "application/json".to_owned());
+    }
+    if let Some(access_token) = access_token {
+        headers.insert("Authorization".to_owned(), format!("Bearer {access_token}"));
+    }
+    Ok(transport
+        .send(UsageHttpRequest {
+            method,
+            url,
+            headers,
+            body,
+        })
+        .await?)
+}
+
+fn json_string(root: &Value, key: &str) -> Option<String> {
+    root.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn json_u64(root: &Value, key: &str) -> Option<u64> {
+    root.get(key).and_then(Value::as_u64)
 }

@@ -4,6 +4,7 @@ pub mod auth_sources;
 pub mod claude_oauth;
 pub mod oauth_loopback;
 pub mod oauth_service;
+pub mod opencode_go_oauth;
 pub mod providers;
 pub mod refresh;
 pub mod runtime;

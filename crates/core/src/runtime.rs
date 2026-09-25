@@ -9,6 +9,7 @@ use crate::{
     accounts::{AccountRecord, AccountStore},
     auth::{AccountAuthMaterialProvider, AccountAuthMaterialStore, AccountBrowserSessionRefresher},
     claude_oauth::ClaudeOAuthRefreshingAuthMaterialProvider,
+    opencode_go_oauth::OpenCodeGoOAuthRefreshingAuthMaterialProvider,
     providers::registry::{ProviderRegistry, ProviderRegistryConfig, ProviderRegistryError},
     refresh::{
         RefreshCoordinatorConfig, RefreshCoordinatorError, RefreshOutcome, RefreshReason,
@@ -142,6 +143,11 @@ impl UsageRuntime {
         provider_config: ProviderRegistryConfig,
         refresh_config: RefreshCoordinatorConfig,
     ) -> Result<Arc<Self>, RuntimeBootstrapError> {
+        let auth = Arc::new(OpenCodeGoOAuthRefreshingAuthMaterialProvider::new(
+            auth,
+            Arc::clone(&auth_store),
+            Arc::clone(&transport),
+        )) as Arc<dyn AccountAuthMaterialProvider>;
         let auth = Arc::new(ClaudeOAuthRefreshingAuthMaterialProvider::new(
             auth,
             Arc::clone(&auth_store),
