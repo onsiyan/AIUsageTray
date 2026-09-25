@@ -29,7 +29,7 @@ use std::{env, path::PathBuf, sync::Arc, time::Duration};
 use tokio::time::{Instant, sleep};
 use url::Url;
 
-const OPENCODE_CONSOLE_BASE_URL: &str = "https://opencode.ai/";
+const OPENCODE_CONSOLE_BASE_URL: &str = "https://opencode.ai/console/";
 
 #[derive(Debug, Default)]
 struct Arguments {

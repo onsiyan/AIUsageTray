@@ -18,7 +18,7 @@ use tokio::sync::Mutex;
 use url::Url;
 
 pub const DEFAULT_OPENCODE_CONSOLE_CLIENT_ID: &str = "opencode-cli";
-const DEFAULT_TOKEN_ENDPOINT: &str = "https://opencode.ai/auth/device/token";
+const DEFAULT_TOKEN_ENDPOINT: &str = "https://opencode.ai/console/auth/device/token";
 
 /// Refreshes only OpenCode Go accounts, leaving all other provider material
 /// untouched. Refresh state is persisted through the injected OS-secure store.
