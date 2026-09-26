@@ -13,7 +13,10 @@ use crate::{
         VerifiedIdentity,
     },
     providers::{
-        codex_reset::{confirms_weekly_reset, needs_weekly_reset_confirmation},
+        codex_reset::{
+            DelayedResetDecision, confirms_weekly_reset, create_delayed_reset_candidate,
+            evaluate_delayed_reset_candidate, is_codex_account, needs_weekly_reset_confirmation,
+        },
         registry::ProviderRegistry,
     },
     transport::TransportError,
@@ -689,7 +692,89 @@ impl UsageRefreshCoordinator {
                         )
                         .await;
                 }
-                if needs_weekly_reset_confirmation(&account, prior.as_ref(), &snapshot) {
+
+                let mut delayed_reset_confirmed = false;
+                if is_codex_account(&account) {
+                    let pending_candidate = match self
+                        .snapshot_store
+                        .get_codex_weekly_reset_candidate(account.id)
+                        .await
+                    {
+                        Ok(candidate) => candidate,
+                        Err(error) => {
+                            return self
+                                .finish_failure(
+                                    &account,
+                                    reason,
+                                    prior,
+                                    UsageAdapterError {
+                                        code: UsageAdapterErrorCode::InvalidPayload,
+                                        message: format!(
+                                            "could not read pending Codex weekly reset evidence: {error}"
+                                        ),
+                                        http_status_code: None,
+                                        retry_after_seconds: None,
+                                    },
+                                )
+                                .await;
+                        }
+                    };
+                    if let (Some(previous), Some(candidate)) = (prior.as_ref(), pending_candidate) {
+                        match evaluate_delayed_reset_candidate(
+                            &account,
+                            previous,
+                            &candidate,
+                            &snapshot,
+                            Utc::now(),
+                        ) {
+                            DelayedResetDecision::PublishCurrent => {
+                                delayed_reset_confirmed = true;
+                            }
+                            DelayedResetDecision::RetainCandidate => {
+                                return self
+                                    .finish_failure(
+                                        &account,
+                                        reason,
+                                        prior,
+                                        UsageAdapterError {
+                                            code: UsageAdapterErrorCode::InvalidPayload,
+                                            message: "Codex weekly reset is awaiting an independent later OAuth observation".to_owned(),
+                                            http_status_code: None,
+                                            retry_after_seconds: None,
+                                        },
+                                    )
+                                    .await;
+                            }
+                            DelayedResetDecision::DiscardCandidate(_) => {
+                                if let Err(error) = self
+                                    .snapshot_store
+                                    .save_codex_weekly_reset_candidate(account.id, None)
+                                    .await
+                                {
+                                    return self
+                                        .finish_failure(
+                                            &account,
+                                            reason,
+                                            prior,
+                                            UsageAdapterError {
+                                                code: UsageAdapterErrorCode::InvalidPayload,
+                                                message: format!(
+                                                    "could not discard invalid Codex weekly reset evidence: {error}"
+                                                ),
+                                                http_status_code: None,
+                                                retry_after_seconds: None,
+                                            },
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !delayed_reset_confirmed
+                    && needs_weekly_reset_confirmation(&account, prior.as_ref(), &snapshot)
+                {
                     let confirmation = match adapter.probe(&account).await {
                         Ok(confirmation) if confirmation.succeeded() => confirmation,
                         Ok(confirmation) => {
@@ -732,31 +817,85 @@ impl UsageRefreshCoordinator {
                     let previous = prior
                         .as_ref()
                         .expect("confirmation requires a prior snapshot");
-                    if confirmed_snapshot.account_id != account.id
+                    let confirmation_rejection = if confirmed_snapshot.account_id != account.id
                         || !provider_ids_match(
                             &account.provider_id,
                             &confirmed_snapshot.provider_id,
-                        )
-                        || !confirms_weekly_reset(
+                        ) {
+                        Some("account_or_provider_mismatch")
+                    } else if !confirms_weekly_reset(
+                        &account,
+                        previous,
+                        &snapshot,
+                        &confirmed_snapshot,
+                    ) {
+                        Some("immediate_confirmation_rejected")
+                    } else {
+                        None
+                    };
+                    if let Some(rejection) = confirmation_rejection {
+                        let delayed_candidate = create_delayed_reset_candidate(
                             &account,
                             previous,
                             &snapshot,
                             &confirmed_snapshot,
-                        )
-                    {
-                        return self
-                            .finish_failure(
-                                &account,
-                                reason,
-                                prior,
-                                UsageAdapterError {
-                                    code: UsageAdapterErrorCode::InvalidPayload,
-                                    message: "Codex weekly reset was not corroborated by a matching account-scoped OAuth observation".to_owned(),
-                                    http_status_code: None,
-                                    retry_after_seconds: None,
-                                },
-                            )
-                            .await;
+                            Utc::now(),
+                        );
+                        match delayed_candidate {
+                            Ok(candidate) => {
+                                if let Err(error) = self
+                                    .snapshot_store
+                                    .save_codex_weekly_reset_candidate(account.id, Some(candidate))
+                                    .await
+                                {
+                                    return self
+                                        .finish_failure(
+                                            &account,
+                                            reason,
+                                            prior,
+                                            UsageAdapterError {
+                                                code: UsageAdapterErrorCode::InvalidPayload,
+                                                message: format!(
+                                                    "could not persist pending Codex weekly reset evidence: {error}"
+                                                ),
+                                                http_status_code: None,
+                                                retry_after_seconds: None,
+                                            },
+                                        )
+                                        .await;
+                                }
+                                return self
+                                    .finish_failure(
+                                        &account,
+                                        reason,
+                                        prior,
+                                        UsageAdapterError {
+                                            code: UsageAdapterErrorCode::InvalidPayload,
+                                            message: "Codex weekly reset is awaiting an independent later OAuth observation".to_owned(),
+                                            http_status_code: None,
+                                            retry_after_seconds: None,
+                                        },
+                                    )
+                                    .await;
+                            }
+                            Err(delayed_rejection) => {
+                                return self
+                                    .finish_failure(
+                                        &account,
+                                        reason,
+                                        prior,
+                                        UsageAdapterError {
+                                            code: UsageAdapterErrorCode::InvalidPayload,
+                                            message: format!(
+                                                "Codex weekly reset rejected ({rejection}); delayed confirmation unavailable ({delayed_rejection})"
+                                            ),
+                                            http_status_code: None,
+                                            retry_after_seconds: None,
+                                        },
+                                    )
+                                    .await;
+                            }
+                        }
                     }
                     snapshot = confirmed_snapshot;
                     identity = confirmation.identity.or(identity);
@@ -796,6 +935,15 @@ impl UsageRefreshCoordinator {
                         )),
                     );
                 }
+                let candidate_clear_error = if is_codex_account(&account) {
+                    self.snapshot_store
+                        .save_codex_weekly_reset_candidate(account.id, None)
+                        .await
+                        .err()
+                        .map(|error| error.to_string())
+                } else {
+                    None
+                };
                 return RefreshOutcome::new(
                     &account,
                     reason,
@@ -803,7 +951,7 @@ impl UsageRefreshCoordinator {
                     Some(snapshot),
                     identity,
                     None,
-                    identity_storage_error,
+                    combine_optional_storage_errors(identity_storage_error, candidate_clear_error),
                 );
             }
         }
@@ -992,6 +1140,17 @@ fn combine_storage_errors(first: Option<String>, second: String) -> String {
     }
 }
 
+fn combine_optional_storage_errors(
+    first: Option<String>,
+    second: Option<String>,
+) -> Option<String> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(format!("{first}; {second}")),
+        (Some(error), None) | (None, Some(error)) => Some(error),
+        (None, None) => None,
+    }
+}
+
 fn chrono_from_std(duration: Duration) -> ChronoDuration {
     ChronoDuration::from_std(duration).expect("refresh duration must fit in chrono")
 }
@@ -1026,9 +1185,12 @@ fn placeholder_account(account_id: AccountId) -> AccountRecord {
 mod tests {
     use super::*;
     use crate::{
-        accounts::{AccountStore, InMemoryAccountStore, OPENAI, VerifiedIdentity},
+        accounts::{
+            ANTIGRAVITY, AccountStore, CLAUDE, InMemoryAccountStore, OPENAI, VerifiedIdentity,
+        },
         usage::{
-            CreditsSnapshot, RateLimitWindow, UsageAdapter, UsageProbeResult, UsageSnapshotStore,
+            CodexWeeklyResetCandidate, CreditsSnapshot, RateLimitWindow, UsageAdapter,
+            UsageCreditInventory, UsageCreditRecord, UsageProbeResult, UsageSnapshotStore,
             UsageWindowKind,
         },
     };
@@ -1298,6 +1460,25 @@ mod tests {
         }
     }
 
+    struct ProviderSnapshotAdapter {
+        provider_id: &'static str,
+        snapshot: UsageSnapshot,
+    }
+
+    #[async_trait]
+    impl UsageAdapter for ProviderSnapshotAdapter {
+        fn adapter_id(&self) -> &str {
+            self.provider_id
+        }
+
+        async fn probe(
+            &self,
+            _account: &AccountRecord,
+        ) -> Result<UsageProbeResult, TransportError> {
+            Ok(UsageProbeResult::success(self.snapshot.clone(), None))
+        }
+    }
+
     fn codex_weekly_snapshot(
         account_id: AccountId,
         observed_at: DateTime<Utc>,
@@ -1319,6 +1500,31 @@ mod tests {
         });
         snapshot.observed_email = Some("codex@example.com".to_owned());
         snapshot.source = Some("codex-oauth".to_owned());
+        snapshot
+    }
+
+    fn with_available_codex_reset_credit(mut snapshot: UsageSnapshot) -> UsageSnapshot {
+        let expires_at_utc = snapshot
+            .observed_at_utc
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            + ChronoDuration::days(90);
+        snapshot.credit_inventory = Some(UsageCreditInventory {
+            available_count: 1,
+            credits: vec![UsageCreditRecord {
+                id: Some("reset-credit".to_owned()),
+                reset_type: Some("codex_rate_limits".to_owned()),
+                status: Some("available".to_owned()),
+                granted_at_utc: None,
+                expires_at_utc: Some(expires_at_utc),
+                redeem_started_at_utc: None,
+                redeemed_at_utc: None,
+                title: None,
+                description: None,
+            }],
+        });
         snapshot
     }
 
@@ -1372,6 +1578,153 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn early_weekly_reset_is_retained_with_a_persisted_delayed_candidate() {
+        let account =
+            AccountRecord::create("test", "codex@example.com", None, OPENAI, None).unwrap();
+        let accounts = Arc::new(InMemoryAccountStore::default());
+        accounts.upsert(&account).await.unwrap();
+        let store = Arc::new(crate::usage::InMemoryUsageSnapshotStore::default());
+        let observed_at = Utc::now();
+        let prior = with_available_codex_reset_credit(codex_weekly_snapshot(
+            account.id,
+            observed_at - ChronoDuration::minutes(1),
+            70.0,
+            observed_at + ChronoDuration::days(3),
+        ));
+        store.save(prior.clone()).await.unwrap();
+        let initial = with_available_codex_reset_credit(codex_weekly_snapshot(
+            account.id,
+            observed_at - ChronoDuration::seconds(2),
+            0.0,
+            observed_at + ChronoDuration::days(10),
+        ));
+        let confirmation = with_available_codex_reset_credit(codex_weekly_snapshot(
+            account.id,
+            observed_at - ChronoDuration::seconds(1),
+            0.0,
+            observed_at + ChronoDuration::days(10),
+        ));
+        let adapter = Arc::new(SequencedSnapshotAdapter {
+            snapshots: std::sync::Mutex::new(VecDeque::from([initial, confirmation])),
+            calls: AtomicUsize::new(0),
+        });
+        let coordinator = UsageRefreshCoordinator::new(
+            accounts,
+            store.clone(),
+            vec![adapter.clone() as Arc<dyn UsageAdapter>],
+            RefreshCoordinatorConfig::default(),
+        );
+
+        let outcome = coordinator
+            .refresh_account(account.clone(), RefreshReason::Manual)
+            .await;
+
+        assert_eq!(adapter.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(outcome.status, RefreshStatus::RetainedStale);
+        assert!(
+            outcome
+                .error
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("awaiting an independent later OAuth observation")
+        );
+        assert!(
+            store
+                .get_codex_weekly_reset_candidate(account.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            store
+                .get_latest(account.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .observed_at_utc,
+            prior.observed_at_utc
+        );
+    }
+
+    #[tokio::test]
+    async fn later_oauth_observation_publishes_and_clears_the_pending_reset_candidate() {
+        let account =
+            AccountRecord::create("test", "codex@example.com", None, OPENAI, None).unwrap();
+        let accounts = Arc::new(InMemoryAccountStore::default());
+        accounts.upsert(&account).await.unwrap();
+        let store = Arc::new(crate::usage::InMemoryUsageSnapshotStore::default());
+        let observed_at = Utc::now();
+        let prior = with_available_codex_reset_credit(codex_weekly_snapshot(
+            account.id,
+            observed_at - ChronoDuration::minutes(1),
+            70.0,
+            observed_at + ChronoDuration::days(3),
+        ));
+        let candidate_snapshot = with_available_codex_reset_credit(codex_weekly_snapshot(
+            account.id,
+            observed_at - ChronoDuration::seconds(70),
+            0.0,
+            observed_at + ChronoDuration::days(10),
+        ));
+        let candidate = CodexWeeklyResetCandidate {
+            evidence_version: 1,
+            first_observed_at_utc: candidate_snapshot.observed_at_utc,
+            created_at_utc: observed_at - ChronoDuration::seconds(61),
+            snapshot: candidate_snapshot,
+        };
+        store.save(prior).await.unwrap();
+        store
+            .save_codex_weekly_reset_candidate(account.id, Some(candidate))
+            .await
+            .unwrap();
+
+        let current = with_available_codex_reset_credit(codex_weekly_snapshot(
+            account.id,
+            observed_at,
+            0.4,
+            observed_at + ChronoDuration::days(10),
+        ));
+        let adapter = Arc::new(SequencedSnapshotAdapter {
+            snapshots: std::sync::Mutex::new(VecDeque::from([current.clone()])),
+            calls: AtomicUsize::new(0),
+        });
+        let coordinator = UsageRefreshCoordinator::new(
+            accounts,
+            store.clone(),
+            vec![adapter.clone() as Arc<dyn UsageAdapter>],
+            RefreshCoordinatorConfig::default(),
+        );
+
+        let outcome = coordinator
+            .refresh_account(account.clone(), RefreshReason::Manual)
+            .await;
+
+        assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(outcome.status, RefreshStatus::Updated);
+        assert_eq!(
+            outcome.snapshot.unwrap().secondary.unwrap().used_percent,
+            0.4
+        );
+        assert!(
+            store
+                .get_codex_weekly_reset_candidate(account.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store
+                .get_latest(account.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .observed_at_utc,
+            current.observed_at_utc
+        );
+    }
+
+    #[tokio::test]
     async fn confirmed_weekly_reset_publishes_the_second_oauth_observation() {
         let account =
             AccountRecord::create("test", "codex@example.com", None, OPENAI, None).unwrap();
@@ -1415,6 +1768,95 @@ mod tests {
         assert_eq!(published.secondary.unwrap().used_percent, 0.4);
         let persisted = store.get_latest(account.id).await.unwrap().unwrap();
         assert_eq!(persisted.observed_at_utc, confirmation.observed_at_utc);
+    }
+
+    #[tokio::test]
+    async fn authoritative_claude_and_antigravity_resets_publish_without_codex_guard() {
+        for provider_id in [CLAUDE, ANTIGRAVITY] {
+            let email = format!("{provider_id}@example.com");
+            let account = AccountRecord::create("test", &email, None, provider_id, None).unwrap();
+            let accounts = Arc::new(InMemoryAccountStore::default());
+            accounts.upsert(&account).await.unwrap();
+            let store = Arc::new(crate::usage::InMemoryUsageSnapshotStore::default());
+            let observed_at = now();
+
+            let mut previous = snapshot(
+                account.id,
+                observed_at,
+                observed_at + ChronoDuration::hours(4),
+            );
+            previous.provider_id = provider_id.to_owned();
+            previous.source = Some(
+                if provider_id == CLAUDE {
+                    "oauth"
+                } else {
+                    "local"
+                }
+                .to_owned(),
+            );
+            previous.observed_email = Some(email.clone());
+            previous.primary.as_mut().unwrap().used_percent = 75.0;
+            previous.secondary = Some(RateLimitWindow {
+                kind: UsageWindowKind::Secondary,
+                name: "weekly".to_owned(),
+                used_percent: 80.0,
+                reset_at_utc: Some(observed_at + ChronoDuration::days(3)),
+                limit_window_seconds: 7 * 24 * 60 * 60,
+            });
+            store.save(previous).await.unwrap();
+
+            let mut reset = snapshot(
+                account.id,
+                observed_at + ChronoDuration::seconds(1),
+                observed_at + ChronoDuration::hours(5),
+            );
+            reset.provider_id = provider_id.to_owned();
+            reset.source = Some(
+                if provider_id == CLAUDE {
+                    "oauth"
+                } else {
+                    "local"
+                }
+                .to_owned(),
+            );
+            reset.observed_email = Some(email);
+            reset.primary.as_mut().unwrap().used_percent = 0.0;
+            reset.secondary = Some(RateLimitWindow {
+                kind: UsageWindowKind::Secondary,
+                name: "weekly".to_owned(),
+                used_percent: 0.0,
+                reset_at_utc: Some(observed_at + ChronoDuration::days(7)),
+                limit_window_seconds: 7 * 24 * 60 * 60,
+            });
+            let adapter = Arc::new(ProviderSnapshotAdapter {
+                provider_id,
+                snapshot: reset,
+            });
+            let coordinator = UsageRefreshCoordinator::new(
+                accounts,
+                store.clone(),
+                vec![adapter as Arc<dyn UsageAdapter>],
+                RefreshCoordinatorConfig::default(),
+            );
+
+            let outcome = coordinator
+                .refresh_account(account.clone(), RefreshReason::Manual)
+                .await;
+
+            assert_eq!(outcome.status, RefreshStatus::Updated, "{provider_id}");
+            let published = outcome.snapshot.unwrap();
+            assert_eq!(
+                published.primary.unwrap().used_percent,
+                0.0,
+                "{provider_id}"
+            );
+            assert_eq!(
+                published.secondary.unwrap().used_percent,
+                0.0,
+                "{provider_id}"
+            );
+            assert!(!published.is_stale, "{provider_id}");
+        }
     }
 
     #[tokio::test]

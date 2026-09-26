@@ -3,7 +3,7 @@ use crate::{
         AccountId, AccountRecord, AccountStatus, AccountStore, AccountStoreError, OPENAI,
         account_reference_prefix,
     },
-    usage::{StorageError, UsageSnapshot, UsageSnapshotStore},
+    usage::{CodexWeeklyResetCandidate, StorageError, UsageSnapshot, UsageSnapshotStore},
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -94,6 +94,12 @@ impl SqliteStore {
                     limit_window_seconds INTEGER NOT NULL,
                     PRIMARY KEY(snapshot_id, window_key),
                     FOREIGN KEY(snapshot_id) REFERENCES usage_snapshots(snapshot_id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS codex_weekly_reset_candidates (
+                    account_id TEXT PRIMARY KEY,
+                    candidate_json TEXT NOT NULL,
+                    FOREIGN KEY(account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
                 );
 
                 CREATE TABLE IF NOT EXISTS account_ref_sequences (
@@ -614,6 +620,61 @@ impl UsageSnapshotStore for SqliteStore {
                 .map_err(sqlite_error)?;
         }
         transaction.commit().map_err(sqlite_error)
+    }
+
+    async fn get_codex_weekly_reset_candidate(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Option<CodexWeeklyResetCandidate>, StorageError> {
+        let connection = self.lock()?;
+        let payload = connection
+            .query_row(
+                "SELECT candidate_json FROM codex_weekly_reset_candidates WHERE account_id = ?1",
+                [account_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        payload
+            .map(|payload| {
+                serde_json::from_str(&payload)
+                    .map_err(|error| StorageError::InvalidData(error.to_string()))
+            })
+            .transpose()
+    }
+
+    async fn save_codex_weekly_reset_candidate(
+        &self,
+        account_id: AccountId,
+        candidate: Option<CodexWeeklyResetCandidate>,
+    ) -> Result<(), StorageError> {
+        let connection = self.lock()?;
+        match candidate {
+            Some(candidate) => {
+                if candidate.snapshot.account_id != account_id {
+                    return Err(StorageError::InvalidData(
+                        "Codex reset candidate belongs to a different account".to_owned(),
+                    ));
+                }
+                let payload = serde_json::to_string(&candidate)
+                    .map_err(|error| StorageError::InvalidData(error.to_string()))?;
+                connection
+                    .execute(
+                        "INSERT INTO codex_weekly_reset_candidates (account_id, candidate_json) VALUES (?1, ?2) ON CONFLICT(account_id) DO UPDATE SET candidate_json = excluded.candidate_json",
+                        params![account_id.to_string(), payload],
+                    )
+                    .map_err(sqlite_error)?;
+            }
+            None => {
+                connection
+                    .execute(
+                        "DELETE FROM codex_weekly_reset_candidates WHERE account_id = ?1",
+                        [account_id.to_string()],
+                    )
+                    .map_err(sqlite_error)?;
+            }
+        }
+        Ok(())
     }
 }
 

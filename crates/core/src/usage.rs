@@ -206,6 +206,16 @@ pub struct UsageSnapshot {
     pub data_confidence: String,
 }
 
+/// A low-usage Codex weekly observation that is plausible but not yet safe to
+/// publish as a reset. It is kept separately from the last trusted snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexWeeklyResetCandidate {
+    pub evidence_version: u16,
+    pub first_observed_at_utc: DateTime<Utc>,
+    pub created_at_utc: DateTime<Utc>,
+    pub snapshot: UsageSnapshot,
+}
+
 impl UsageSnapshot {
     /// Returns every rate-limit window in display-independent order.
     ///
@@ -316,6 +326,16 @@ pub trait UsageSnapshotStore: Send + Sync {
         account_id: AccountId,
     ) -> Result<Option<UsageSnapshot>, StorageError>;
     async fn save(&self, snapshot: UsageSnapshot) -> Result<(), StorageError>;
+    async fn get_codex_weekly_reset_candidate(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Option<CodexWeeklyResetCandidate>, StorageError>;
+    /// Passing `None` removes any pending candidate for this account.
+    async fn save_codex_weekly_reset_candidate(
+        &self,
+        account_id: AccountId,
+        candidate: Option<CodexWeeklyResetCandidate>,
+    ) -> Result<(), StorageError>;
 }
 
 #[cfg(test)]
@@ -403,6 +423,7 @@ pub enum StorageError {
 #[derive(Default)]
 pub struct InMemoryUsageSnapshotStore {
     snapshots: RwLock<HashMap<AccountId, UsageSnapshot>>,
+    codex_weekly_reset_candidates: RwLock<HashMap<AccountId, CodexWeeklyResetCandidate>>,
 }
 
 #[async_trait]
@@ -419,6 +440,37 @@ impl UsageSnapshotStore for InMemoryUsageSnapshotStore {
             .write()
             .await
             .insert(snapshot.account_id, snapshot);
+        Ok(())
+    }
+
+    async fn get_codex_weekly_reset_candidate(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Option<CodexWeeklyResetCandidate>, StorageError> {
+        Ok(self
+            .codex_weekly_reset_candidates
+            .read()
+            .await
+            .get(&account_id)
+            .cloned())
+    }
+
+    async fn save_codex_weekly_reset_candidate(
+        &self,
+        account_id: AccountId,
+        candidate: Option<CodexWeeklyResetCandidate>,
+    ) -> Result<(), StorageError> {
+        let mut candidates = self.codex_weekly_reset_candidates.write().await;
+        if let Some(candidate) = candidate {
+            if candidate.snapshot.account_id != account_id {
+                return Err(StorageError::InvalidData(
+                    "Codex reset candidate belongs to a different account".to_owned(),
+                ));
+            }
+            candidates.insert(account_id, candidate);
+        } else {
+            candidates.remove(&account_id);
+        }
         Ok(())
     }
 }
