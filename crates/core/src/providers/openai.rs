@@ -180,14 +180,25 @@ impl UsageAdapter for WhamUsageAdapter {
             ..AccountAuthMaterial::default()
         };
         let base_url = self.base_url.clone();
-        let usage_response = self
-            .get(
-                self.usage_path_for_base_url(&base_url),
-                Some(account),
-                &material,
-                true,
-            )
-            .await?;
+        let usage_request = self.get(
+            self.usage_path_for_base_url(&base_url),
+            Some(account),
+            &material,
+            true,
+        );
+        let reset_credits_request = async {
+            if self.fetch_reset_credits {
+                Some(
+                    self.get(self.reset_credits_path(), Some(account), &material, true)
+                        .await,
+                )
+            } else {
+                None
+            }
+        };
+        let (usage_response, reset_credits_response) =
+            tokio::join!(usage_request, reset_credits_request);
+        let usage_response = usage_response?;
         if !usage_response.is_success() {
             return Ok(map_http_error(&usage_response, "OpenAI"));
         }
@@ -205,11 +216,8 @@ impl UsageAdapter for WhamUsageAdapter {
         snapshot.source = Some("codex-oauth".to_owned());
         let mut source_diagnostics = Vec::new();
 
-        if self.fetch_reset_credits {
-            match self
-                .get(self.reset_credits_path(), Some(account), &material, true)
-                .await
-            {
+        if let Some(reset_credits_response) = reset_credits_response {
+            match reset_credits_response {
                 Ok(response) if response.is_success() => {
                     if let Some(inventory) = parse_credit_inventory(&response.body) {
                         snapshot.credit_inventory = Some(inventory);
@@ -230,90 +238,112 @@ impl UsageAdapter for WhamUsageAdapter {
             .workspace_id
             .clone()
             .or_else(|| snapshot.response_account_id.clone());
-        if is_backend_api_base(&base_url) && is_workspace_plan(snapshot.plan_type.as_deref()) {
-            if self.fetch_spend_controls {
-                if let Some(account_id) = workspace_account_id.as_deref() {
-                    let path = format!(
-                        "/backend-api/accounts/{}/spend-controls/current-user/monthly-usage",
-                        percent_encode(account_id)
-                    );
-                    match self.get(&path, Some(account), &material, true).await {
-                        Ok(response) if response.is_success() => {
-                            if let Some(enrichment) = parse_monthly_usage(&response.body) {
-                                snapshot.spend =
-                                    Some(merge_spend(snapshot.spend.take(), enrichment));
-                            } else {
-                                source_diagnostics
-                                    .push(optional_payload_diagnostic("workspace.monthly-usage"));
-                            }
-                        }
-                        Ok(response) => source_diagnostics.push(optional_response_diagnostic(
-                            "workspace.monthly-usage",
-                            &response,
-                        )),
-                        Err(error) => source_diagnostics.push(optional_transport_diagnostic(
-                            "workspace.monthly-usage",
-                            &error,
-                        )),
-                    }
-                }
+        let is_workspace_plan =
+            is_backend_api_base(&base_url) && is_workspace_plan(snapshot.plan_type.as_deref());
+        let monthly_usage_path = if is_workspace_plan && self.fetch_spend_controls {
+            workspace_account_id.as_deref().map(|account_id| {
+                format!(
+                    "/backend-api/accounts/{}/spend-controls/current-user/monthly-usage",
+                    percent_encode(account_id)
+                )
+            })
+        } else {
+            None
+        };
+        let needs_workspace_balance = self.fetch_workspace_balance
+            && snapshot
+                .credits
+                .as_ref()
+                .and_then(|credits| credits.balance)
+                .is_none();
+        let workspace_balance_path = if is_workspace_plan && needs_workspace_balance {
+            workspace_account_id.as_deref().map(|account_id| {
+                format!(
+                    "/backend-api/accounts/{}/remaining_balance",
+                    percent_encode(account_id)
+                )
+            })
+        } else {
+            None
+        };
+        let monthly_usage_request = async {
+            match monthly_usage_path.as_deref() {
+                Some(path) => Some(self.get(path, Some(account), &material, true).await),
+                None => None,
             }
-            if self.fetch_workspace_balance
-                && snapshot
-                    .credits
-                    .as_ref()
-                    .and_then(|credits| credits.balance)
-                    .is_none()
-            {
-                if let Some(account_id) = workspace_account_id.as_deref() {
-                    let path = format!(
-                        "/backend-api/accounts/{}/remaining_balance",
-                        percent_encode(account_id)
-                    );
-                    match self.get(&path, Some(account), &material, true).await {
-                        Ok(response) if response.is_success() => {
-                            if let Some(balance) = parse_balance(&response.body) {
-                                snapshot.credits = Some(CreditsSnapshot {
-                                    has_credits: snapshot
-                                        .credits
-                                        .as_ref()
-                                        .and_then(|credits| credits.has_credits),
-                                    unlimited: snapshot
-                                        .credits
-                                        .as_ref()
-                                        .and_then(|credits| credits.unlimited),
-                                    balance: Some(balance),
-                                    currency_code: snapshot
-                                        .credits
-                                        .as_ref()
-                                        .and_then(|credits| credits.currency_code.clone()),
-                                    approximate_message_cost: snapshot
-                                        .credits
-                                        .as_ref()
-                                        .and_then(|credits| credits.approximate_message_cost),
-                                    limit: snapshot
-                                        .credits
-                                        .as_ref()
-                                        .and_then(|credits| credits.limit.clone()),
-                                    balance_read_succeeded: Some(true),
-                                    credits_available: Some(balance > 0.0),
-                                });
-                            } else {
-                                source_diagnostics.push(optional_payload_diagnostic(
-                                    "workspace.remaining-balance",
-                                ));
-                            }
-                        }
-                        Ok(response) => source_diagnostics.push(optional_response_diagnostic(
-                            "workspace.remaining-balance",
-                            &response,
-                        )),
-                        Err(error) => source_diagnostics.push(optional_transport_diagnostic(
-                            "workspace.remaining-balance",
-                            &error,
-                        )),
+        };
+        let workspace_balance_request = async {
+            match workspace_balance_path.as_deref() {
+                Some(path) => Some(self.get(path, Some(account), &material, true).await),
+                None => None,
+            }
+        };
+        let (monthly_usage_response, workspace_balance_response) =
+            tokio::join!(monthly_usage_request, workspace_balance_request);
+
+        if let Some(monthly_usage_response) = monthly_usage_response {
+            match monthly_usage_response {
+                Ok(response) if response.is_success() => {
+                    if let Some(enrichment) = parse_monthly_usage(&response.body) {
+                        snapshot.spend = Some(merge_spend(snapshot.spend.take(), enrichment));
+                    } else {
+                        source_diagnostics
+                            .push(optional_payload_diagnostic("workspace.monthly-usage"));
                     }
                 }
+                Ok(response) => source_diagnostics.push(optional_response_diagnostic(
+                    "workspace.monthly-usage",
+                    &response,
+                )),
+                Err(error) => source_diagnostics.push(optional_transport_diagnostic(
+                    "workspace.monthly-usage",
+                    &error,
+                )),
+            }
+        }
+
+        if let Some(workspace_balance_response) = workspace_balance_response {
+            match workspace_balance_response {
+                Ok(response) if response.is_success() => {
+                    if let Some(balance) = parse_balance(&response.body) {
+                        snapshot.credits = Some(CreditsSnapshot {
+                            has_credits: snapshot
+                                .credits
+                                .as_ref()
+                                .and_then(|credits| credits.has_credits),
+                            unlimited: snapshot
+                                .credits
+                                .as_ref()
+                                .and_then(|credits| credits.unlimited),
+                            balance: Some(balance),
+                            currency_code: snapshot
+                                .credits
+                                .as_ref()
+                                .and_then(|credits| credits.currency_code.clone()),
+                            approximate_message_cost: snapshot
+                                .credits
+                                .as_ref()
+                                .and_then(|credits| credits.approximate_message_cost),
+                            limit: snapshot
+                                .credits
+                                .as_ref()
+                                .and_then(|credits| credits.limit.clone()),
+                            balance_read_succeeded: Some(true),
+                            credits_available: Some(balance > 0.0),
+                        });
+                    } else {
+                        source_diagnostics
+                            .push(optional_payload_diagnostic("workspace.remaining-balance"));
+                    }
+                }
+                Ok(response) => source_diagnostics.push(optional_response_diagnostic(
+                    "workspace.remaining-balance",
+                    &response,
+                )),
+                Err(error) => source_diagnostics.push(optional_transport_diagnostic(
+                    "workspace.remaining-balance",
+                    &error,
+                )),
             }
         }
         snapshot.source_diagnostics = source_diagnostics;
@@ -1197,6 +1227,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn codex_independent_usage_enrichment_requests_run_concurrently() {
+        let transport = Arc::new(ParallelCodexRequestTransport {
+            usage_and_reset_barrier: tokio::sync::Barrier::new(2),
+            workspace_enrichment_barrier: tokio::sync::Barrier::new(2),
+        });
+        let auth = Arc::new(StaticOAuthAuth(oauth_material()));
+        let adapter = WhamUsageAdapter::new(transport, auth, true, true)
+            .unwrap()
+            .with_reset_credits(true);
+        let account = AccountRecord::create(
+            "codex",
+            "codex@example.com",
+            None,
+            OPENAI,
+            Some("workspace-1".to_owned()),
+        )
+        .unwrap();
+
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(2), adapter.probe(&account))
+                .await
+                .expect("independent Codex usage requests should not wait on each other")
+                .unwrap();
+
+        assert!(result.succeeded());
+    }
+
+    #[tokio::test]
     async fn optional_endpoint_failures_are_reported_without_failing_codex_usage() {
         let transport = Arc::new(OptionalEndpointFailureTransport {
             requests: Mutex::new(Vec::new()),
@@ -1316,6 +1374,39 @@ mod tests {
 
     struct OptionalEndpointFailureTransport {
         requests: Mutex<Vec<UsageHttpRequest>>,
+    }
+
+    struct ParallelCodexRequestTransport {
+        usage_and_reset_barrier: tokio::sync::Barrier,
+        workspace_enrichment_barrier: tokio::sync::Barrier,
+    }
+
+    #[async_trait]
+    impl UsageHttpTransport for ParallelCodexRequestTransport {
+        async fn send(
+            &self,
+            request: UsageHttpRequest,
+        ) -> Result<UsageHttpResponse, TransportError> {
+            let path = request.url.path();
+            let (status_code, body) = if path.ends_with("/wham/usage") {
+                self.usage_and_reset_barrier.wait().await;
+                (
+                    200,
+                    r#"{"account_id":"workspace-1","plan_type":"team","rate_limit":{"primary_window":{"used_percent":40,"reset_at":"2030-01-01T00:00:00Z","limit_window_seconds":18000}}}"#.to_owned(),
+                )
+            } else if path.ends_with("/wham/rate-limit-reset-credits") {
+                self.usage_and_reset_barrier.wait().await;
+                (404, String::new())
+            } else {
+                self.workspace_enrichment_barrier.wait().await;
+                (404, String::new())
+            };
+            Ok(UsageHttpResponse {
+                status_code,
+                body,
+                headers: BTreeMap::new(),
+            })
+        }
     }
 
     #[async_trait]
