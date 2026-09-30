@@ -75,6 +75,9 @@ pub enum Text {
     InCodexHint,
     CodexSwitching,
     CodexSwitchFailed,
+    MoveAccountUp,
+    MoveAccountDown,
+    ShowClaudeGptGroup,
 }
 
 pub fn default_language() -> Language {
@@ -167,6 +170,9 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, InCodexHint) => "Codex is using this account · press to restart it",
         (English, CodexSwitching) => "Switching…",
         (English, CodexSwitchFailed) => "Could not switch Codex",
+        (English, MoveAccountUp) => "Move up",
+        (English, MoveAccountDown) => "Move down",
+        (English, ShowClaudeGptGroup) => "Show Claude and GPT models",
         (Arabic, LoadingAccounts) => "جارٍ تحميل الحسابات وقراءات الاستخدام المحفوظة",
         (Arabic, AccountsDatabaseUnavailable) => "تعذرت قراءة قاعدة بيانات الحسابات المحلية",
         (Arabic, NoAccountsForProvider) => "لا توجد حسابات محفوظة لهذا المزود",
@@ -238,5 +244,8 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (Arabic, InCodexHint) => "Codex يعمل بهذا الحساب الآن · اضغط لإعادة تشغيله",
         (Arabic, CodexSwitching) => "جارٍ التبديل…",
         (Arabic, CodexSwitchFailed) => "تعذر تبديل حساب Codex",
+        (Arabic, MoveAccountUp) => "نقل للأعلى",
+        (Arabic, MoveAccountDown) => "نقل للأسفل",
+        (Arabic, ShowClaudeGptGroup) => "إظهار نماذج Claude وGPT",
     }
 }

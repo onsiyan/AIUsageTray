@@ -21,13 +21,25 @@ use iced::{
     },
 };
 use lucide_icons::iced::{
-    icon_arrow_left_right, icon_check, icon_eye, icon_eye_off, icon_pencil, icon_x,
+    icon_arrow_left_right, icon_check, icon_chevron_down, icon_chevron_up, icon_eye, icon_eye_off,
+    icon_pencil, icon_x,
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs, io,
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
+
+const ACCOUNT_ORDER_FILE: &str = "account-order.txt";
+const HIDE_ANTIGRAVITY_CLAUDE_GPT_FILE: &str = "antigravity-hide-claude-gpt.txt";
+
+/// Whether the Antigravity "Claude and GPT models" group is hidden.
+static HIDE_ANTIGRAVITY_CLAUDE_GPT: AtomicBool = AtomicBool::new(false);
+
+fn antigravity_claude_gpt_hidden() -> bool {
+    HIDE_ANTIGRAVITY_CLAUDE_GPT.load(Ordering::Relaxed)
+}
 
 use crate::{
     Message, PROVIDER_TABS, UsageProvider,
@@ -331,6 +343,9 @@ pub struct DashboardState {
     show_all_model_quotas: bool,
     show_antigravity_quota_groups: bool,
     codex_desktop: CodexDesktopState,
+    /// User-chosen display order; accounts not listed keep their saved order
+    /// after the listed ones.
+    account_order: Vec<AccountId>,
 }
 
 /// Which saved Codex account the Codex desktop app is signed in with, and
@@ -417,7 +432,80 @@ impl DashboardState {
                 active_account: current_codex_desktop_account(),
                 ..CodexDesktopState::default()
             },
+            account_order: load_account_order(),
         }
+        .with_loaded_display_preferences()
+    }
+
+    fn with_loaded_display_preferences(self) -> Self {
+        HIDE_ANTIGRAVITY_CLAUDE_GPT.store(load_hide_antigravity_claude_gpt(), Ordering::Relaxed);
+        self
+    }
+
+    pub fn set_hide_antigravity_claude_gpt(&mut self, hide: bool) -> io::Result<()> {
+        HIDE_ANTIGRAVITY_CLAUDE_GPT.store(hide, Ordering::Relaxed);
+        let directory = crate::theme::preference_directory()?;
+        fs::create_dir_all(&directory)?;
+        fs::write(
+            directory.join(HIDE_ANTIGRAVITY_CLAUDE_GPT_FILE),
+            if hide { "hide" } else { "show" },
+        )
+    }
+
+    /// The accounts of one tab in display order.
+    fn ordered_entries(&self, provider: UsageProvider) -> Vec<&AccountUsageEntry> {
+        let mut accounts = self
+            .entries
+            .iter()
+            .filter(|entry| belongs_to_provider(&entry.account.provider_id, provider))
+            .collect::<Vec<_>>();
+        accounts.sort_by_key(|entry| account_rank(&self.account_order, entry.account.id));
+        accounts
+    }
+
+    /// Moves an account one place up (`-1`) or down (`1`) within its tab and
+    /// saves the new order.
+    pub fn move_account(&mut self, account_id: AccountId, offset: isize) -> io::Result<()> {
+        let Some(provider) = self
+            .entries
+            .iter()
+            .find(|entry| entry.account.id == account_id)
+            .and_then(|entry| provider_tab(&entry.account.provider_id))
+        else {
+            return Ok(());
+        };
+        let mut tab_ids = self
+            .ordered_entries(provider)
+            .iter()
+            .map(|entry| entry.account.id)
+            .collect::<Vec<_>>();
+        let Some(index) = tab_ids.iter().position(|id| *id == account_id) else {
+            return Ok(());
+        };
+        let Some(target) = index
+            .checked_add_signed(offset)
+            .filter(|target| *target < tab_ids.len())
+        else {
+            return Ok(());
+        };
+        tab_ids.swap(index, target);
+
+        // Rebuild the global order: other tabs keep their places, and this
+        // tab's slots take its new sequence.
+        let mut all = self.entries.iter().collect::<Vec<_>>();
+        all.sort_by_key(|entry| account_rank(&self.account_order, entry.account.id));
+        let mut reordered = tab_ids.into_iter();
+        self.account_order = all
+            .iter()
+            .map(|entry| {
+                if belongs_to_provider(&entry.account.provider_id, provider) {
+                    reordered.next().unwrap_or(entry.account.id)
+                } else {
+                    entry.account.id
+                }
+            })
+            .collect();
+        save_account_order(&self.account_order)
     }
 
     /// Marks a Codex desktop switch as running. Returns false while another
@@ -627,6 +715,53 @@ impl DashboardState {
     }
 }
 
+fn account_rank(order: &[AccountId], account_id: AccountId) -> usize {
+    order
+        .iter()
+        .position(|id| *id == account_id)
+        .unwrap_or(usize::MAX)
+}
+
+fn provider_tab(provider_id: &str) -> Option<UsageProvider> {
+    PROVIDER_TABS
+        .iter()
+        .map(|tab| tab.provider)
+        .find(|provider| belongs_to_provider(provider_id, *provider))
+}
+
+fn load_account_order() -> Vec<AccountId> {
+    crate::theme::preference_directory()
+        .ok()
+        .and_then(|directory| fs::read_to_string(directory.join(ACCOUNT_ORDER_FILE)).ok())
+        .map(|contents| {
+            contents
+                .lines()
+                .filter_map(|line| line.trim().parse().ok().map(AccountId))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn save_account_order(order: &[AccountId]) -> io::Result<()> {
+    let directory = crate::theme::preference_directory()?;
+    fs::create_dir_all(&directory)?;
+    let contents = order
+        .iter()
+        .map(|id| id.0.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(directory.join(ACCOUNT_ORDER_FILE), contents)
+}
+
+fn load_hide_antigravity_claude_gpt() -> bool {
+    crate::theme::preference_directory()
+        .ok()
+        .and_then(|directory| {
+            fs::read_to_string(directory.join(HIDE_ANTIGRAVITY_CLAUDE_GPT_FILE)).ok()
+        })
+        .is_some_and(|value| value.trim() == "hide")
+}
+
 fn current_codex_desktop_account() -> Option<AccountId> {
     codex_desktop::active_account(&codex_desktop::CodexDesktopPaths::from_environment())
 }
@@ -792,11 +927,8 @@ pub fn view(
     theme: &'static crate::theme::ThemeDefinition,
     language: Language,
 ) -> Element<'static, Message> {
-    let accounts = state
-        .entries
-        .iter()
-        .filter(|entry| belongs_to_provider(&entry.account.provider_id, provider))
-        .collect::<Vec<_>>();
+    let accounts = state.ordered_entries(provider);
+    let account_count = accounts.len();
 
     let body: Element<'static, Message> = if state.is_loading && !state.has_loaded {
         centered_note(locale::text(language, Text::LoadingAccounts), theme)
@@ -815,6 +947,7 @@ pub fn view(
             }
             account_sections.push(account_card(
                 entry,
+                (index > 0, index + 1 < account_count),
                 state.alias_editor.as_ref(),
                 &state.usage_animation,
                 state.account_name_is_hovered(entry.account.id),
@@ -856,6 +989,7 @@ pub(crate) fn belongs_to_provider(provider_id: &str, provider: UsageProvider) ->
 
 fn account_card(
     entry: &AccountUsageEntry,
+    (can_move_up, can_move_down): (bool, bool),
     alias_editor: Option<&AliasEditor>,
     usage_animation: &UsageAnimationState,
     account_name_hovered: bool,
@@ -937,7 +1071,14 @@ fn account_card(
         );
     } else {
         let edit_slot: Element<'static, Message> = if account_name_hovered {
-            edit_name_button(account_id, theme, language)
+            row![
+                edit_name_button(account_id, theme, language),
+                move_account_button(account_id, -1, can_move_up, theme, language),
+                move_account_button(account_id, 1, can_move_down, theme, language),
+            ]
+            .spacing(1)
+            .align_y(Alignment::Center)
+            .into()
         } else {
             space().width(24).height(24).into()
         };
@@ -1208,6 +1349,57 @@ fn codex_desktop_button(
         control = control.on_press(Message::SwitchCodexDesktopAccount(account_id));
     }
 
+    tooltip(
+        control,
+        text(locale::text(language, tip)).size(typography::METADATA_SIZE),
+        tooltip::Position::Bottom,
+    )
+    .delay(Duration::from_millis(350))
+    .into()
+}
+
+fn move_account_button(
+    account_id: AccountId,
+    offset: isize,
+    enabled: bool,
+    theme: &'static crate::theme::ThemeDefinition,
+    language: Language,
+) -> Element<'static, Message> {
+    let glyph = if offset < 0 {
+        icon_chevron_up()
+    } else {
+        icon_chevron_down()
+    };
+    let color = if enabled {
+        theme.colors.text()
+    } else {
+        muted_text(theme).scale_alpha(0.45)
+    };
+    let mut control = button(container(glyph.size(13).color(color)).center(22))
+        .width(22)
+        .height(24)
+        .padding(0)
+        .style(move |framework_theme, status| {
+            let mut style = button::text(framework_theme, status);
+            style.background = (enabled
+                && matches!(status, button::Status::Hovered | button::Status::Pressed))
+            .then(|| Background::Color(theme.colors.hover()));
+            style.text_color = theme.colors.text();
+            style.border = Border {
+                radius: 6.0.into(),
+                ..Border::default()
+            };
+            style.shadow = Default::default();
+            style
+        });
+    if enabled {
+        control = control.on_press(Message::MoveAccount(account_id, offset));
+    }
+    let tip = if offset < 0 {
+        Text::MoveAccountUp
+    } else {
+        Text::MoveAccountDown
+    };
     tooltip(
         control,
         text(locale::text(language, tip)).size(typography::METADATA_SIZE),
@@ -1714,6 +1906,24 @@ fn model_visibility_menu(
     ]
     .spacing(5)
     .width(Fill);
+    if is_antigravity_account && show_antigravity_quota_groups {
+        menu_content = menu_content.push(
+            checkbox(!antigravity_claude_gpt_hidden())
+                .label(locale::text(language, Text::ShowClaudeGptGroup))
+                .size(12)
+                .spacing(7)
+                .text_size(typography::METADATA_SIZE)
+                .font(typography::BODY)
+                .on_toggle(|show| Message::SetAntigravityClaudeGptHidden(!show))
+                .style(move |framework_theme, status| {
+                    if theme.colors.is_light {
+                        checkbox_style(theme, status)
+                    } else {
+                        iced::widget::checkbox::primary(framework_theme, status)
+                    }
+                }),
+        );
+    }
     if !model_entries.is_empty() {
         let model_list = scrollable(column(model_rows).spacing(2))
             .height(Length::Fixed(176.0))
@@ -2504,6 +2714,9 @@ fn append_antigravity_quota_groups(
         (AntigravityQuotaGroup::Gemini, Text::GeminiModels),
         (AntigravityQuotaGroup::ClaudeGpt, Text::ClaudeGptModels),
     ] {
+        if group == AntigravityQuotaGroup::ClaudeGpt && antigravity_claude_gpt_hidden() {
+            continue;
+        }
         let weekly =
             select_antigravity_quota_metric(metrics, group, AntigravityQuotaPeriod::Weekly);
         let five_hour =
@@ -3673,6 +3886,47 @@ mod tests {
         assert!(label.contains(" at "));
         assert!(label.contains("· in 2d 3h"));
         assert!(!label.contains("51h"));
+    }
+
+    #[test]
+    fn moving_an_account_reorders_only_its_own_tab() {
+        let make = |provider: &str, email: &str| AccountUsageEntry {
+            account: AccountRecord::create(email, email, None, provider, None).unwrap(),
+            snapshot: None,
+        };
+        let entries = vec![
+            make(codex_usage_core::accounts::OPENAI, "a@example.com"),
+            make(codex_usage_core::accounts::CLAUDE, "c@example.com"),
+            make(codex_usage_core::accounts::OPENAI, "b@example.com"),
+        ];
+        let ids = entries
+            .iter()
+            .map(|entry| entry.account.id)
+            .collect::<Vec<_>>();
+        let mut state = DashboardState::loading();
+        state.entries = entries;
+        state.account_order = Vec::new();
+
+        let codex_order = |state: &DashboardState| {
+            state
+                .ordered_entries(UsageProvider::Codex)
+                .iter()
+                .map(|entry| entry.account.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(codex_order(&state), vec![ids[0], ids[2]]);
+
+        // Moving the first account up does nothing.
+        let _ = state.move_account(ids[0], -1);
+        assert_eq!(codex_order(&state), vec![ids[0], ids[2]]);
+
+        let _ = state.move_account(ids[2], -1);
+        assert_eq!(codex_order(&state), vec![ids[2], ids[0]]);
+        assert_eq!(
+            state.account_order,
+            vec![ids[2], ids[1], ids[0]],
+            "the Claude account keeps its slot"
+        );
     }
 
     #[test]

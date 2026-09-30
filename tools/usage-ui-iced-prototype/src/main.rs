@@ -208,6 +208,7 @@ struct App {
     openrouter_api_key: String,
     openrouter_management_key: String,
     account_add_running: bool,
+    account_add_cancel: Option<Sender<()>>,
     account_add_status: Option<AccountAddStatus>,
     selected_provider: UsageProvider,
     dashboard_refresh_running: bool,
@@ -239,6 +240,7 @@ impl App {
             openrouter_api_key: String::new(),
             openrouter_management_key: String::new(),
             account_add_running: false,
+            account_add_cancel: None,
             account_add_status: None,
             selected_provider: UsageProvider::Codex,
             dashboard_refresh_running: false,
@@ -330,6 +332,18 @@ impl App {
             }
             Message::BeginAliasEdit(account_id) => {
                 self.dashboard.begin_alias_edit(account_id);
+                Task::none()
+            }
+            Message::MoveAccount(account_id, offset) => {
+                if let Err(error) = self.dashboard.move_account(account_id, offset) {
+                    preview_log(format!("account order save failed: {error}"));
+                }
+                Task::none()
+            }
+            Message::SetAntigravityClaudeGptHidden(hide) => {
+                if let Err(error) = self.dashboard.set_hide_antigravity_claude_gpt(hide) {
+                    preview_log(format!("antigravity group preference save failed: {error}"));
+                }
                 Task::none()
             }
             Message::AccountNameHovered(account_id) => {
@@ -702,7 +716,12 @@ impl App {
             }
             Message::AccountAddCompleted(provider, result) => {
                 self.account_add_running = false;
+                self.account_add_cancel = None;
                 match result {
+                    Err(error) if error == ACCOUNT_ADD_CANCELLED => {
+                        self.account_add_status = None;
+                        Task::none()
+                    }
                     Ok(()) => {
                         self.account_add_status = Some(AccountAddStatus::Added(provider));
                         self.selected_provider = provider;
@@ -714,6 +733,12 @@ impl App {
                         Task::none()
                     }
                 }
+            }
+            Message::CancelAccountAdd => {
+                if let Some(cancel) = self.account_add_cancel.take() {
+                    let _ = cancel.try_send(());
+                }
+                Task::none()
             }
             Message::DismissAccountAddStatus => {
                 if !self.account_add_running {
@@ -895,13 +920,16 @@ impl App {
     ) -> Task<Message> {
         self.account_add_running = true;
         self.account_add_status = Some(AccountAddStatus::Running(provider));
-        let completion_receiver =
-            match spawn_account_add_worker(move || add_account(provider, credentials)) {
-                Ok(receiver) => receiver,
-                Err(error) => {
-                    return Task::done(Message::AccountAddCompleted(provider, Err(error)));
-                }
-            };
+        let (cancel_sender, cancel_receiver) = async_channel::bounded(1);
+        self.account_add_cancel = Some(cancel_sender);
+        let completion_receiver = match spawn_account_add_worker(move || {
+            add_account(provider, credentials, cancel_receiver)
+        }) {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                return Task::done(Message::AccountAddCompleted(provider, Err(error)));
+            }
+        };
 
         Task::perform(
             async move {
@@ -1220,9 +1248,13 @@ where
     Ok(receiver)
 }
 
+/// Result of an account add the user cancelled; it is not shown as a failure.
+const ACCOUNT_ADD_CANCELLED: &str = "account add cancelled";
+
 async fn add_account(
     provider: UsageProvider,
     credentials: Option<(String, String)>,
+    cancel: Receiver<()>,
 ) -> Result<(), String> {
     let current_executable = std::env::current_exe()
         .map_err(|error| format!("Could not locate this application: {error}"))?;
@@ -1289,15 +1321,44 @@ async fn add_account(
         drop(stdin);
     }
 
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|error| format!("The account sign-in flow could not finish: {error}"))?;
+    let process_id = child.id();
+    let output = tokio::select! {
+        output = child.wait_with_output() => output
+            .map_err(|error| format!("The account sign-in flow could not finish: {error}"))?,
+        Ok(()) = cancel.recv() => {
+            // The account tool runs the provider's login helper, which holds
+            // the sign-in callback port until it times out. End the whole
+            // process tree so a new sign-in can start immediately.
+            if let Some(process_id) = process_id {
+                kill_process_tree(process_id);
+            }
+            return Err(ACCOUNT_ADD_CANCELLED.to_owned());
+        }
+    };
     if output.status.success() {
         Ok(())
     } else {
         let details = account_add_failure_detail(&output.stdout, &output.stderr);
         Err(redact_and_limit_account_add_error(details, &secrets))
+    }
+}
+
+fn kill_process_tree(process_id: u32) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &process_id.to_string(), "/T", "/F"])
+            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &process_id.to_string()])
+            .status();
     }
 }
 
@@ -1374,6 +1435,7 @@ enum Message {
     SubmitOpenRouterCredentials,
     CancelOpenRouterCredentials,
     AccountAddCompleted(UsageProvider, Result<(), String>),
+    CancelAccountAdd,
     DismissAccountAddStatus,
     SelectTheme(ThemeId),
     SelectPercentDisplay(PercentDisplay),
@@ -1393,6 +1455,8 @@ enum Message {
     SetModelVisibility(String, bool),
     SetModelQuotaDisplay(bool),
     SetAntigravityQuotaGroups(bool),
+    SetAntigravityClaudeGptHidden(bool),
+    MoveAccount(codex_usage_core::accounts::AccountId, isize),
     SaveAlias(codex_usage_core::accounts::AccountId),
     AliasSaved(
         codex_usage_core::accounts::AccountId,
@@ -2730,7 +2794,27 @@ fn account_add_status_banner(
 
     let close_button: Element<'static, Message> = if matches!(status, AccountAddStatus::Running(_))
     {
-        Space::new().width(22).height(22).into()
+        button(text(locale::text(language, locale::Text::Cancel)).size(typography::METADATA_SIZE))
+            .on_press(Message::CancelAccountAdd)
+            .padding([3, 9])
+            .style(move |framework_theme: &Theme, state| {
+                let mut style = button::text(framework_theme, state);
+                style.background = Some(Background::Color(
+                    if matches!(state, button::Status::Hovered | button::Status::Pressed) {
+                        active_theme.colors.hover()
+                    } else {
+                        active_theme.colors.control_surface()
+                    },
+                ));
+                style.text_color = active_theme.colors.text();
+                style.border = Border {
+                    color: active_theme.colors.border(0.20),
+                    width: 1.0,
+                    radius: 6.0.into(),
+                };
+                style
+            })
+            .into()
     } else {
         button(container(icon_x().size(13)).center(Fill))
             .on_press(Message::DismissAccountAddStatus)
