@@ -32,6 +32,8 @@ use std::{
 };
 
 const ACCOUNT_ORDER_FILE: &str = "account-order.txt";
+/// Rename (24) + move up (22) + move down (22) + two 1px gaps.
+const HOVER_CONTROLS_WIDTH: f32 = 70.0;
 const HIDE_ANTIGRAVITY_CLAUDE_GPT_FILE: &str = "antigravity-hide-claude-gpt.txt";
 
 /// Whether the Antigravity "Claude and GPT models" group is hidden.
@@ -1078,15 +1080,18 @@ fn account_card(
             ]
             .spacing(1)
             .align_y(Alignment::Center)
+            .width(HOVER_CONTROLS_WIDTH)
             .into()
         } else {
-            space().width(24).height(24).into()
+            // Reserve the controls' width so hovering never reflows the header.
+            space().width(HOVER_CONTROLS_WIDTH).height(24).into()
         };
         let name_and_edit = row![
             text(account.display_name().to_owned())
                 .size(typography::ACCOUNT_NAME_SIZE)
                 .font(typography::EMPHASIS)
-                .color(theme.colors.text()),
+                .color(theme.colors.text())
+                .wrapping(text::Wrapping::None),
             edit_slot,
         ]
         .spacing(5)
@@ -1315,7 +1320,9 @@ fn codex_desktop_button(
     let mut control = button(
         row![
             glyph.size(12).color(theme.colors.text()),
-            text(locale::text(language, label)).size(typography::CONTROL_SIZE),
+            text(locale::text(language, label))
+                .size(typography::CONTROL_SIZE)
+                .wrapping(text::Wrapping::None),
         ]
         .spacing(4)
         .align_y(Alignment::Center),
