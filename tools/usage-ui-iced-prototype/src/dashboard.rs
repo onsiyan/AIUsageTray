@@ -1986,7 +1986,7 @@ fn model_quota_tile(
                 .width(Fill),
             text(remaining.map_or_else(
                 || locale::text(language, Text::Unavailable).to_owned(),
-                |value| format!("{value:.0}%")
+                |value| format!("{:.0}%", crate::percent_display::current().displayed(value))
             ))
             .size(typography::COMPACT_SIZE)
             .font(typography::STRONG)
@@ -1998,8 +1998,9 @@ fn model_quota_tile(
         .into(),
     ];
     if let Some(remaining) = remaining {
+        let shown = crate::percent_display::current().displayed(remaining);
         tile_rows.push(
-            progress_bar(0.0..=100.0, remaining as f32)
+            progress_bar(0.0..=100.0, shown as f32)
                 .girth(4)
                 .style(move |_| progress_bar::Style {
                     background: Background::Color(theme.colors.border(0.16)),
@@ -2412,7 +2413,13 @@ fn append_antigravity_quota_groups(
             };
             let label = format!(
                 "{} · {}{}",
-                locale::text(language, Text::QuotaRemaining),
+                locale::text(
+                    language,
+                    match crate::percent_display::current() {
+                        crate::percent_display::PercentDisplay::Remaining => Text::QuotaRemaining,
+                        crate::percent_display::PercentDisplay::Used => Text::QuotaUsed,
+                    }
+                ),
                 metric.name,
                 confidence_note
             );
@@ -2836,6 +2843,7 @@ fn percent_line(
         );
     };
     let accent = usage_color(remaining, theme);
+    let shown = crate::percent_display::current().displayed(remaining);
     column![
         row![
             text(label.to_owned())
@@ -2843,7 +2851,7 @@ fn percent_line(
                 .font(typography::EMPHASIS)
                 .color(theme.colors.text()),
             space().width(Fill),
-            text(format!("{remaining:.0}%"))
+            text(format!("{shown:.0}%"))
                 .size(typography::PERCENTAGE_SIZE)
                 .font(typography::STRONG)
                 .color(accent),
@@ -2851,7 +2859,7 @@ fn percent_line(
         .spacing(6)
         .align_y(Alignment::Center)
         .width(Fill),
-        progress_bar(0.0..=100.0, remaining as f32)
+        progress_bar(0.0..=100.0, shown as f32)
             .girth(5)
             .style(move |_| progress_bar::Style {
                 background: Background::Color(theme.colors.border(0.16)),

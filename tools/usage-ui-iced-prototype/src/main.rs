@@ -32,10 +32,12 @@ use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, 
 
 mod dashboard;
 mod locale;
+mod percent_display;
 mod theme;
 mod typography;
 mod usage_refresh;
 
+use percent_display::PercentDisplay;
 use theme::{THEME_MANIFEST, ThemeDefinition, ThemeId, load_saved_theme, save_theme};
 
 const WINDOW_WIDTH: f32 = 424.0;
@@ -217,6 +219,7 @@ struct App {
 impl App {
     fn new(tray_sender: Sender<TrayIconEvent>) -> Self {
         let theme_id = load_saved_theme();
+        percent_display::set_current(percent_display::load_saved());
         Self {
             tray_sender,
             window_id: None,
@@ -738,6 +741,14 @@ impl App {
                 }
                 Task::none()
             }
+            Message::SelectPercentDisplay(mode) => {
+                percent_display::set_current(mode);
+                self.theme_menu_open = false;
+                if let Err(error) = percent_display::save(mode) {
+                    preview_log(format!("percent display preference save failed: {error}"));
+                }
+                Task::none()
+            }
         }
     }
 
@@ -1103,7 +1114,7 @@ impl App {
             .width(Fill)
             .height(Fill);
 
-            let theme_menu_layer = container(theme_dropdown(self.theme_id))
+            let theme_menu_layer = container(theme_dropdown(self.theme_id, self.language))
                 .width(Fill)
                 .height(Fill)
                 .align_x(Alignment::End)
@@ -1330,6 +1341,7 @@ enum Message {
     AccountAddCompleted(UsageProvider, Result<(), String>),
     DismissAccountAddStatus,
     SelectTheme(ThemeId),
+    SelectPercentDisplay(PercentDisplay),
     SelectProvider(UsageProvider),
     DashboardLoaded(Result<Vec<dashboard::AccountUsageEntry>, String>),
     PriorityUsageRefreshEvent(UsageProvider, usage_refresh::RefreshEvent),
@@ -2750,11 +2762,33 @@ fn decode_provider_logo(bytes: &[u8], black_foreground: bool) -> image::Handle {
     image::Handle::from_rgba(pixels.width(), pixels.height(), pixels.into_raw())
 }
 
-fn theme_dropdown(current_theme: ThemeId) -> Element<'static, Message> {
-    let items = THEME_MANIFEST
+fn theme_dropdown(current_theme: ThemeId, language: locale::Language) -> Element<'static, Message> {
+    let mut items = THEME_MANIFEST
         .iter()
         .copied()
-        .map(|theme| theme_choice_row(theme, current_theme));
+        .map(|theme| theme_choice_row(theme, current_theme))
+        .collect::<Vec<_>>();
+
+    items.push(
+        container(
+            text(locale::text(language, locale::Text::PercentDisplayTitle))
+                .size(typography::METADATA_SIZE)
+                .color(Color::from_rgba(1.0, 1.0, 1.0, 0.6)),
+        )
+        .padding([6, 9])
+        .into(),
+    );
+    let current_display = percent_display::current();
+    for (mode, label) in [
+        (PercentDisplay::Remaining, locale::Text::ShowRemaining),
+        (PercentDisplay::Used, locale::Text::ShowUsed),
+    ] {
+        items.push(percent_display_choice_row(
+            mode,
+            locale::text(language, label),
+            mode == current_display,
+        ));
+    }
 
     container(column(items).spacing(2))
         .width(156)
@@ -2801,6 +2835,36 @@ fn theme_choice_row(
         .align_y(Alignment::Center),
     )
     .on_press(Message::SelectTheme(theme_choice.id))
+    .width(Fill)
+    .height(34)
+    .padding([4, 9])
+    .style(move |theme: &Theme, status| theme_menu_item_style(theme, selected, status))
+    .into()
+}
+
+fn percent_display_choice_row(
+    mode: PercentDisplay,
+    label: &'static str,
+    selected: bool,
+) -> Element<'static, Message> {
+    let check: Element<'static, Message> = if selected {
+        icon_check::<Theme>().size(15).color(Color::WHITE).into()
+    } else {
+        Space::new().width(16).height(15).into()
+    };
+
+    button(
+        row![
+            text(label)
+                .size(typography::LABEL_SIZE)
+                .color(Color::WHITE)
+                .width(Fill),
+            check,
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    )
+    .on_press(Message::SelectPercentDisplay(mode))
     .width(Fill)
     .height(34)
     .padding([4, 9])
