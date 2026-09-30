@@ -155,6 +155,15 @@ where
         {
             return Ok(tokens);
         }
+        if let Some(tokens) = self.credentials.current_access_token(account_id).await?
+            && tokens.is_usable(Utc::now(), self.refresh_skew)
+        {
+            self.access_tokens
+                .write()
+                .await
+                .insert(account_id, tokens.clone());
+            return Ok(tokens);
+        }
 
         let mut credential = self.credentials.get(account_id).await?.ok_or_else(|| {
             AuthError::ReauthenticationRequired("no stored refresh credential".to_owned())

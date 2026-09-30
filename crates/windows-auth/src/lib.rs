@@ -3,8 +3,9 @@ use codex_usage_core::{
     accounts::AccountId,
     auth::{
         AccountAuthMaterial, AccountAuthMaterialStore, AuthError, OAuthBrowserLauncher,
-        OAuthCredentialStore, StoredOAuthCredential,
+        OAuthCredentialStore, OAuthTokenSet, StoredOAuthCredential,
     },
+    codex_desktop::{self, CodexDesktopPaths},
 };
 use std::{
     env,
@@ -57,10 +58,20 @@ impl WindowsCredentialManagerStore {
     }
 }
 
+/// Credentials of a Codex account linked to the Codex desktop app follow the
+/// app's `auth.json` (see `codex_desktop`), so both sides always hold the one
+/// valid single-use refresh token.
 #[async_trait]
 impl OAuthCredentialStore for WindowsCredentialManagerStore {
     async fn get(&self, account_id: AccountId) -> Result<Option<StoredOAuthCredential>, AuthError> {
-        Self::load(account_id)
+        let Some(mut credential) = Self::load(account_id)? else {
+            return Ok(None);
+        };
+        let paths = CodexDesktopPaths::from_environment();
+        if codex_desktop::overlay_linked_credential(&paths, account_id, &mut credential) {
+            Self::save(account_id, &credential)?;
+        }
+        Ok(Some(credential))
     }
 
     async fn save(
@@ -68,11 +79,27 @@ impl OAuthCredentialStore for WindowsCredentialManagerStore {
         account_id: AccountId,
         credential: &StoredOAuthCredential,
     ) -> Result<(), AuthError> {
-        Self::save(account_id, credential)
+        Self::save(account_id, credential)?;
+        codex_desktop::propagate_linked_credential(
+            &CodexDesktopPaths::from_environment(),
+            account_id,
+            credential,
+        )
     }
 
     async fn remove(&self, account_id: AccountId) -> Result<(), AuthError> {
+        codex_desktop::forget_link_for(&CodexDesktopPaths::from_environment(), account_id);
         Self::remove(account_id)
+    }
+
+    async fn current_access_token(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Option<OAuthTokenSet>, AuthError> {
+        Ok(codex_desktop::linked_access_token(
+            &CodexDesktopPaths::from_environment(),
+            account_id,
+        ))
     }
 }
 

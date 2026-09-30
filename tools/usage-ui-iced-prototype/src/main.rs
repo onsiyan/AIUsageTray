@@ -30,6 +30,7 @@ use lucide_icons::{
 use tokio::{io::AsyncWriteExt, process::Command as TokioCommand};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+mod codex_switch;
 mod dashboard;
 mod locale;
 mod percent_display;
@@ -741,6 +742,22 @@ impl App {
                 }
                 Task::none()
             }
+            Message::SwitchCodexDesktopAccount(account_id) => {
+                if !self.dashboard.begin_codex_switch(account_id) {
+                    return Task::none();
+                }
+                Task::perform(
+                    codex_switch::switch_codex_desktop_account(account_id),
+                    move |result| Message::CodexDesktopSwitchFinished(account_id, result),
+                )
+            }
+            Message::CodexDesktopSwitchFinished(account_id, result) => {
+                if let Err(error) = &result {
+                    preview_log(format!("Codex desktop switch failed: {error}"));
+                }
+                self.dashboard.finish_codex_switch(account_id, result);
+                Task::none()
+            }
             Message::SelectPercentDisplay(mode) => {
                 percent_display::set_current(mode);
                 self.theme_menu_open = false;
@@ -1342,6 +1359,8 @@ enum Message {
     DismissAccountAddStatus,
     SelectTheme(ThemeId),
     SelectPercentDisplay(PercentDisplay),
+    SwitchCodexDesktopAccount(codex_usage_core::accounts::AccountId),
+    CodexDesktopSwitchFinished(codex_usage_core::accounts::AccountId, Result<(), String>),
     SelectProvider(UsageProvider),
     DashboardLoaded(Result<Vec<dashboard::AccountUsageEntry>, String>),
     PriorityUsageRefreshEvent(UsageProvider, usage_refresh::RefreshEvent),

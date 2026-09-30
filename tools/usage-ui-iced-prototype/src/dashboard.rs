@@ -1,6 +1,7 @@
 use chrono::{DateTime, Local, Utc};
 use codex_usage_core::{
     accounts::{AccountId, AccountRecord, AccountStatus, AccountStore},
+    codex_desktop,
     storage::{SqliteStore, default_accounts_database_path},
     usage::{
         RateLimitWindow, SpendSnapshot, UsageCreditInventory, UsageCreditRecord, UsageMetric,
@@ -19,7 +20,9 @@ use iced::{
         scrollable, space, span, text, text_input, tooltip,
     },
 };
-use lucide_icons::iced::{icon_eye, icon_eye_off, icon_pencil, icon_x};
+use lucide_icons::iced::{
+    icon_arrow_left_right, icon_check, icon_eye, icon_eye_off, icon_pencil, icon_x,
+};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs, io,
@@ -327,6 +330,16 @@ pub struct DashboardState {
     model_visibility: ModelVisibilityPreferences,
     show_all_model_quotas: bool,
     show_antigravity_quota_groups: bool,
+    codex_desktop: CodexDesktopState,
+}
+
+/// Which saved Codex account the Codex desktop app is signed in with, and
+/// the progress of a switch requested from the dashboard.
+#[derive(Default)]
+struct CodexDesktopState {
+    active_account: Option<AccountId>,
+    switching: Option<AccountId>,
+    failure: Option<(AccountId, String)>,
 }
 
 #[derive(Default)]
@@ -400,7 +413,32 @@ impl DashboardState {
             model_visibility: load_model_visibility_preferences(),
             show_all_model_quotas: false,
             show_antigravity_quota_groups: true,
+            codex_desktop: CodexDesktopState {
+                active_account: current_codex_desktop_account(),
+                ..CodexDesktopState::default()
+            },
         }
+    }
+
+    /// Marks a Codex desktop switch as running. Returns false while another
+    /// switch is still in progress.
+    pub fn begin_codex_switch(&mut self, account_id: AccountId) -> bool {
+        if self.codex_desktop.switching.is_some() {
+            return false;
+        }
+        self.codex_desktop.switching = Some(account_id);
+        self.codex_desktop.failure = None;
+        true
+    }
+
+    pub fn finish_codex_switch(&mut self, account_id: AccountId, result: Result<(), String>) {
+        if self.codex_desktop.switching == Some(account_id) {
+            self.codex_desktop.switching = None;
+        }
+        if let Err(error) = result {
+            self.codex_desktop.failure = Some((account_id, error));
+        }
+        self.codex_desktop.active_account = current_codex_desktop_account();
     }
 
     pub fn set_accounts(&mut self, entries: Vec<AccountUsageEntry>) {
@@ -426,6 +464,7 @@ impl DashboardState {
         self.is_loading = false;
         self.has_loaded = true;
         self.failed = false;
+        self.codex_desktop.active_account = current_codex_desktop_account();
     }
 
     pub fn update_account_usage(&mut self, entry: AccountUsageEntry) {
@@ -586,6 +625,10 @@ impl DashboardState {
             }
         }
     }
+}
+
+fn current_codex_desktop_account() -> Option<AccountId> {
+    codex_desktop::active_account(&codex_desktop::CodexDesktopPaths::from_environment())
 }
 
 pub async fn load_saved_accounts() -> Result<Vec<AccountUsageEntry>, String> {
@@ -779,6 +822,7 @@ pub fn view(
                 &state.model_visibility,
                 state.show_all_model_quotas,
                 state.show_antigravity_quota_groups,
+                &state.codex_desktop,
                 theme,
                 language,
             ));
@@ -819,6 +863,7 @@ fn account_card(
     model_visibility: &ModelVisibilityPreferences,
     show_all_model_quotas: bool,
     show_antigravity_quota_groups: bool,
+    codex_desktop: &CodexDesktopState,
     theme: &'static crate::theme::ThemeDefinition,
     language: Language,
 ) -> Element<'static, Message> {
@@ -977,7 +1022,28 @@ fn account_card(
             language,
         ));
     }
+    let is_codex_account = belongs_to_provider(&account.provider_id, UsageProvider::Codex);
+    if is_codex_account && editing.is_none() {
+        header = header.push(codex_desktop_button(
+            account_id,
+            codex_desktop,
+            theme,
+            language,
+        ));
+    }
     let mut rows: Vec<Element<'static, Message>> = vec![header.width(Fill).into()];
+
+    if let Some((_, error)) = codex_desktop
+        .failure
+        .as_ref()
+        .filter(|(failed_account, _)| *failed_account == account_id)
+    {
+        let message = format!(
+            "{}: {error}",
+            locale::text(language, Text::CodexSwitchFailed)
+        );
+        rows.push(warning_line(&message, theme));
+    }
 
     if editing.is_some_and(|editor| editor.failed) {
         rows.push(warning_line(
@@ -1077,6 +1143,78 @@ fn account_separator(theme: &'static crate::theme::ThemeDefinition) -> Element<'
             ..Default::default()
         })
         .into()
+}
+
+/// "Use in Codex" for a saved Codex account, or a marker on the account the
+/// Codex desktop app is currently signed in with.
+fn codex_desktop_button(
+    account_id: AccountId,
+    codex_desktop: &CodexDesktopState,
+    theme: &'static crate::theme::ThemeDefinition,
+    language: Language,
+) -> Element<'static, Message> {
+    let is_active = codex_desktop.active_account == Some(account_id);
+    let is_switching = codex_desktop.switching == Some(account_id);
+    let (glyph, label, tip) = if is_switching {
+        (
+            icon_arrow_left_right(),
+            Text::CodexSwitching,
+            Text::CodexSwitching,
+        )
+    } else if is_active {
+        (icon_check(), Text::InCodex, Text::InCodexHint)
+    } else {
+        (
+            icon_arrow_left_right(),
+            Text::UseInCodex,
+            Text::UseInCodexHint,
+        )
+    };
+    let accent = theme.accent_color();
+    let mut control = button(
+        row![
+            glyph.size(12).color(theme.colors.text()),
+            text(locale::text(language, label)).size(typography::CONTROL_SIZE),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center),
+    )
+    .padding([3, 7])
+    .style(move |framework_theme, status| {
+        let mut style = button::text(framework_theme, status);
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        style.background = Some(Background::Color(if is_active {
+            accent.scale_alpha(0.18)
+        } else if hovered {
+            theme.colors.hover()
+        } else {
+            theme.colors.control_surface()
+        }));
+        style.text_color = theme.colors.text();
+        style.border = Border {
+            color: if is_active {
+                accent.scale_alpha(0.62)
+            } else {
+                theme.colors.border(0.18)
+            },
+            width: 1.0,
+            radius: 7.0.into(),
+        };
+        style.shadow = Default::default();
+        style
+    });
+    // The active account can be pressed again to restart Codex on it.
+    if codex_desktop.switching.is_none() {
+        control = control.on_press(Message::SwitchCodexDesktopAccount(account_id));
+    }
+
+    tooltip(
+        control,
+        text(locale::text(language, tip)).size(typography::METADATA_SIZE),
+        tooltip::Position::Bottom,
+    )
+    .delay(Duration::from_millis(350))
+    .into()
 }
 
 fn edit_name_button(

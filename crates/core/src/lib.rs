@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod auth;
 pub mod auth_sources;
 pub mod claude_oauth;
+pub mod codex_desktop;
 pub mod oauth_loopback;
 pub mod oauth_service;
 pub mod opencode_go_oauth;

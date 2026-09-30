@@ -69,6 +69,12 @@ pub enum Text {
     AccountAddRunning,
     AccountAdded,
     AccountAddFailed,
+    UseInCodex,
+    UseInCodexHint,
+    InCodex,
+    InCodexHint,
+    CodexSwitching,
+    CodexSwitchFailed,
 }
 
 pub fn default_language() -> Language {
@@ -155,6 +161,12 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, AccountAddRunning) => "Finish signing in to",
         (English, AccountAdded) => "Account added for",
         (English, AccountAddFailed) => "Could not add account",
+        (English, UseInCodex) => "Use in Codex",
+        (English, UseInCodexHint) => "Sign the Codex app in with this account and restart it",
+        (English, InCodex) => "In Codex",
+        (English, InCodexHint) => "Codex is using this account · press to restart it",
+        (English, CodexSwitching) => "Switching…",
+        (English, CodexSwitchFailed) => "Could not switch Codex",
         (Arabic, LoadingAccounts) => "جارٍ تحميل الحسابات وقراءات الاستخدام المحفوظة",
         (Arabic, AccountsDatabaseUnavailable) => "تعذرت قراءة قاعدة بيانات الحسابات المحلية",
         (Arabic, NoAccountsForProvider) => "لا توجد حسابات محفوظة لهذا المزود",
@@ -220,5 +232,11 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (Arabic, AccountAddRunning) => "أكمل تسجيل الدخول إلى",
         (Arabic, AccountAdded) => "أُضيف الحساب لمزود",
         (Arabic, AccountAddFailed) => "تعذرت إضافة الحساب",
+        (Arabic, UseInCodex) => "استخدم في Codex",
+        (Arabic, UseInCodexHint) => "يسجّل برنامج Codex بهذا الحساب ويعيد تشغيله",
+        (Arabic, InCodex) => "في Codex",
+        (Arabic, InCodexHint) => "Codex يعمل بهذا الحساب الآن · اضغط لإعادة تشغيله",
+        (Arabic, CodexSwitching) => "جارٍ التبديل…",
+        (Arabic, CodexSwitchFailed) => "تعذر تبديل حساب Codex",
     }
 }

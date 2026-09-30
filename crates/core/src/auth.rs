@@ -516,6 +516,16 @@ pub trait OAuthCredentialStore: Send + Sync {
         credential: &StoredOAuthCredential,
     ) -> Result<(), AuthError>;
     async fn remove(&self, account_id: AccountId) -> Result<(), AuthError>;
+
+    /// A still-valid access token held by another owner of this credential
+    /// (the Codex app for a linked account). Using it avoids spending the
+    /// shared single-use refresh token.
+    async fn current_access_token(
+        &self,
+        _account_id: AccountId,
+    ) -> Result<Option<OAuthTokenSet>, AuthError> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Default)]
