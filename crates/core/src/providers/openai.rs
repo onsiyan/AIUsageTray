@@ -202,15 +202,18 @@ impl UsageAdapter for WhamUsageAdapter {
         if !usage_response.is_success() {
             return Ok(map_http_error(&usage_response, "OpenAI"));
         }
-        let mut snapshot = match parse_wham_usage(account, &usage_response.body)? {
-            Ok(Some(snapshot)) => snapshot,
-            Ok(None) => {
+        let mut snapshot = match parse_wham_usage(account, &usage_response.body) {
+            Ok(Ok(Some(snapshot))) => snapshot,
+            Ok(Ok(None)) => {
                 return Ok(invalid_payload(
                     "OpenAI",
                     "usage response contained no valid windows",
                 ));
             }
-            Err(error) => return Ok(UsageProbeResult::failure(error)),
+            Ok(Err(error)) => return Ok(UsageProbeResult::failure(error)),
+            // A non-JSON 200 body (for example an HTML interstitial) is an
+            // invalid provider payload, not a network failure.
+            Err(error) => return Ok(invalid_payload("OpenAI", error.to_string())),
         };
         snapshot.observed_email = Some(account.email.clone());
         snapshot.source = Some("codex-oauth".to_owned());
@@ -242,8 +245,10 @@ impl UsageAdapter for WhamUsageAdapter {
             is_backend_api_base(&base_url) && is_workspace_plan(snapshot.plan_type.as_deref());
         let monthly_usage_path = if is_workspace_plan && self.fetch_spend_controls {
             workspace_account_id.as_deref().map(|account_id| {
+                // Relative to the `/backend-api/` base URL; a leading
+                // `/backend-api` segment would be duplicated by `Url::join`.
                 format!(
-                    "/backend-api/accounts/{}/spend-controls/current-user/monthly-usage",
+                    "accounts/{}/spend-controls/current-user/monthly-usage",
                     percent_encode(account_id)
                 )
             })
@@ -258,10 +263,7 @@ impl UsageAdapter for WhamUsageAdapter {
                 .is_none();
         let workspace_balance_path = if is_workspace_plan && needs_workspace_balance {
             workspace_account_id.as_deref().map(|account_id| {
-                format!(
-                    "/backend-api/accounts/{}/remaining_balance",
-                    percent_encode(account_id)
-                )
+                format!("accounts/{}/remaining_balance", percent_encode(account_id))
             })
         } else {
             None
@@ -1293,7 +1295,16 @@ mod tests {
             assert_eq!(diagnostic.retry_after_seconds, Some(17));
             assert!(!diagnostic.message.contains("private response body"));
         }
-        assert_eq!(transport.requests.lock().unwrap().len(), 4);
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 4);
+        let paths = requests
+            .iter()
+            .map(|request| request.url.path().to_owned())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(
+            &"/backend-api/accounts/acct-1/spend-controls/current-user/monthly-usage".to_owned()
+        ));
+        assert!(paths.contains(&"/backend-api/accounts/acct-1/remaining_balance".to_owned()));
     }
 
     #[tokio::test]
@@ -1459,5 +1470,36 @@ mod tests {
                 headers: BTreeMap::new(),
             })
         }
+    }
+    struct HtmlUsageTransport;
+
+    #[async_trait]
+    impl UsageHttpTransport for HtmlUsageTransport {
+        async fn send(
+            &self,
+            _request: UsageHttpRequest,
+        ) -> Result<UsageHttpResponse, TransportError> {
+            Ok(UsageHttpResponse {
+                status_code: 200,
+                body: "<html>maintenance</html>".to_owned(),
+                headers: BTreeMap::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn non_json_usage_body_is_an_invalid_payload_not_a_network_failure() {
+        let auth = Arc::new(StaticOAuthAuth(oauth_material()));
+        let adapter = WhamUsageAdapter::new(Arc::new(HtmlUsageTransport), auth, false, false)
+            .unwrap()
+            .with_reset_credits(false);
+        let account =
+            AccountRecord::create("codex", "codex@example.com", None, OPENAI, None).unwrap();
+
+        let result = adapter.probe(&account).await.unwrap();
+        assert_eq!(
+            result.error.unwrap().code,
+            UsageAdapterErrorCode::InvalidPayload
+        );
     }
 }

@@ -354,12 +354,10 @@ impl OpenCodeGoUsageAdapter {
             .and_then(normalize_workspace_id)
         {
             Some(workspace)
-        } else if let Some(workspace) = env::var("OPENCODE_GO_WORKSPACE_ID")
-            .ok()
-            .and_then(|value| normalize_workspace_id(&value))
-        {
-            Some(workspace)
         } else {
+            // `OPENCODE_GO_WORKSPACE_ID` is process-wide, so it is only used
+            // during discovery to choose among this account's own workspaces;
+            // applying it directly would point every account at one workspace.
             match self.discover_workspace_id(material).await {
                 Ok(Some(workspace)) => Some(workspace),
                 Ok(None) => {
@@ -625,7 +623,10 @@ impl OpenCodeGoUsageAdapter {
         let response = self.request(CONSOLE_ORGS_PATH, material, []).await?;
         if response.is_success() {
             if let Ok(root) = parse_json_document(&response.body) {
-                if let Some(workspace) = find_console_workspace_id(&root) {
+                let preferred = env::var("OPENCODE_GO_WORKSPACE_ID")
+                    .ok()
+                    .and_then(|value| normalize_workspace_id(&value));
+                if let Some(workspace) = select_console_workspace_id(&root, preferred.as_deref()) {
                     return Ok(Some(workspace));
                 }
             }
@@ -751,7 +752,16 @@ impl UsageAdapter for OpenCodeGoUsageAdapter {
         }
 
         let scoped = !material.cookies.is_empty() || account.workspace_id.is_some();
-        let local = self.local_reader.read_from_process(Utc::now());
+        // Reading the local history scans every stored message; keep that
+        // synchronous SQLite work off the async worker threads.
+        let reader = self.local_reader.clone();
+        let local = tokio::task::spawn_blocking(move || reader.read_from_process(Utc::now()))
+            .await
+            .unwrap_or_else(|error| {
+                Err(OpenCodeGoLocalUsageError::HistoryUnavailable(
+                    error.to_string(),
+                ))
+            });
         let mut diagnostics = Vec::new();
         let mut last_failure = None;
 
@@ -969,7 +979,7 @@ fn parse_console_snapshot(
     match (monthly.as_mut(), renews_at) {
         (Some(monthly), Some(renews_at)) if monthly.window.reset_at_utc.is_none() => {
             monthly.window.reset_at_utc = Some(renews_at);
-            monthly.window.limit_window_seconds = (renews_at - Utc::now()).num_seconds().max(0);
+            monthly.window.limit_window_seconds = fixed_window_seconds(UsageWindowKind::Additional);
         }
         _ => {}
     }
@@ -1384,9 +1394,7 @@ fn parse_window(
             name: name.to_owned(),
             used_percent,
             reset_at_utc: reset,
-            limit_window_seconds: reset
-                .map(|value| (value - now).num_seconds().max(0))
-                .unwrap_or_default(),
+            limit_window_seconds: fixed_window_seconds(kind),
         },
         used_amount,
         limit_amount,
@@ -1420,8 +1428,8 @@ fn parse_text_window(
             kind,
             name: name.to_owned(),
             used_percent: percent.clamp(0.0, 100.0),
-            reset_at_utc: seconds.map(|seconds| now + Duration::seconds(seconds.max(0))),
-            limit_window_seconds: seconds.unwrap_or_default().max(0),
+            reset_at_utc: seconds.and_then(|seconds| checked_after(now, seconds as f64)),
+            limit_window_seconds: fixed_window_seconds(kind),
         },
         used_amount: None,
         limit_amount: None,
@@ -1550,11 +1558,21 @@ fn find_workspace_id(value: &Value) -> Option<String> {
 // behavior: only a row's own `id` with a recognized Console prefix is valid.
 // Recursively accepting arbitrary `id` fields can select a user or nested
 // resource ID and make the subsequent usage request target the wrong scope.
-fn find_console_workspace_id(value: &Value) -> Option<String> {
-    value.as_array()?.iter().find_map(|row| {
-        let id = row.get("id")?.as_str()?;
-        is_console_workspace_id(id).then(|| id.to_owned())
-    })
+/// Picks the preferred workspace when it is one of this account's own
+/// workspaces, otherwise the first valid workspace row.
+fn select_console_workspace_id(value: &Value, preferred: Option<&str>) -> Option<String> {
+    let workspaces = value
+        .as_array()?
+        .iter()
+        .filter_map(|row| {
+            let id = row.get("id")?.as_str()?;
+            is_console_workspace_id(id).then(|| id.to_owned())
+        })
+        .collect::<Vec<_>>();
+    preferred
+        .and_then(|preferred| workspaces.iter().find(|id| id.as_str() == preferred))
+        .or_else(|| workspaces.first())
+        .cloned()
 }
 
 fn is_console_workspace_id(value: &str) -> bool {
@@ -1894,7 +1912,26 @@ fn parse_reset_in(value: &Value, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
             "resetSec",
         ],
     )
-    .map(|seconds| now + Duration::seconds(seconds.max(0.0) as i64))
+    .and_then(|seconds| checked_after(now, seconds))
+}
+
+/// Provider values are untrusted: an out-of-range delay must not panic.
+fn checked_after(now: DateTime<Utc>, seconds: f64) -> Option<DateTime<Utc>> {
+    if !seconds.is_finite() {
+        return None;
+    }
+    Duration::try_seconds(seconds.max(0.0) as i64).and_then(|delay| now.checked_add_signed(delay))
+}
+
+/// `limit_window_seconds` is the fixed length of the quota window, never the
+/// time remaining until reset (that is derived from `reset_at_utc`). OpenCode
+/// Go uses a rolling 5-hour, a weekly, and a monthly window.
+fn fixed_window_seconds(kind: UsageWindowKind) -> i64 {
+    match kind {
+        UsageWindowKind::Primary => 5 * 60 * 60,
+        UsageWindowKind::Secondary => 7 * 24 * 60 * 60,
+        UsageWindowKind::Additional => 30 * 24 * 60 * 60,
+    }
 }
 
 fn parse_date_value(value: &Value, _now: DateTime<Utc>) -> Option<DateTime<Utc>> {
@@ -2572,10 +2609,10 @@ mod tests {
             )
             .unwrap();
             assert!(parsed.window.reset_at_utc.is_some(), "missing {key}");
-            assert!(
-                (3599..=3600).contains(&parsed.window.limit_window_seconds),
-                "unexpected duration for {key}: {}",
-                parsed.window.limit_window_seconds
+            assert_eq!(
+                parsed.window.limit_window_seconds,
+                5 * 60 * 60,
+                "the window length must not be a countdown for {key}"
             );
         }
     }
@@ -2600,7 +2637,7 @@ mod tests {
             {"id": "wrk_later"}
         ]);
         assert_eq!(
-            find_console_workspace_id(&orgs),
+            select_console_workspace_id(&orgs, None),
             Some("org_selected".to_owned())
         );
     }
@@ -2741,5 +2778,18 @@ mod tests {
             "availableMicroCents": "999000000"
         });
         assert_eq!(find_console_billing_balance(&absent_balance), None);
+    }
+
+    #[test]
+    fn workspace_preference_only_selects_among_the_accounts_own_workspaces() {
+        let orgs = json!([{ "id": "wrk_first" }, { "id": "wrk_second" }]);
+        assert_eq!(
+            select_console_workspace_id(&orgs, Some("wrk_second")).as_deref(),
+            Some("wrk_second")
+        );
+        assert_eq!(
+            select_console_workspace_id(&orgs, Some("wrk_someone_else")).as_deref(),
+            Some("wrk_first")
+        );
     }
 }

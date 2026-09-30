@@ -1,19 +1,20 @@
-//! Add Claude accounts through Claude Code's official browser OAuth login.
+//! Add Claude accounts through a direct browser OAuth sign-in.
 //!
-//! Each add-account attempt uses a temporary, account-isolated
-//! `CLAUDE_CONFIG_DIR`. Credentials are copied to Windows Credential Manager
-//! and the temporary plaintext profile is removed before usage is refreshed.
+//! Like the Codex and Antigravity flows, this opens Claude's authorization page
+//! in the default browser (PKCE + localhost callback), verifies the signed-in
+//! identity, and stores the per-account credentials in Windows Credential
+//! Manager. It does not need the Claude Code CLI or a temporary profile.
 
 use codex_usage_core::{
-    accounts::{AccountId, AccountRecord, AccountStore, CLAUDE, VerifiedIdentity},
+    accounts::{AccountRecord, AccountStore, CLAUDE, VerifiedIdentity},
     auth::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
         StoredAuthMaterialProvider,
     },
-    auth_sources::LocalFileAuthMaterialProvider,
+    claude_oauth,
+    oauth_loopback::LoopbackOAuthCallbackListenerFactory,
     providers::{
         claude::{ClaudeSourceMode, fetch_oauth_identity},
-        claude_cli,
         registry::ProviderRegistryConfig,
     },
     refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
@@ -22,8 +23,10 @@ use codex_usage_core::{
     transport::ReqwestUsageHttpTransport,
     usage::UsageSnapshotStore,
 };
-use codex_usage_windows_auth::WindowsCredentialManagerAuthMaterialStore;
-use std::{collections::HashMap, env, fs, io::ErrorKind, path::PathBuf, sync::Arc, time::Duration};
+use codex_usage_windows_auth::{
+    WindowsCredentialManagerAuthMaterialStore, WindowsDefaultBrowserLauncher,
+};
+use std::{env, path::PathBuf, sync::Arc, time::Duration};
 
 #[derive(Debug, Default)]
 struct Arguments {
@@ -51,31 +54,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let secure_material_store = Arc::new(WindowsCredentialManagerAuthMaterialStore);
     let transport = Arc::new(ReqwestUsageHttpTransport::new(Duration::from_secs(45))?);
 
-    let mut login_config_directory = None;
     let (identity, material) = if arguments.login {
         let timeout = Duration::from_secs(arguments.timeout_seconds.max(1));
-        let config_directory = ClaudeLoginConfigDirectory::create()?;
-        let environment = env::vars().collect::<HashMap<_, _>>();
-        let login_environment =
-            claude_cli::login_environment(&environment, config_directory.path());
-        println!(
-            "Starting the official Claude Code sign-in. Complete authentication in the browser it opens."
-        );
-        claude_cli::login(&environment, config_directory.path(), timeout).await?;
-        let material = LocalFileAuthMaterialProvider::with_home_directory(
-            AccountId::new(),
-            PathBuf::new(),
-            login_environment,
+        println!("Opening Claude sign-in in your default browser. Complete authentication there.");
+        let material = claude_oauth::login(
+            transport.as_ref(),
+            &LoopbackOAuthCallbackListenerFactory,
+            &WindowsDefaultBrowserLauncher,
+            timeout,
         )
-        .read_claude_oauth_material()
-        .ok_or("Claude Code sign-in finished, but isolated OAuth credentials were not found")?;
+        .await?;
         require_claude_code_oauth_material(&material)?;
         let access_token = material
             .bearer_token
             .as_deref()
             .expect("OAuth material validation requires an access token");
         let identity = fetch_oauth_identity(transport.as_ref(), access_token).await?;
-        login_config_directory = Some(config_directory);
         (identity, material)
     } else {
         let account =
@@ -120,9 +114,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     account_store.upsert(&account).await?;
 
     secure_material_store.save(account.id, &material).await?;
-    if let Some(config_directory) = login_config_directory.as_mut() {
-        config_directory.cleanup()?;
-    }
     let account = account_store
         .get(account.id)
         .await?
@@ -205,58 +196,6 @@ fn require_claude_code_oauth_material(
         );
     }
     Ok(())
-}
-
-struct ClaudeLoginConfigDirectory {
-    path: Option<PathBuf>,
-}
-
-impl ClaudeLoginConfigDirectory {
-    fn create() -> Result<Self, std::io::Error> {
-        let data_directory = env::var_os("LOCALAPPDATA")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(env::temp_dir);
-        let login_root = data_directory
-            .join("CodexUsageMonitor-Rust")
-            .join("claude-login");
-        fs::create_dir_all(&login_root)?;
-
-        let path = login_root.join(AccountId::new().to_string());
-        fs::create_dir(&path)?;
-        Ok(Self { path: Some(path) })
-    }
-
-    fn path(&self) -> &std::path::Path {
-        self.path
-            .as_deref()
-            .expect("Claude login config directory is still active")
-    }
-
-    fn cleanup(&mut self) -> Result<(), std::io::Error> {
-        let Some(path) = self.path.as_deref() else {
-            return Ok(());
-        };
-        match fs::remove_dir_all(path) {
-            Ok(()) => {
-                self.path = None;
-                Ok(())
-            }
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                self.path = None;
-                Ok(())
-            }
-            Err(error) => Err(error),
-        }
-    }
-}
-
-impl Drop for ClaudeLoginConfigDirectory {
-    fn drop(&mut self) {
-        if let Some(path) = self.path.as_deref() {
-            let _ = fs::remove_dir_all(path);
-        }
-    }
 }
 
 fn announce_cli_account_reference(account: &AccountRecord) {
@@ -366,7 +305,7 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
             "--probe-existing" => arguments.login = false,
             "--help" | "-h" => {
                 println!(
-                    "Usage: codex-usage-claude-probe [--database PATH] [--label LABEL] [--email EMAIL] [--new] [--timeout-seconds N] [--probe-existing]\n\nRuns Claude Code's official OAuth sign-in in the default browser, verifies the account with Claude's OAuth profile endpoint, stores per-account credentials in Windows Credential Manager, removes the temporary login profile, and probes OAuth usage."
+                    "Usage: codex-usage-claude-probe [--database PATH] [--label LABEL] [--email EMAIL] [--new] [--timeout-seconds N] [--probe-existing]\n\nSigns in to Claude with OAuth in the default browser, verifies the account with Claude's OAuth profile endpoint, stores per-account credentials in Windows Credential Manager, and probes OAuth usage."
                 );
                 std::process::exit(0);
             }
@@ -397,20 +336,5 @@ mod tests {
             ..AccountAuthMaterial::default()
         };
         assert!(require_claude_code_oauth_material(&non_refreshable_oauth).is_err());
-    }
-
-    #[test]
-    fn temporary_login_profile_is_removed_after_credential_import() {
-        let mut directory = ClaudeLoginConfigDirectory::create().unwrap();
-        let path = directory.path().to_owned();
-        fs::write(
-            path.join(".credentials.json"),
-            "temporary-secret-placeholder",
-        )
-        .unwrap();
-
-        directory.cleanup().unwrap();
-
-        assert!(!path.exists());
     }
 }

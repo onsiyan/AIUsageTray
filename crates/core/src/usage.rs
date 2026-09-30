@@ -229,11 +229,14 @@ impl UsageSnapshot {
             .chain(self.additional_windows.iter().map(|window| &window.window))
     }
 
+    /// Marks the snapshot stale. `stale_at_utc` records when the data first
+    /// became stale, so repeated failures keep the original timestamp.
     pub fn mark_stale(&self, reason: impl Into<String>) -> Self {
         let mut next = self.clone();
+        let first_stale_at = self.stale_at_utc.filter(|_| self.is_stale);
         next.is_stale = true;
         next.stale_reason = Some(reason.into());
-        next.stale_at_utc = Some(Utc::now());
+        next.stale_at_utc = Some(first_stale_at.unwrap_or_else(Utc::now));
         next
     }
 }
@@ -326,6 +329,22 @@ pub trait UsageSnapshotStore: Send + Sync {
         account_id: AccountId,
     ) -> Result<Option<UsageSnapshot>, StorageError>;
     async fn save(&self, snapshot: UsageSnapshot) -> Result<(), StorageError>;
+    /// Marks the latest stored snapshot stale and returns it. Stores that keep
+    /// history should update the latest row in place rather than appending a
+    /// duplicate observation for every failed refresh. Returns `None` when the
+    /// account has no stored snapshot.
+    async fn mark_latest_stale(
+        &self,
+        account_id: AccountId,
+        reason: &str,
+    ) -> Result<Option<UsageSnapshot>, StorageError> {
+        let Some(latest) = self.get_latest(account_id).await? else {
+            return Ok(None);
+        };
+        let stale = latest.mark_stale(reason);
+        self.save(stale.clone()).await?;
+        Ok(Some(stale))
+    }
     async fn get_codex_weekly_reset_candidate(
         &self,
         account_id: AccountId,

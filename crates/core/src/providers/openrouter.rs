@@ -552,9 +552,13 @@ impl UsageAdapter for OpenRouterUsageAdapter {
             source: Some("api".to_owned()),
             data_confidence: "authoritative".to_owned(),
         };
+        // The workspace id identifies the workspace, not this API key: several
+        // separately registered keys can share one workspace. Recording it as
+        // the account's provider identity makes those accounts collide with
+        // the unique-identity constraint on every refresh.
         let identity = VerifiedIdentity {
             email: None,
-            provider_account_id: workspace_id,
+            provider_account_id: None,
             plan_type: snapshot.plan_type.clone(),
         };
         Ok(UsageProbeResult::success(snapshot, Some(identity)))

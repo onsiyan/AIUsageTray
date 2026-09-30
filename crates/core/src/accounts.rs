@@ -234,6 +234,26 @@ impl AccountRecord {
         Ok(next)
     }
 
+    /// Applies a provider-verified identity observed during a refresh.
+    ///
+    /// Returns `None` when the record would not change. A user-selected
+    /// `Paused` or `Disabled` state is kept; only an automatic
+    /// reauthentication marker is cleared by a successful verification.
+    pub fn with_verified_identity(
+        &self,
+        email: Option<&str>,
+        provider_account_id: Option<&str>,
+    ) -> Result<Option<Self>, AccountError> {
+        let mut next = self.with_identity(email, provider_account_id)?;
+        if matches!(self.status, AccountStatus::Paused | AccountStatus::Disabled) {
+            next.status = self.status;
+        }
+        let changed = next.email != self.email
+            || next.provider_account_id != self.provider_account_id
+            || next.status != self.status;
+        Ok(changed.then_some(next))
+    }
+
     pub fn with_codex_home(&self, codex_home: Option<&str>) -> Self {
         let mut next = self.clone();
         next.codex_home = codex_home
@@ -296,6 +316,17 @@ pub trait AccountStore: Send + Sync {
         &self,
         account_id: AccountId,
         alias: Option<&str>,
+    ) -> Result<Option<AccountRecord>, AccountStoreError>;
+    /// Applies a provider-verified identity to the account's *current* stored
+    /// record. Unlike `upsert`, this never recreates an account that was
+    /// removed while a refresh was in flight and never overwrites metadata
+    /// (alias, status, workspace) changed concurrently. Returns `None` when
+    /// the account no longer exists.
+    async fn apply_verified_identity(
+        &self,
+        account_id: AccountId,
+        email: Option<&str>,
+        provider_account_id: Option<&str>,
     ) -> Result<Option<AccountRecord>, AccountStoreError>;
     async fn remove(&self, account_id: AccountId) -> Result<(), AccountStoreError>;
 }
@@ -441,6 +472,40 @@ impl AccountStore for InMemoryAccountStore {
         };
         let updated = account.with_alias(alias);
         *account = updated.clone();
+        Ok(Some(updated))
+    }
+
+    async fn apply_verified_identity(
+        &self,
+        account_id: AccountId,
+        email: Option<&str>,
+        provider_account_id: Option<&str>,
+    ) -> Result<Option<AccountRecord>, AccountStoreError> {
+        let mut state = self.state.write().await;
+        let Some(current) = state.accounts.get(&account_id).cloned() else {
+            return Ok(None);
+        };
+        let Some(updated) = current
+            .with_verified_identity(email, provider_account_id)
+            .map_err(|error| AccountStoreError::InvalidData(error.to_string()))?
+        else {
+            return Ok(Some(current));
+        };
+        if updated
+            .provider_account_id
+            .as_deref()
+            .is_some_and(|identity| {
+                state.accounts.values().any(|existing| {
+                    existing.id != updated.id
+                        && existing.provider_id == updated.provider_id
+                        && existing.provider_account_id.as_deref() == Some(identity)
+                        && existing.workspace_id == updated.workspace_id
+                })
+            })
+        {
+            return Err(AccountStoreError::DuplicateProviderIdentity);
+        }
+        state.accounts.insert(account_id, updated.clone());
         Ok(Some(updated))
     }
 

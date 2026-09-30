@@ -257,7 +257,10 @@ pub fn resolve_binary(environment: &HashMap<String, String>) -> Option<PathBuf> 
     }
 
     let resolver = if cfg!(windows) { "where.exe" } else { "which" };
-    let output = Command::new(resolver).arg("claude").output().ok()?;
+    let mut command = Command::new(resolver);
+    command.arg("claude");
+    crate::providers::shared::hide_console_window(&mut command);
+    let output = command.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -316,14 +319,32 @@ pub async fn login(
     timeout: Duration,
 ) -> Result<ClaudeCliLoginResult, ClaudeCliError> {
     let environment = login_environment(environment, config_directory);
-    tokio::task::spawn_blocking(move || login_blocking(&environment, timeout))
+    tokio::task::spawn_blocking(move || login_blocking(&environment, timeout, None))
         .await
         .map_err(|error| ClaudeCliError::Launch(error.to_string()))?
+}
+
+/// Runs the official Claude login and forwards its validated authorization
+/// URL as soon as the CLI prints it. The host can then open the URL using the
+/// operating system's default browser while this process waits for OAuth.
+pub async fn login_with_auth_link_sender(
+    environment: &HashMap<String, String>,
+    config_directory: &Path,
+    timeout: Duration,
+    auth_link_sender: tokio::sync::mpsc::UnboundedSender<String>,
+) -> Result<ClaudeCliLoginResult, ClaudeCliError> {
+    let environment = login_environment(environment, config_directory);
+    tokio::task::spawn_blocking(move || {
+        login_blocking(&environment, timeout, Some(auth_link_sender))
+    })
+    .await
+    .map_err(|error| ClaudeCliError::Launch(error.to_string()))?
 }
 
 fn login_blocking(
     environment: &HashMap<String, String>,
     timeout: Duration,
+    auth_link_sender: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 ) -> Result<ClaudeCliLoginResult, ClaudeCliError> {
     let binary = resolve_binary(environment).ok_or(ClaudeCliError::NotInstalled)?;
     let working_directory = probe_working_directory();
@@ -384,6 +405,7 @@ fn login_blocking(
     let deadline = Instant::now() + timeout;
     let mut output = Vec::new();
     let mut enter_sent = false;
+    let mut auth_link_forwarded = false;
     let mut success_seen_at: Option<Instant> = None;
     let mut process_status = None;
 
@@ -409,7 +431,19 @@ fn login_blocking(
                 output.extend_from_slice(&chunk);
                 let text = String::from_utf8_lossy(&output);
                 let normalized = normalize_terminal_text(&text);
-                if !enter_sent && normalized.contains("pressentertoopeninbrowser") {
+                if !auth_link_forwarded
+                    && let Some(auth_link) = first_claude_auth_url(&text)
+                    && let Some(sender) = auth_link_sender.as_ref()
+                {
+                    auth_link_forwarded = sender.send(auth_link).is_ok();
+                }
+                // When the host received the CLI-generated URL, it opens that
+                // exact URL itself. Letting the CLI's prompt open it as well
+                // would create a second browser tab.
+                if !enter_sent
+                    && normalized.contains("pressentertoopeninbrowser")
+                    && (auth_link_sender.is_none() || !auth_link_forwarded)
+                {
                     write_pty(&mut writer, "\r")?;
                     enter_sent = true;
                 }
@@ -464,20 +498,29 @@ fn login_blocking(
         )));
     }
     Ok(ClaudeCliLoginResult {
-        auth_link: first_http_url(&text),
+        auth_link: first_claude_auth_url(&text),
         output: text,
     })
 }
 
-fn first_http_url(text: &str) -> Option<String> {
+fn first_claude_auth_url(text: &str) -> Option<String> {
     let pattern = r#"https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+"#;
     let regex = Regex::new(pattern).ok()?;
-    let found = regex.find(text)?.as_str();
-    Some(
-        found
-            .trim_end_matches(['.', ',', ';', ':', ')', ']', '}', '"', '\''])
-            .to_owned(),
-    )
+    let found = regex.find(text)?;
+    // Do not forward a URL that may merely be the end of the latest PTY
+    // chunk. Wait for a delimiter so query parameters are not truncated.
+    if found.end() == text.len() {
+        return None;
+    }
+    let candidate = found
+        .as_str()
+        .trim_end_matches(['.', ',', ';', ':', ')', ']', '}', '"', '\'']);
+    let url = url::Url::parse(candidate).ok()?;
+    let host = url.host_str()?;
+    let trusted_host = ["claude.ai", "claude.com", "anthropic.com"]
+        .iter()
+        .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")));
+    (url.scheme() == "https" && trusted_host).then(|| url.into())
 }
 
 pub async fn probe(
@@ -956,9 +999,37 @@ fn run_direct_command(
         }
     }
 
+    crate::providers::shared::hide_console_window(&mut command);
+
     let mut child = command
         .spawn()
         .map_err(|error| ClaudeCliError::Launch(error.to_string()))?;
+    // Drain both pipes while waiting: a child that fills a pipe buffer would
+    // otherwise block forever and only end at the timeout.
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        thread::spawn(move || {
+            let mut buffer = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe
+                    .by_ref()
+                    .take(MAX_OUTPUT_BYTES as u64 + 1)
+                    .read_to_end(&mut buffer);
+            }
+            buffer
+        })
+    };
+    let stdout = drain(
+        child
+            .stdout
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
+    let stderr = drain(
+        child
+            .stderr
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
     let deadline = Instant::now() + timeout;
     loop {
         if child
@@ -975,11 +1046,11 @@ fn run_direct_command(
         }
         thread::sleep(Duration::from_millis(50));
     }
-    let output = child
-        .wait_with_output()
-        .map_err(|error| ClaudeCliError::Launch(error.to_string()))?;
-    let mut text = output.stdout;
-    text.extend_from_slice(&output.stderr);
+    let mut text = stdout.join().unwrap_or_default();
+    text.extend_from_slice(&stderr.join().unwrap_or_default());
+    if text.len() > MAX_OUTPUT_BYTES {
+        return Err(ClaudeCliError::OutputTooLarge);
+    }
     if text.is_empty() {
         return Err(ClaudeCliError::ProcessExited);
     }
@@ -1161,14 +1232,20 @@ fn parse_identity(status_text: &str) -> ParsedIdentity {
             .flatten()
             .filter(|value| !value.is_empty())
     });
-    let lower = clean.to_ascii_lowercase();
-    let plan_type = if lower.contains("max") {
+    // Whole-word matches only: the status panel also contains words such as
+    // "project", "profile", or "maximum".
+    let has_word = |word: &str| {
+        Regex::new(&format!(r"(?i)\b{word}\b"))
+            .expect("valid plan expression")
+            .is_match(&clean)
+    };
+    let plan_type = if has_word("max") {
         Some("Claude Max".to_owned())
-    } else if lower.contains("pro") {
+    } else if has_word("pro") {
         Some("Claude Pro".to_owned())
-    } else if lower.contains("team") {
+    } else if has_word("team") {
         Some("Claude Team".to_owned())
-    } else if lower.contains("enterprise") {
+    } else if has_word("enterprise") {
         Some("Claude Enterprise".to_owned())
     } else {
         None
@@ -1298,9 +1375,14 @@ fn reset_at_near(lines: &[&str], now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let hour = duration_component(line, r"(?i)(\d+)\s*(?:hours?|h)\b");
     let minute = duration_component(line, r"(?i)(\d+)\s*(?:minutes?|mins?|m)\b");
     let second = duration_component(line, r"(?i)(\d+)\s*(?:seconds?|secs?|s)\b");
-    let seconds = day * 86_400 + hour * 3_600 + minute * 60 + second;
-    if seconds > 0 {
-        return Some(now + ChronoDuration::seconds(seconds));
+    let seconds = day
+        .checked_mul(86_400)
+        .and_then(|total| total.checked_add(hour.checked_mul(3_600)?))
+        .and_then(|total| total.checked_add(minute.checked_mul(60)?))
+        .and_then(|total| total.checked_add(second));
+    if let Some(seconds) = seconds.filter(|seconds| *seconds > 0) {
+        return ChronoDuration::try_seconds(seconds)
+            .and_then(|delay| now.checked_add_signed(delay));
     }
 
     let timestamp =
@@ -1338,43 +1420,38 @@ fn slugify(value: &str) -> String {
 }
 
 fn strip_terminal_sequences(text: &str) -> String {
+    // Operates on characters, not bytes, so multi-byte UTF-8 (box drawing,
+    // bullets, localized text) survives intact.
     let mut output = String::with_capacity(text.len());
-    let bytes = text.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == 0x1b {
-            index += 1;
-            if index < bytes.len() && bytes[index] == b'[' {
-                index += 1;
-                while index < bytes.len() {
-                    let byte = bytes[index];
-                    index += 1;
-                    if (0x40..=0x7e).contains(&byte) {
-                        break;
+    let mut characters = text.chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            '\u{1b}' => match characters.peek() {
+                Some('[') => {
+                    characters.next();
+                    for code in characters.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&code) {
+                            break;
+                        }
                     }
                 }
-            } else if index < bytes.len() && bytes[index] == b']' {
-                index += 1;
-                while index < bytes.len() {
-                    let byte = bytes[index];
-                    index += 1;
-                    if byte == 0x07 {
-                        break;
-                    }
-                    if byte == 0x1b && index < bytes.len() && bytes[index] == b'\\' {
-                        index += 1;
-                        break;
+                Some(']') => {
+                    characters.next();
+                    while let Some(code) = characters.next() {
+                        if code == '\u{07}' {
+                            break;
+                        }
+                        if code == '\u{1b}' && characters.peek() == Some(&'\\') {
+                            characters.next();
+                            break;
+                        }
                     }
                 }
-            }
-            continue;
+                _ => {}
+            },
+            '\r' => {}
+            other => output.push(other),
         }
-        if bytes[index] == b'\r' {
-            index += 1;
-            continue;
-        }
-        output.push(bytes[index] as char);
-        index += 1;
     }
     output
 }
@@ -1528,5 +1605,30 @@ Current week (all models)
         assert!(!body.contains("token"));
         clear_persisted_rate_limit(&environment);
         assert!(!path.exists());
+    }
+}
+
+#[cfg(test)]
+mod parser_regression_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_cleanup_keeps_multibyte_characters() {
+        let cleaned = strip_terminal_sequences("\u{1b}[1m│ Current session · 5%\u{1b}[0m\r\n");
+        assert_eq!(cleaned, "│ Current session · 5%\n");
+    }
+
+    #[test]
+    fn plan_detection_ignores_words_that_contain_plan_names() {
+        let identity = parse_identity("Project: /work/maximum-profile\nEmail: a@example.com");
+        assert_eq!(identity.plan_type, None);
+        let identity = parse_identity("Plan: Claude Max (20x)");
+        assert_eq!(identity.plan_type.as_deref(), Some("Claude Max"));
+    }
+
+    #[test]
+    fn huge_reset_countdown_does_not_overflow() {
+        let lines = ["Resets in 99999999999999 days"];
+        assert!(reset_at_near(&lines, Utc::now()).is_none());
     }
 }

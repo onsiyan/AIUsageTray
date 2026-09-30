@@ -298,6 +298,7 @@ dependencies = [
 name = "codex-usage-cli"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "clap",
  "codex-usage-core",

@@ -13,10 +13,15 @@ use crate::{
     transport::{TransportError, UsageHttpRequest, UsageHttpTransport},
     usage::{
         AdditionalRateLimitWindow, CreditsSnapshot, RateLimitWindow, SpendSnapshot, UsageAdapter,
-        UsageAdapterErrorCode, UsageMetric, UsagePrimaryWindowKind, UsageProbeResult,
-        UsageSnapshot, UsageSourceDiagnostic, UsageWindowKind,
+        UsageAdapterErrorCode, UsageCreditInventory, UsageCreditRecord, UsageMetric,
+        UsagePrimaryWindowKind, UsageProbeResult, UsageSnapshot, UsageSourceDiagnostic,
+        UsageWindowKind,
     },
 };
+
+/// Claude Code version reported to the OAuth usage endpoint. The server only
+/// includes reset grants for sufficiently recent CLI versions.
+const CLAUDE_CODE_CLIENT_VERSION: &str = "2.1.999";
 use async_trait::async_trait;
 use chrono::{Duration, SecondsFormat, Utc};
 use reqwest::Method;
@@ -147,7 +152,9 @@ impl ClaudeUsageAdapter {
             .find(|(name, _)| name.eq_ignore_ascii_case("retry-after"))
             .and_then(|(_, value)| value.trim().parse::<i64>().ok())
             .filter(|seconds| *seconds >= 0)
-            .unwrap_or(300);
+            .unwrap_or(300)
+            // An untrusted header must not overflow chrono or block for days.
+            .min(24 * 60 * 60);
         self.oauth_rate_limit_until.lock().await.insert(
             oauth_token_key(access_token),
             Utc::now() + chrono::Duration::seconds(retry_after),
@@ -190,10 +197,13 @@ impl ClaudeUsageAdapter {
         &self,
         access_token: &str,
     ) -> Result<crate::transport::UsageHttpResponse, TransportError> {
-        let url = self
+        let mut url = self
             .oauth_base_url
             .join("api/oauth/usage")
             .map_err(|error| TransportError::InvalidUrl(error.to_string()))?;
+        // `cedar_ember=1` adds the usage-limit reset grants. The server only
+        // returns them to a recent Claude Code CLI client, so identify as one.
+        url.query_pairs_mut().append_pair("cedar_ember", "1");
         self.transport
             .send(UsageHttpRequest {
                 method: Method::GET,
@@ -203,7 +213,15 @@ impl ClaudeUsageAdapter {
                     ("Content-Type".to_owned(), "application/json".to_owned()),
                     ("Authorization".to_owned(), format!("Bearer {access_token}")),
                     ("anthropic-beta".to_owned(), "oauth-2025-04-20".to_owned()),
-                    ("User-Agent".to_owned(), "claude-code/2.1.0".to_owned()),
+                    (
+                        "User-Agent".to_owned(),
+                        format!("claude-cli/{CLAUDE_CODE_CLIENT_VERSION} (external, cli)"),
+                    ),
+                    ("x-app".to_owned(), "cli".to_owned()),
+                    (
+                        "anthropic-client-platform".to_owned(),
+                        "claude_code_cli".to_owned(),
+                    ),
                 ]
                 .into_iter()
                 .collect(),
@@ -406,7 +424,12 @@ impl ClaudeUsageAdapter {
             .as_ref()
             .and_then(|profile| profile.email.clone())
             .or_else(|| Some(account.email.clone()));
-        let plan_type = claude_oauth_plan_type(&root);
+        // The usage payload rarely names the subscription; the profile does.
+        let plan_type = claude_oauth_plan_type(&root).or_else(|| {
+            profile
+                .as_ref()
+                .and_then(|profile| profile.plan_type.clone())
+        });
         let primary_kind = primary_window_kind(primary.as_ref());
         let snapshot = UsageSnapshot {
             account_id: account.id,
@@ -419,7 +442,7 @@ impl ClaudeUsageAdapter {
             secondary,
             additional_windows: additional,
             credits,
-            credit_inventory: None,
+            credit_inventory: parse_claude_reset_grants(&root, now),
             spend,
             observed_email: observed_email.clone(),
             is_stale: false,
@@ -931,6 +954,15 @@ impl ClaudeUsageAdapter {
                 return map_claude_cli_error(error);
             }
         };
+        // The CLI reads the machine's global Claude Code login, which is not
+        // bound to this account. As an automatic fallback it may only report
+        // usage when it proves it is signed in as this same account;
+        // otherwise another account's usage would be published here.
+        if let Some(rejection) =
+            unverified_cli_fallback(self.source_mode, account, usage.observed_email.as_deref())
+        {
+            return rejection;
+        }
         if self.fetch_account_identity && !email_matches(account, usage.observed_email.as_deref()) {
             return account_mismatch("Claude CLI session belongs to another account");
         }
@@ -1149,7 +1181,10 @@ impl UsageAdapter for ClaudeUsageAdapter {
             has_oauth_credentials: access_token.is_some(),
         });
 
-        let mut last_result = None;
+        // Report the failure of the first source actually attempted (the
+        // account's preferred one). A later fallback failing for an unrelated
+        // reason must not replace, for example, a retryable OAuth rate limit.
+        let mut first_failure = None;
         for step in &plan.ordered_steps {
             if !step.is_plausibly_available {
                 continue;
@@ -1157,7 +1192,7 @@ impl UsageAdapter for ClaudeUsageAdapter {
             let result = match step.source {
                 ClaudeSource::AdminApi => {
                     self.probe_admin(account, admin_key.as_deref().expect("planner checked key"))
-                        .await?
+                        .await
                 }
                 ClaudeSource::OAuth => {
                     probe_oauth_with_scope(
@@ -1167,14 +1202,14 @@ impl UsageAdapter for ClaudeUsageAdapter {
                         &material,
                         session_key.as_deref(),
                     )
-                    .await?
+                    .await
                 }
                 ClaudeSource::Web => {
                     self.probe_web(
                         account,
                         session_key.as_deref().expect("planner checked session"),
                     )
-                    .await?
+                    .await
                 }
                 ClaudeSource::Cli => {
                     let options = if self.source_mode == ClaudeSourceMode::Automatic {
@@ -1182,18 +1217,58 @@ impl UsageAdapter for ClaudeUsageAdapter {
                     } else {
                         ClaudeCliProbeOptions::explicit()
                     };
-                    self.probe_cli(account, options, session_key.as_deref())
-                        .await
+                    Ok(self
+                        .probe_cli(account, options, session_key.as_deref())
+                        .await)
                 }
             };
+            // A transport error in one source must not skip the remaining
+            // fallbacks.
+            let result = result.unwrap_or_else(transport_failure);
             if result.succeeded() || oauth_is_account_boundary(&result) {
                 return Ok(result);
             }
-            last_result = Some(result);
+            first_failure.get_or_insert(result);
         }
 
-        Ok(last_result.unwrap_or_else(|| missing_auth(missing_source_label(self.source_mode))))
+        Ok(first_failure.unwrap_or_else(|| missing_auth(missing_source_label(self.source_mode))))
     }
+}
+
+/// The CLI reads the machine's global Claude Code login. As an automatic
+/// fallback it is accepted only when it reports this account's email.
+fn unverified_cli_fallback(
+    source_mode: ClaudeSourceMode,
+    account: &AccountRecord,
+    cli_email: Option<&str>,
+) -> Option<UsageProbeResult> {
+    let verified = cli_email.is_some_and(|email| email_matches(account, Some(email)));
+    (source_mode == ClaudeSourceMode::Automatic && !verified).then(|| {
+        UsageProbeResult::failure(crate::usage::UsageAdapterError {
+            code: UsageAdapterErrorCode::AuthenticationUnavailable,
+            message: "Claude CLI is not verified as signed in to this account".to_owned(),
+            http_status_code: None,
+            retry_after_seconds: None,
+        })
+    })
+}
+
+fn transport_failure(error: TransportError) -> UsageProbeResult {
+    let code = match &error {
+        TransportError::Serialization(_) => UsageAdapterErrorCode::InvalidPayload,
+        TransportError::InvalidUrl(_) | TransportError::InvalidHeader { .. } => {
+            UsageAdapterErrorCode::Unknown
+        }
+        TransportError::Timeout(_) | TransportError::Request(_) => {
+            UsageAdapterErrorCode::NetworkFailure
+        }
+    };
+    UsageProbeResult::failure(crate::usage::UsageAdapterError {
+        code,
+        message: format!("Claude {error}"),
+        http_status_code: None,
+        retry_after_seconds: None,
+    })
 }
 
 fn missing_source_label(source_mode: ClaudeSourceMode) -> &'static str {
@@ -1339,6 +1414,7 @@ struct ClaudeProfile {
     account_id: Option<String>,
     organization_id: Option<String>,
     email: Option<String>,
+    plan_type: Option<String>,
 }
 
 /// Fetches the identity associated with a Claude Code OAuth access token.
@@ -1390,7 +1466,7 @@ pub async fn fetch_oauth_identity(
     Ok(VerifiedIdentity {
         email: profile.email,
         provider_account_id: profile.organization_id.or(profile.account_id),
-        plan_type: None,
+        plan_type: profile.plan_type,
     })
 }
 
@@ -1509,6 +1585,47 @@ fn parse_claude_profile(body: &str) -> Option<ClaudeProfile> {
         email: account
             .and_then(|value| json_string(value, &["emailAddress", "email_address", "email"]))
             .or_else(|| json_string(&root, &["emailAddress", "email_address", "email"])),
+        plan_type: claude_profile_plan_type(account, organization),
+    })
+}
+
+/// The OAuth profile names the subscription in
+/// `organization.organization_type` (for example `claude_pro`, `claude_max`),
+/// with the Max multiplier in `rate_limit_tier` and the Team seat in
+/// `seat_tier`. `account.has_claude_max`/`has_claude_pro` are the fallback.
+fn claude_profile_plan_type(
+    account: Option<&Value>,
+    organization: Option<&Value>,
+) -> Option<String> {
+    let field = |names: &[&str]| organization.and_then(|value| json_string(value, names));
+    let organization_type = field(&["organization_type", "organizationType"]);
+    let rate_limit_tier = field(&["rate_limit_tier", "rateLimitTier"]);
+    let seat_tier = field(&["seat_tier", "seatTier"]);
+    claude_plan_label(
+        organization_type.as_deref(),
+        rate_limit_tier.as_deref(),
+        None,
+        seat_tier.as_deref(),
+    )
+    .or_else(|| {
+        let flag = |name: &str| {
+            account
+                .and_then(|value| value.get(name))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        };
+        if flag("has_claude_max") {
+            Some(claude_plan_label(
+                Some("max"),
+                rate_limit_tier.as_deref(),
+                None,
+                None,
+            )?)
+        } else if flag("has_claude_pro") {
+            Some("Claude Pro".to_owned())
+        } else {
+            None
+        }
     })
 }
 
@@ -1630,12 +1747,7 @@ fn map_claude_http_error(
     response: &crate::transport::UsageHttpResponse,
     source: &str,
 ) -> UsageProbeResult {
-    let body = response.body.to_ascii_lowercase();
-    let challenge = response.status_code == 403
-        && (response.headers.iter().any(|(name, value)| {
-            name.eq_ignore_ascii_case("cf-mitigated")
-                && value.trim().eq_ignore_ascii_case("challenge")
-        }) || body.contains("just a moment"));
+    let challenge = crate::providers::shared::is_cloudflare_challenge(response);
     let code = if challenge {
         crate::usage::UsageAdapterErrorCode::CloudflareChallenge
     } else {
@@ -1768,7 +1880,10 @@ fn parse_admin_usage(body: &str) -> Option<AdminUsageTotals> {
     let mut totals = AdminUsageTotals::default();
     let mut models = HashMap::<String, AdminModelTotals>::new();
     for bucket in buckets {
-        let results = bucket.get("results").and_then(Value::as_array)?;
+        // An empty day bucket must not invalidate the whole 30-day report.
+        let Some(results) = bucket.get("results").and_then(Value::as_array) else {
+            continue;
+        };
         for result in results {
             if let Some(amount) = json_number(result, &["amount"]) {
                 totals.cost_usd = Some(totals.cost_usd.unwrap_or_default() + amount / 100.0);
@@ -2048,6 +2163,71 @@ fn is_all_models_scope(model_id: Option<&str>, model_name: &str) -> bool {
     model_id
         .map(slugify)
         .is_some_and(|id| id == "all-models" || id.ends_with("-all-models"))
+}
+
+/// Maps Claude's usage-limit reset grants (`cedar_ember`) to the shared reset
+/// credit inventory. Each remaining reset of a grant becomes one credit, so a
+/// grant with two resets left lists twice, as it does in Claude's own UI.
+fn parse_claude_reset_grants(
+    root: &Value,
+    now: chrono::DateTime<Utc>,
+) -> Option<UsageCreditInventory> {
+    let block = root.get("cedar_ember").filter(|block| block.is_object())?;
+    let grants = block.get("grants").and_then(Value::as_array)?;
+    let mut credits = Vec::new();
+    let mut available_count = 0_u32;
+    for grant in grants {
+        let resets_left = grant
+            .get("resets_left")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .min(u64::from(u8::MAX)) as u32;
+        let expires_at_utc = claude_grant_time(grant, "ends_at");
+        if resets_left == 0 || expires_at_utc.is_some_and(|expires_at| expires_at <= now) {
+            continue;
+        }
+        let paused = grant.get("paused").and_then(Value::as_bool) == Some(true);
+        let clears = grant
+            .get("clears")
+            .and_then(Value::as_array)
+            .map(|clears| clears.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let (reset_type, title) = if clears.contains(&"seven_day") {
+            ("full", "Full reset")
+        } else if clears.contains(&"five_hour") {
+            ("five_hour", "5-hour reset")
+        } else {
+            ("reset", "Usage-limit reset")
+        };
+        if !paused {
+            available_count = available_count.saturating_add(resets_left);
+        }
+        for _ in 0..resets_left {
+            credits.push(UsageCreditRecord {
+                id: json_string(grant, &["id"]),
+                reset_type: Some(reset_type.to_owned()),
+                status: Some(if paused { "paused" } else { "available" }.to_owned()),
+                granted_at_utc: claude_grant_time(grant, "starts_at"),
+                expires_at_utc,
+                redeem_started_at_utc: None,
+                redeemed_at_utc: None,
+                title: Some(title.to_owned()),
+                description: json_string(grant, &["label"]),
+            });
+        }
+    }
+    Some(UsageCreditInventory {
+        available_count,
+        credits,
+    })
+}
+
+fn claude_grant_time(grant: &Value, key: &str) -> Option<chrono::DateTime<Utc>> {
+    grant
+        .get(key)
+        .and_then(Value::as_str)
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
 }
 
 fn parse_extra_usage(root: &Value) -> (Option<SpendSnapshot>, Option<CreditsSnapshot>) {
@@ -2484,5 +2664,87 @@ mod tests {
             error.code,
             crate::usage::UsageAdapterErrorCode::Unauthorized
         );
+    }
+    #[test]
+    fn automatic_cli_fallback_requires_the_same_signed_in_account() {
+        let account =
+            AccountRecord::create("Claude", "me@example.com", None, CLAUDE, None).unwrap();
+        let automatic = ClaudeSourceMode::Automatic;
+        assert!(unverified_cli_fallback(automatic, &account, None).is_some());
+        assert!(unverified_cli_fallback(automatic, &account, Some("other@example.com")).is_some());
+        assert!(unverified_cli_fallback(automatic, &account, Some("ME@example.com")).is_none());
+        assert!(unverified_cli_fallback(ClaudeSourceMode::Cli, &account, None).is_none());
+    }
+
+    #[test]
+    fn oauth_profile_names_the_subscription_plan() {
+        let pro = parse_claude_profile(
+            r#"{"account":{"email":"a@example.com","has_claude_pro":true,"has_claude_max":false},
+                "organization":{"organization_type":"claude_pro","rate_limit_tier":"default_claude_ai","billing_type":"stripe_subscription","seat_tier":null}}"#,
+        )
+        .unwrap();
+        assert_eq!(pro.plan_type.as_deref(), Some("Claude Pro"));
+
+        let max = parse_claude_profile(
+            r#"{"account":{"has_claude_max":true},
+                "organization":{"organization_type":"claude_max","rate_limit_tier":"default_claude_max_20x"}}"#,
+        )
+        .unwrap();
+        assert_eq!(max.plan_type.as_deref(), Some("Claude Max 20x"));
+
+        let team = parse_claude_profile(
+            r#"{"organization":{"organization_type":"claude_team","seat_tier":"team_standard"}}"#,
+        )
+        .unwrap();
+        assert_eq!(team.plan_type.as_deref(), Some("Claude Team Standard"));
+
+        let flags_only = parse_claude_profile(r#"{"account":{"has_claude_pro":true}}"#).unwrap();
+        assert_eq!(flags_only.plan_type.as_deref(), Some("Claude Pro"));
+
+        let unknown = parse_claude_profile(r#"{"account":{"email":"a@example.com"}}"#).unwrap();
+        assert_eq!(unknown.plan_type, None);
+    }
+
+    #[test]
+    fn reset_grants_become_reset_credits() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-30T06:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let root: Value = serde_json::from_str(
+            r#"{"cedar_ember":{"eligible":true,"grants":[
+                {"id":"launch","label":"Launch reset","resets_total":1,"resets_left":1,
+                 "starts_at":"2026-09-22T19:00:00+03:00","ends_at":"2026-10-22T19:00:00+03:00",
+                 "clears":["five_hour","seven_day"],"paused":false},
+                {"id":"session","resets_left":2,"ends_at":"2026-10-01T00:00:00Z",
+                 "clears":["five_hour"],"paused":true},
+                {"id":"used","resets_left":0,"clears":["five_hour"]},
+                {"id":"expired","resets_left":1,"ends_at":"2026-09-01T00:00:00Z","clears":["seven_day"]}
+            ]}}"#,
+        )
+        .unwrap();
+
+        let inventory = parse_claude_reset_grants(&root, now).unwrap();
+
+        assert_eq!(inventory.available_count, 1);
+        assert_eq!(inventory.credits.len(), 3);
+        let full = &inventory.credits[0];
+        assert_eq!(full.title.as_deref(), Some("Full reset"));
+        assert_eq!(full.status.as_deref(), Some("available"));
+        assert_eq!(full.description.as_deref(), Some("Launch reset"));
+        assert_eq!(
+            full.expires_at_utc.unwrap().to_rfc3339(),
+            "2026-10-22T16:00:00+00:00"
+        );
+        assert!(inventory.credits[1..].iter().all(|credit| {
+            credit.title.as_deref() == Some("5-hour reset")
+                && credit.status.as_deref() == Some("paused")
+        }));
+
+        let ineligible: Value =
+            serde_json::from_str(r#"{"cedar_ember":{"eligible":false,"grants":[]}}"#).unwrap();
+        let empty = parse_claude_reset_grants(&ineligible, now).unwrap();
+        assert_eq!(empty.available_count, 0);
+        let absent: Value = serde_json::from_str(r#"{"cedar_ember":null}"#).unwrap();
+        assert!(parse_claude_reset_grants(&absent, now).is_none());
     }
 }

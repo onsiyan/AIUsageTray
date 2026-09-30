@@ -6,6 +6,19 @@ use crate::{
 use chrono::{DateTime, Duration, Utc};
 use std::collections::BTreeMap;
 
+/// Prevents a console window from flashing when a GUI (windows-subsystem)
+/// host runs a helper process during a background refresh.
+pub fn hide_console_window(command: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
 pub fn bearer_headers(
     material: &AccountAuthMaterial,
     user_agent: &str,
@@ -41,7 +54,28 @@ pub fn invalid_payload(provider: &str, reason: impl Into<String>) -> UsageProbeR
     })
 }
 
+/// A Cloudflare interstitial is a temporary edge block, not a credential
+/// rejection; treating its 403 as `Forbidden` would invalidate the account.
+pub fn is_cloudflare_challenge(response: &UsageHttpResponse) -> bool {
+    matches!(response.status_code, 403 | 503)
+        && (response.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("cf-mitigated")
+                && value.trim().eq_ignore_ascii_case("challenge")
+        }) || {
+            let body = response.body.to_ascii_lowercase();
+            body.contains("just a moment") || body.contains("challenge-platform")
+        })
+}
+
 pub fn map_http_error(response: &UsageHttpResponse, provider: &str) -> UsageProbeResult {
+    if is_cloudflare_challenge(response) {
+        return UsageProbeResult::failure(UsageAdapterError {
+            code: UsageAdapterErrorCode::CloudflareChallenge,
+            message: format!("{provider} is behind a Cloudflare challenge"),
+            http_status_code: Some(response.status_code),
+            retry_after_seconds: retry_after_seconds(response),
+        });
+    }
     let code = match response.status_code {
         401 => UsageAdapterErrorCode::Unauthorized,
         403 => UsageAdapterErrorCode::Forbidden,
@@ -126,7 +160,11 @@ pub fn json_string(value: &serde_json::Value, names: &[&str]) -> Option<String> 
 pub fn json_number(value: &serde_json::Value, names: &[&str]) -> Option<f64> {
     names.iter().find_map(|name| match value.get(*name) {
         Some(serde_json::Value::Number(value)) => value.as_f64(),
-        Some(serde_json::Value::String(value)) => value.parse::<f64>().ok(),
+        Some(serde_json::Value::String(value)) => value
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite()),
         _ => None,
     })
 }
@@ -172,7 +210,11 @@ pub fn reset_at(value: &serde_json::Value, now: DateTime<Utc>) -> Option<DateTim
                 "reset_seconds",
             ],
         )
-        .map(|seconds| now + Duration::seconds(seconds.max(0.0) as i64))
+        // Provider values are untrusted: an out-of-range delay must not panic.
+        .and_then(|seconds| {
+            Duration::try_seconds(seconds.max(0.0) as i64)
+                .and_then(|delay| now.checked_add_signed(delay))
+        })
     })
 }
 
@@ -223,6 +265,22 @@ mod tests {
         assert_eq!(
             result.error.unwrap().code,
             UsageAdapterErrorCode::RateLimited
+        );
+    }
+    #[test]
+    fn cloudflare_challenge_is_not_reported_as_forbidden_credentials() {
+        let mut challenge = response(403, "<title>Just a moment...</title>");
+        challenge.headers.clear();
+        assert_eq!(
+            map_http_error(&challenge, "OpenAI").error.unwrap().code,
+            UsageAdapterErrorCode::CloudflareChallenge
+        );
+        assert_eq!(
+            map_http_error(&response(403, r#"{"detail":"forbidden"}"#), "OpenAI")
+                .error
+                .unwrap()
+                .code,
+            UsageAdapterErrorCode::Forbidden
         );
     }
 }

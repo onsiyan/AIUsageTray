@@ -7,8 +7,11 @@ use crate::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use std::{collections::HashSet, env, path::Path, path::PathBuf, str::FromStr, sync::Mutex};
+
+/// Most recent observations retained per account.
+const SNAPSHOT_HISTORY_LIMIT: i64 = 200;
 
 /// The shared default account and usage database used by every host and CLI.
 pub fn default_accounts_database_path() -> PathBuf {
@@ -24,6 +27,17 @@ pub struct SqliteStore {
 }
 
 impl SqliteStore {
+    /// Opens the existing account database without running schema migrations
+    /// or enabling any write path. This is intended for read-only consumers
+    /// such as status panels that must not initialize or mutate user storage.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, StorageError> {
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(sqlite_error)?;
+        Ok(Self {
+            connection: Mutex::new(connection),
+        })
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
@@ -304,6 +318,49 @@ impl AccountStore for SqliteStore {
                 ],
             )
             .map_err(sqlite_account_error)?;
+        Ok(Some(updated))
+    }
+
+    async fn apply_verified_identity(
+        &self,
+        account_id: AccountId,
+        email: Option<&str>,
+        provider_account_id: Option<&str>,
+    ) -> Result<Option<AccountRecord>, AccountStoreError> {
+        let mut connection = self.lock().map_err(account_error)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_account_error)?;
+        let Some(current) = transaction
+            .query_row(
+                "SELECT account_id, label, email, provider_id, provider_account_id, browser_kind, browser_profile_id, workspace_id, workspace_name, codex_home, status, created_at_utc, updated_at_utc, alias, account_ref FROM accounts WHERE account_id = ?1",
+                [account_id.to_string()],
+                read_account,
+            )
+            .optional()
+            .map_err(sqlite_account_error)?
+        else {
+            return Ok(None);
+        };
+        let Some(updated) = current
+            .with_verified_identity(email, provider_account_id)
+            .map_err(|error| AccountStoreError::InvalidData(error.to_string()))?
+        else {
+            return Ok(Some(current));
+        };
+        transaction
+            .execute(
+                "UPDATE accounts SET email = ?1, provider_account_id = ?2, status = ?3, updated_at_utc = ?4 WHERE account_id = ?5",
+                params![
+                    updated.email,
+                    updated.provider_account_id,
+                    updated.status as i32,
+                    updated.updated_at_utc.to_rfc3339(),
+                    updated.id.to_string(),
+                ],
+            )
+            .map_err(sqlite_account_error)?;
+        transaction.commit().map_err(sqlite_account_error)?;
         Ok(Some(updated))
     }
 
@@ -619,7 +676,68 @@ impl UsageSnapshotStore for SqliteStore {
                 )
                 .map_err(sqlite_error)?;
         }
+        // Every refresh appends a full observation. Keep a bounded recent
+        // history per account so the database does not grow without limit
+        // (additional windows are removed by the foreign-key cascade).
+        transaction
+            .execute(
+                r#"
+                DELETE FROM usage_snapshots
+                WHERE account_id = ?1
+                  AND snapshot_id NOT IN (
+                      SELECT snapshot_id FROM usage_snapshots
+                      WHERE account_id = ?1
+                      ORDER BY observed_at_utc DESC, snapshot_id DESC
+                      LIMIT ?2
+                  )
+                "#,
+                params![snapshot.account_id.to_string(), SNAPSHOT_HISTORY_LIMIT],
+            )
+            .map_err(sqlite_error)?;
         transaction.commit().map_err(sqlite_error)
+    }
+
+    async fn mark_latest_stale(
+        &self,
+        account_id: AccountId,
+        reason: &str,
+    ) -> Result<Option<UsageSnapshot>, StorageError> {
+        {
+            let connection = self.lock()?;
+            let Some((snapshot_id, payload)) = connection
+                .query_row(
+                    "SELECT snapshot_id, metrics_json FROM usage_snapshots WHERE account_id = ?1 ORDER BY observed_at_utc DESC, snapshot_id DESC LIMIT 1",
+                    [account_id.to_string()],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .optional()
+                .map_err(sqlite_error)?
+            else {
+                return Ok(None);
+            };
+            if let Some(snapshot) = payload
+                .as_deref()
+                .and_then(|payload| serde_json::from_str::<UsageSnapshot>(payload).ok())
+            {
+                let stale = snapshot.mark_stale(reason);
+                let payload = serde_json::to_string(&stale)
+                    .map_err(|error| StorageError::InvalidData(error.to_string()))?;
+                connection
+                    .execute(
+                        "UPDATE usage_snapshots SET metrics_json = ?1 WHERE snapshot_id = ?2",
+                        params![payload, snapshot_id],
+                    )
+                    .map_err(sqlite_error)?;
+                return Ok(Some(stale));
+            }
+        }
+        // Legacy rows without a full JSON payload cannot be updated in place.
+        let Some(latest) = self.get_latest(account_id).await? else {
+            return Ok(None);
+        };
+        let stale = latest.mark_stale(reason);
+        self.save(stale.clone()).await?;
+        Ok(Some(stale))
     }
 
     async fn get_codex_weekly_reset_candidate(
@@ -811,5 +929,138 @@ fn sqlite_account_error(error: rusqlite::Error) -> AccountStoreError {
         AccountStoreError::DuplicateProviderIdentity
     } else {
         AccountStoreError::Storage(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod read_only_tests {
+    use super::SqliteStore;
+    use tempfile::tempdir;
+
+    #[test]
+    fn read_only_connection_can_read_but_cannot_modify_database() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("accounts.db");
+        drop(SqliteStore::open(&path).unwrap());
+
+        let store = SqliteStore::open_read_only(&path).unwrap();
+        let connection = store.lock().unwrap();
+        let account_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(account_count, 0);
+        assert!(
+            connection
+                .execute_batch("CREATE TABLE read_only_probe (id INTEGER)")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn read_only_open_does_not_create_a_missing_database() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("missing.db");
+
+        assert!(SqliteStore::open_read_only(&path).is_err());
+        assert!(!path.exists());
+    }
+}
+
+#[cfg(test)]
+mod refresh_write_tests {
+    use super::SqliteStore;
+    use crate::{
+        accounts::{AccountRecord, AccountStore, OPENAI},
+        usage::{UsageSnapshot, UsageSnapshotStore},
+    };
+    use chrono::Utc;
+    use tempfile::tempdir;
+
+    fn snapshot(account: &AccountRecord) -> UsageSnapshot {
+        serde_json::from_value(serde_json::json!({
+            "account_id": account.id,
+            "observed_at_utc": Utc::now(),
+            "response_account_id": null,
+            "plan_type": null,
+            "primary": null,
+            "secondary": null,
+            "additional_windows": [],
+            "credits": null,
+            "spend": null,
+            "observed_email": null,
+            "is_stale": false,
+            "stale_reason": null,
+            "stale_at_utc": null,
+            "metrics": [],
+            "provider_id": OPENAI,
+            "source": null,
+            "data_confidence": "authoritative"
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn repeated_stale_marks_update_the_latest_row_in_place() {
+        let directory = tempdir().unwrap();
+        let store = SqliteStore::open(directory.path().join("accounts.db")).unwrap();
+        let account = AccountRecord::create("c", "c@example.com", None, OPENAI, None).unwrap();
+        store.upsert(&account).await.unwrap();
+        store.save(snapshot(&account)).await.unwrap();
+
+        let first = store
+            .mark_latest_stale(account.id, "first")
+            .await
+            .unwrap()
+            .unwrap();
+        let second = store
+            .mark_latest_stale(account.id, "second")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let rows: i64 = store
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM usage_snapshots", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+        let latest = store.get_latest(account.id).await.unwrap().unwrap();
+        assert!(latest.is_stale);
+        assert_eq!(latest.stale_reason.as_deref(), Some("second"));
+        assert_eq!(second.stale_at_utc, first.stale_at_utc);
+    }
+
+    #[tokio::test]
+    async fn verified_identity_does_not_recreate_a_removed_account() {
+        let directory = tempdir().unwrap();
+        let store = SqliteStore::open(directory.path().join("accounts.db")).unwrap();
+        let account = AccountRecord::create("c", "c@example.com", None, OPENAI, None).unwrap();
+        store.upsert(&account).await.unwrap();
+        store.remove(account.id).await.unwrap();
+
+        let applied = store
+            .apply_verified_identity(account.id, Some("new@example.com"), Some("acct"))
+            .await
+            .unwrap();
+        assert!(applied.is_none());
+        assert!(store.list().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn snapshot_history_is_bounded_per_account() {
+        let directory = tempdir().unwrap();
+        let store = SqliteStore::open(directory.path().join("accounts.db")).unwrap();
+        let account = AccountRecord::create("c", "c@example.com", None, OPENAI, None).unwrap();
+        store.upsert(&account).await.unwrap();
+        for _ in 0..(super::SNAPSHOT_HISTORY_LIMIT + 25) {
+            store.save(snapshot(&account)).await.unwrap();
+        }
+        let rows: i64 = store
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM usage_snapshots", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, super::SNAPSHOT_HISTORY_LIMIT);
+        assert!(store.get_latest(account.id).await.unwrap().is_some());
     }
 }

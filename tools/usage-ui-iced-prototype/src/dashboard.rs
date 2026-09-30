@@ -589,8 +589,13 @@ impl DashboardState {
 }
 
 pub async fn load_saved_accounts() -> Result<Vec<AccountUsageEntry>, String> {
-    let store = SqliteStore::open_read_only(default_accounts_database_path())
-        .map_err(|error| error.to_string())?;
+    let path = default_accounts_database_path();
+    // The read-only open never creates the database. Before the first account
+    // is added there is simply nothing to show, which is not an error.
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let store = SqliteStore::open_read_only(path).map_err(|error| error.to_string())?;
     let accounts = store.list().await.map_err(|error| error.to_string())?;
     let mut entries = Vec::with_capacity(accounts.len());
 
@@ -912,18 +917,30 @@ fn account_card(
         .align_y(Alignment::Center)
         .into();
 
-    let model_visibility_entries = entry
-        .snapshot
-        .as_ref()
-        .filter(|snapshot| {
-            providers_match(&account.provider_id, &snapshot.provider_id)
-                && !snapshot
-                    .observed_email
-                    .as_deref()
-                    .is_some_and(|email| !email.trim().eq_ignore_ascii_case(account.email.trim()))
-        })
-        .map(|snapshot| model_quota_menu_entries(&snapshot.metrics))
-        .unwrap_or_default();
+    let visibility_snapshot = entry.snapshot.as_ref().filter(|snapshot| {
+        providers_match(&account.provider_id, &snapshot.provider_id)
+            && !snapshot
+                .observed_email
+                .as_deref()
+                .is_some_and(|email| !email.trim().eq_ignore_ascii_case(account.email.trim()))
+    });
+    let model_visibility_entries = if model_visibility_menu_open {
+        visibility_snapshot
+            .map(|snapshot| model_quota_menu_entries(&snapshot.metrics))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let has_model_quotas = visibility_snapshot
+        .is_some_and(|snapshot| snapshot.metrics.iter().any(is_model_quota_metric));
+    let has_hidden_model_quotas = if model_visibility_menu_open {
+        model_visibility_entries
+            .iter()
+            .any(|(model_id, _)| !model_visibility.is_visible(model_id))
+    } else {
+        visibility_snapshot
+            .is_some_and(|snapshot| has_hidden_model_quota(&snapshot.metrics, model_visibility))
+    };
 
     let spacer_width = if editing.is_some() {
         Length::Shrink
@@ -946,12 +963,13 @@ fn account_card(
                 .is_some_and(|email| !email.trim().eq_ignore_ascii_case(account.email.trim()))
             && snapshot.metrics.iter().any(is_antigravity_summary_metric)
     });
-    if !model_visibility_entries.is_empty() || (is_antigravity_account && has_antigravity_summary) {
+    if has_model_quotas || (is_antigravity_account && has_antigravity_summary) {
         header = header.push(model_visibility_button(
             account_id,
             model_visibility_menu_open,
             &model_visibility_entries,
             model_visibility,
+            has_hidden_model_quotas,
             show_all_model_quotas,
             is_antigravity_account,
             is_antigravity_account && show_antigravity_quota_groups,
@@ -1130,17 +1148,14 @@ fn model_visibility_button(
     menu_open: bool,
     model_entries: &[(String, String)],
     model_visibility: &ModelVisibilityPreferences,
+    has_hidden_model_quotas: bool,
     show_all_model_quotas: bool,
     is_antigravity_account: bool,
     show_antigravity_quota_groups: bool,
     theme: &'static crate::theme::ThemeDefinition,
     language: Language,
 ) -> Element<'static, Message> {
-    let hidden_count = model_entries
-        .iter()
-        .filter(|(model_id, _)| !model_visibility.is_visible(model_id))
-        .count();
-    let glyph = if hidden_count > 0 {
+    let glyph = if has_hidden_model_quotas {
         icon_eye_off()
     } else {
         icon_eye()
@@ -1171,16 +1186,20 @@ fn model_visibility_button(
     )
     .delay(Duration::from_millis(350))
     .into();
-    let menu = model_visibility_menu(
-        account_id,
-        model_entries,
-        model_visibility,
-        show_all_model_quotas,
-        is_antigravity_account,
-        show_antigravity_quota_groups,
-        theme,
-        language,
-    );
+    let menu: Element<'static, Message> = if menu_open {
+        model_visibility_menu(
+            account_id,
+            model_entries,
+            model_visibility,
+            show_all_model_quotas,
+            is_antigravity_account,
+            show_antigravity_quota_groups,
+            theme,
+            language,
+        )
+    } else {
+        space().into()
+    };
 
     ModelVisibilityTrigger {
         trigger,
@@ -1721,6 +1740,19 @@ fn model_quota_menu_entries(metrics: &[UsageMetric]) -> Vec<(String, String)> {
             });
         });
     families.into_values().collect()
+}
+
+fn has_hidden_model_quota(
+    metrics: &[UsageMetric],
+    model_visibility: &ModelVisibilityPreferences,
+) -> bool {
+    metrics
+        .iter()
+        .filter(|metric| is_model_quota_metric(metric))
+        .any(|metric| {
+            let family_id = model_quota_family_id(model_quota_id(metric));
+            !model_visibility.is_visible(&family_id)
+        })
 }
 
 fn is_model_quota_metric(metric: &UsageMetric) -> bool {
@@ -3717,6 +3749,20 @@ mod tests {
         assert!(!preferences.is_visible("gemini-2.5-flash"));
         assert!(preferences.is_visible("gemini-2.5-pro"));
         assert!(preferences.is_visible("gemini-3.1-pro-low"));
+    }
+
+    #[test]
+    fn hidden_model_indicator_matches_the_available_model_families() {
+        let metrics = [
+            model_metric("gemini-3.1-pro-high", "Gemini 3.1 Pro High", 82.0, 12),
+            model_metric("gemini-2.5-pro", "Gemini 2.5 Pro", 70.0, 8),
+        ];
+        let mut visibility = ModelVisibilityPreferences::default();
+
+        assert!(has_hidden_model_quota(&metrics, &visibility));
+
+        visibility.set_visible("gemini-2.5-pro", true);
+        assert!(!has_hidden_model_quota(&metrics, &visibility));
     }
 
     #[test]

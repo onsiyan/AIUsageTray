@@ -226,7 +226,11 @@ impl AntigravityUsageAdapter {
 
     async fn probe_local(&self, account: &AccountRecord) -> Option<UsageProbeResult> {
         let transport = self.local_transport.as_ref()?;
-        let endpoints = discover_local_endpoints();
+        // Process discovery runs PowerShell synchronously; keep it off the
+        // async worker threads shared with other provider refreshes and the UI.
+        let endpoints = tokio::task::spawn_blocking(cached_local_endpoints)
+            .await
+            .unwrap_or_default();
         if endpoints.is_empty() {
             return None;
         }
@@ -785,6 +789,26 @@ fn local_request_body() -> Value {
     })
 }
 
+/// Process discovery launches PowerShell and scans every process. A refresh
+/// of several Antigravity accounts would otherwise repeat that scan once per
+/// account, so share one result for a short period.
+fn cached_local_endpoints() -> Vec<LocalEndpoint> {
+    const TTL: Duration = Duration::from_secs(30);
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, Vec<LocalEndpoint>)>> =
+        std::sync::Mutex::new(None);
+    let mut cache = CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((discovered_at, endpoints)) = cache.as_ref()
+        && discovered_at.elapsed() < TTL
+    {
+        return endpoints.clone();
+    }
+    let endpoints = discover_local_endpoints();
+    *cache = Some((std::time::Instant::now(), endpoints.clone()));
+    endpoints
+}
+
 #[cfg(windows)]
 fn discover_local_endpoints() -> Vec<LocalEndpoint> {
     // Keep discovery constrained to the running language_server process. The
@@ -828,10 +852,10 @@ ConvertTo-Json -Compress -Depth 4 -InputObject @($rows)
         ANTIGRAVITY_PROCESS_PATH_PATTERN,
     );
 
-    let output = match Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-    {
+    let mut command = Command::new("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    crate::providers::shared::hide_console_window(&mut command);
+    let output = match command.output() {
         Ok(output) if output.status.success() => output,
         _ => return Vec::new(),
     };

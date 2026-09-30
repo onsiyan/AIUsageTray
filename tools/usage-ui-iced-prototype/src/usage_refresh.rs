@@ -19,7 +19,7 @@ mod windows {
     use super::{RefreshEvent, RefreshSummary, UsageProvider};
     use crate::dashboard::{self, AccountUsageEntry};
     use codex_usage_core::{
-        accounts::{AccountRecord, AccountStore, CLAUDE, OPENCODE_GO},
+        accounts::{AccountRecord, AccountStore},
         auth::{
             AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
             AccountBrowserSessionRefresher, AccountOAuthMaterialProvider,
@@ -28,10 +28,7 @@ mod windows {
         },
         oauth_loopback::{CodexOAuthCallbackListenerFactory, LoopbackOAuthCallbackListenerFactory},
         oauth_service::OAuthAuthorizationService,
-        providers::{
-            antigravity, claude::ClaudeSourceMode, openai, opencode_go::OpenCodeGoSourceMode,
-            registry::ProviderRegistryConfig,
-        },
+        providers::{antigravity, openai, registry::ProviderRegistryConfig},
         refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
         runtime::UsageRuntime,
         storage::{SqliteStore, default_accounts_database_path},
@@ -45,7 +42,7 @@ mod windows {
     use std::{sync::Arc, time::Duration};
 
     #[cfg(test)]
-    use codex_usage_core::accounts::OPENAI;
+    use codex_usage_core::accounts::{CLAUDE, OPENAI};
 
     const MAX_CONCURRENT_ACCOUNT_REFRESHES: usize = 4;
 
@@ -335,48 +332,7 @@ mod windows {
         account: &AccountRecord,
         material: Option<&AccountAuthMaterial>,
     ) -> ProviderRegistryConfig {
-        let mut config = ProviderRegistryConfig {
-            enable_antigravity_local_probe: false,
-            ..ProviderRegistryConfig::default()
-        };
-        match account.provider_id.as_str() {
-            CLAUDE => {
-                let has_oauth = material.is_some_and(|material| {
-                    material.oauth_refresh_token.is_some()
-                        || material
-                            .bearer_token
-                            .as_deref()
-                            .is_some_and(|token| token.starts_with("sk-ant-oat"))
-                });
-                let has_admin_key = material.is_some_and(|material| {
-                    material
-                        .bearer_token
-                        .as_deref()
-                        .is_some_and(|token| token.starts_with("sk-ant-admin"))
-                });
-                config.claude_source_mode = if has_oauth || !has_admin_key {
-                    ClaudeSourceMode::OAuth
-                } else {
-                    ClaudeSourceMode::AdminApi
-                };
-            }
-            OPENCODE_GO => {
-                let has_browser_session = material.is_some_and(|material| {
-                    material.cookies.iter().any(|cookie| {
-                        ["auth", "__Host-auth", "__Host-console_session"]
-                            .iter()
-                            .any(|name| cookie.name.eq_ignore_ascii_case(name))
-                    })
-                });
-                config.opencode_go_source_mode = if has_browser_session {
-                    OpenCodeGoSourceMode::Web
-                } else {
-                    OpenCodeGoSourceMode::Api
-                };
-            }
-            _ => {}
-        }
-        config
+        ProviderRegistryConfig::for_account(account, material)
     }
 
     #[cfg(test)]

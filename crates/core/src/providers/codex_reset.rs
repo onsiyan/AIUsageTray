@@ -508,9 +508,13 @@ fn reset_credit_evidence(
         return false;
     };
 
-    if previous_inventory.available_count == 0 {
-        return initial_inventory.available_count == 0
-            && confirmation_inventory.available_count == 0;
+    // With no available credit before the drop, nothing can have been
+    // consumed, so an empty inventory is not evidence of a manual reset.
+    if previous_inventory.available_count == 0
+        || initial_inventory.available_count > previous_inventory.available_count
+        || confirmation_inventory.available_count > previous_inventory.available_count
+    {
+        return false;
     }
 
     previous_inventory.credits.iter().any(|credit| {
@@ -924,5 +928,23 @@ mod tests {
                 description: None,
             }],
         }
+    }
+    #[test]
+    fn empty_reset_credit_inventory_is_not_evidence_of_an_early_reset() {
+        let account = account();
+        let mut previous = snapshot(&account, instant(1), 70.0, instant(5));
+        let mut initial = snapshot(&account, instant(2), 0.2, instant(5));
+        let mut confirmation =
+            snapshot(&account, instant(2) + Duration::seconds(1), 0.3, instant(5));
+        previous.credit_inventory = Some(credit_inventory("redeemed", 0));
+        initial.credit_inventory = Some(credit_inventory("redeemed", 0));
+        confirmation.credit_inventory = Some(credit_inventory("redeemed", 0));
+
+        assert!(!confirms_weekly_reset(
+            &account,
+            &previous,
+            &initial,
+            &confirmation
+        ));
     }
 }

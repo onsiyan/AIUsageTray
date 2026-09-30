@@ -365,6 +365,14 @@ async fn openrouter_optional_failures_preserve_key_data_and_record_diagnostics()
     .unwrap();
 
     let result = adapter.probe(&account).await.unwrap();
+    // A workspace id is shared by several keys and must not become the
+    // account's provider identity.
+    assert!(
+        result
+            .identity
+            .as_ref()
+            .is_some_and(|identity| identity.provider_account_id.is_none())
+    );
     let snapshot = result.snapshot.unwrap();
     assert!(snapshot.primary.is_some());
     assert!(snapshot.credits.is_none());
@@ -452,7 +460,7 @@ async fn claude_oauth_adapter_uses_authoritative_oauth_usage_route() {
     assert_eq!(requests.len(), 1);
     assert_eq!(
         requests[0].url.as_str(),
-        "https://api.anthropic.com/api/oauth/usage"
+        "https://api.anthropic.com/api/oauth/usage?cedar_ember=1"
     );
     assert_eq!(
         requests[0].headers.get("Authorization").map(String::as_str),

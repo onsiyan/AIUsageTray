@@ -6,7 +6,7 @@ use chrono::Duration;
 use std::net::Ipv4Addr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::time::{Duration as TokioDuration, timeout};
+use tokio::time::{Duration as TokioDuration, Instant, timeout, timeout_at};
 use url::Url;
 
 pub struct LoopbackOAuthCallbackListener {
@@ -133,38 +133,55 @@ impl OAuthCallbackListener for LoopbackOAuthCallbackListener {
         let listener = self.listener.take().ok_or_else(|| {
             AuthError::Callback("OAuth callback listener was not started".to_owned())
         })?;
-        let timeout_duration =
-            TokioDuration::from_secs(timeout_duration.num_seconds().max(1) as u64);
-        let (mut stream, _) = timeout(timeout_duration, listener.accept())
-            .await
-            .map_err(|_| AuthError::Callback("OAuth callback timed out".to_owned()))?
-            .map_err(|error| {
-                AuthError::Callback(format!("could not accept OAuth callback: {error}"))
-            })?;
+        let deadline =
+            Instant::now() + TokioDuration::from_secs(timeout_duration.num_seconds().max(1) as u64);
+        // Browsers routinely open extra connections (preconnects, favicon
+        // requests, a stale tab hitting the old port). Those must be answered
+        // and ignored rather than aborting the sign-in; only a request on the
+        // callback path carrying the expected state completes it.
+        loop {
+            let (mut stream, _) = timeout_at(deadline, listener.accept())
+                .await
+                .map_err(|_| AuthError::Callback("OAuth callback timed out".to_owned()))?
+                .map_err(|error| {
+                    AuthError::Callback(format!("could not accept OAuth callback: {error}"))
+                })?;
+            if let Some(result) = self.handle_connection(&mut stream, expected_state).await {
+                return Ok(result);
+            }
+        }
+    }
+}
 
+impl LoopbackOAuthCallbackListener {
+    /// Returns the callback result for a valid request, or `None` after
+    /// answering a request that is not the expected OAuth callback.
+    async fn handle_connection(
+        &self,
+        stream: &mut tokio::net::TcpStream,
+        expected_state: &str,
+    ) -> Option<OAuthCallbackResult> {
         let mut buffer = vec![0_u8; 16 * 1024];
         let mut used = 0_usize;
         loop {
             if used == buffer.len() {
                 Self::respond(
-                    &mut stream,
+                    stream,
                     "400 Bad Request",
                     "Authentication request was too large.",
                 )
                 .await;
-                return Err(AuthError::Callback(
-                    "OAuth callback request was too large".to_owned(),
-                ));
+                return None;
             }
-            let read = timeout(
+            let read = match timeout(
                 TokioDuration::from_secs(10),
                 stream.read(&mut buffer[used..]),
             )
             .await
-            .map_err(|_| AuthError::Callback("OAuth callback request timed out".to_owned()))?
-            .map_err(|error| {
-                AuthError::Callback(format!("could not read OAuth callback: {error}"))
-            })?;
+            {
+                Ok(Ok(read)) => read,
+                Ok(Err(_)) | Err(_) => return None,
+            };
             if read == 0 {
                 break;
             }
@@ -177,38 +194,33 @@ impl OAuthCallbackListener for LoopbackOAuthCallbackListener {
             }
         }
 
-        let request = std::str::from_utf8(&buffer[..used])
-            .map_err(|_| AuthError::Callback("OAuth callback was not valid UTF-8".to_owned()))?;
-        let request_line = request
-            .lines()
-            .next()
-            .ok_or_else(|| AuthError::Callback("OAuth callback request was empty".to_owned()))?;
+        let request = std::str::from_utf8(&buffer[..used]).ok()?;
+        let request_line = request.lines().next()?;
         let mut parts = request_line.split_whitespace();
         let method = parts.next().unwrap_or_default();
         let target = parts.next().unwrap_or_default();
         if method != "GET" || target.is_empty() {
             Self::respond(
-                &mut stream,
+                stream,
                 "400 Bad Request",
                 "Invalid authentication callback.",
             )
             .await;
-            return Err(AuthError::Callback(
-                "OAuth callback must be a GET request".to_owned(),
-            ));
+            return None;
         }
 
-        let callback_url = self.callback_url(target)?;
-        if callback_url.path() != self.actual_uri.path() {
+        let Ok(callback_url) = self.callback_url(target) else {
             Self::respond(
-                &mut stream,
-                "404 Not Found",
+                stream,
+                "400 Bad Request",
                 "Invalid authentication callback.",
             )
             .await;
-            return Err(AuthError::Callback(
-                "OAuth callback path did not match".to_owned(),
-            ));
+            return None;
+        };
+        if callback_url.path() != self.actual_uri.path() {
+            Self::respond(stream, "404 Not Found", "Not found.").await;
+            return None;
         }
 
         let mut result = OAuthCallbackResult {
@@ -232,24 +244,18 @@ impl OAuthCallbackListener for LoopbackOAuthCallbackListener {
             .as_deref()
             .is_some_and(|state| constant_time_equal(state.as_bytes(), expected_state.as_bytes()));
         if !valid_state {
-            Self::respond(
-                &mut stream,
-                "400 Bad Request",
-                "Invalid authentication state.",
-            )
-            .await;
-            return Err(AuthError::Callback(
-                "OAuth callback state mismatch".to_owned(),
-            ));
+            // A forged or stale callback must not end the real sign-in.
+            Self::respond(stream, "400 Bad Request", "Invalid authentication state.").await;
+            return None;
         }
 
         Self::respond(
-            &mut stream,
+            stream,
             "200 OK",
             "Authentication completed. You may close this window.",
         )
         .await;
-        Ok(result)
+        Some(result)
     }
 }
 
@@ -286,7 +292,7 @@ impl OAuthCallbackListenerFactory for CodexOAuthCallbackListenerFactory {
 
 fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
     let max_len = left.len().max(right.len());
-    let mut difference = (left.len() ^ right.len()) as u8;
+    let mut difference = u8::from(left.len() != right.len());
     for index in 0..max_len {
         let left_byte = left.get(index).copied().unwrap_or_default();
         let right_byte = right.get(index).copied().unwrap_or_default();
@@ -320,5 +326,53 @@ mod tests {
 
         assert_eq!(listener.redirect_uri().port(), Some(fallback_port));
         drop(occupied);
+    }
+    async fn get(port: u16, target: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        stream
+            .write_all(format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        response
+    }
+
+    #[tokio::test]
+    async fn stray_and_forged_requests_do_not_abort_the_sign_in() {
+        let redirect_uri = Url::parse("http://localhost:0/auth/callback").unwrap();
+        let mut listener = LoopbackOAuthCallbackListener::new(redirect_uri).unwrap();
+        listener.start().await.unwrap();
+        let port = listener.redirect_uri().port().unwrap();
+
+        let client = tokio::spawn(async move {
+            // A preconnect that closes without sending anything.
+            drop(
+                tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+                    .await
+                    .unwrap(),
+            );
+            assert!(get(port, "/favicon.ico").await.contains("404"));
+            assert!(
+                get(port, "/auth/callback?code=evil&state=forged")
+                    .await
+                    .contains("400")
+            );
+            assert!(
+                get(port, "/auth/callback?code=real&state=expected")
+                    .await
+                    .contains("200")
+            );
+        });
+
+        let result = listener
+            .wait("expected", chrono::Duration::seconds(10))
+            .await
+            .unwrap();
+        client.await.unwrap();
+        assert_eq!(result.code.as_deref(), Some("real"));
     }
 }

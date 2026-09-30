@@ -180,9 +180,10 @@ impl LocalFileAuthMaterialProvider {
         )
         .and_then(|value| string_at(&value, &["active"]))
         .or_else(|| string_at(&root, &["email", "email_address"]));
-        if let Some(active_email) = active_email
-            && !active_email.eq_ignore_ascii_case(&account.email)
-        {
+        // The file belongs to whichever Google account is signed in on this
+        // machine. Without a matching email it cannot be attributed to this
+        // account and must not be used.
+        if !active_email.is_some_and(|email| email.eq_ignore_ascii_case(&account.email)) {
             return None;
         }
 
@@ -672,5 +673,24 @@ mod tests {
             std::iter::empty(),
         )) as Arc<dyn AccountAuthMaterialProvider>;
         assert!(Arc::strong_count(&source) >= 1);
+    }
+
+    #[tokio::test]
+    async fn local_antigravity_file_without_an_identity_is_not_attributed() {
+        let directory = tempdir().unwrap();
+        let gemini = directory.path().join(".gemini");
+        std::fs::create_dir_all(&gemini).unwrap();
+        std::fs::write(
+            gemini.join("oauth_creds.json"),
+            r#"{"access_token":"token-a"}"#,
+        )
+        .unwrap();
+        let account = account(ANTIGRAVITY);
+        let source = LocalFileAuthMaterialProvider::with_home_directory(
+            account.id,
+            directory.path(),
+            std::iter::empty(),
+        );
+        assert!(source.get(&account).await.unwrap().is_none());
     }
 }

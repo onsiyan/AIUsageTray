@@ -156,7 +156,7 @@ where
             return Ok(tokens);
         }
 
-        let credential = self.credentials.get(account_id).await?.ok_or_else(|| {
+        let mut credential = self.credentials.get(account_id).await?.ok_or_else(|| {
             AuthError::ReauthenticationRequired("no stored refresh credential".to_owned())
         })?;
         if credential.provider_id != provider.provider_id {
@@ -164,24 +164,26 @@ where
                 "stored OAuth credential belongs to a different provider".to_owned(),
             ));
         }
-        let mut fields = provider.token_parameters.clone();
-        fields.insert("grant_type".to_owned(), "refresh_token".to_owned());
-        fields.insert("refresh_token".to_owned(), credential.refresh_token.clone());
-        fields.insert(
-            "client_id".to_owned(),
-            credential
-                .client_id
-                .clone()
-                .unwrap_or_else(|| provider.client_id.clone()),
-        );
-        if let Some(secret) = credential
-            .client_secret
-            .as_deref()
-            .or(provider.client_secret.as_deref())
-        {
-            fields.insert("client_secret".to_owned(), secret.to_owned());
-        }
-        let mut tokens = self.request_token(provider, fields).await?;
+        let mut tokens = match self.refresh_with(provider, &credential).await {
+            Ok(tokens) => tokens,
+            Err(AuthError::ReauthenticationRequired(message)) => {
+                // The CLI, tray host, and `usage watch` are separate processes
+                // sharing one single-use refresh credential. If another one
+                // rotated it after we read it, retry once with the new value
+                // instead of reporting the account as signed out.
+                match self.credentials.get(account_id).await? {
+                    Some(latest)
+                        if latest.provider_id == provider.provider_id
+                            && latest.refresh_token != credential.refresh_token =>
+                    {
+                        credential = latest;
+                        self.refresh_with(provider, &credential).await?
+                    }
+                    _ => return Err(AuthError::ReauthenticationRequired(message)),
+                }
+            }
+            Err(error) => return Err(error),
+        };
         if tokens.refresh_token.is_none() {
             tokens.refresh_token = Some(credential.refresh_token.clone());
         }
@@ -200,6 +202,31 @@ where
             .await
             .insert(account_id, tokens.clone());
         Ok(tokens)
+    }
+
+    async fn refresh_with(
+        &self,
+        provider: &OAuthProviderDefinition,
+        credential: &StoredOAuthCredential,
+    ) -> Result<OAuthTokenSet, AuthError> {
+        let mut fields = provider.token_parameters.clone();
+        fields.insert("grant_type".to_owned(), "refresh_token".to_owned());
+        fields.insert("refresh_token".to_owned(), credential.refresh_token.clone());
+        fields.insert(
+            "client_id".to_owned(),
+            credential
+                .client_id
+                .clone()
+                .unwrap_or_else(|| provider.client_id.clone()),
+        );
+        if let Some(secret) = credential
+            .client_secret
+            .as_deref()
+            .or(provider.client_secret.as_deref())
+        {
+            fields.insert("client_secret".to_owned(), secret.to_owned());
+        }
+        self.request_token(provider, fields).await
     }
 
     async fn request_token(
@@ -231,10 +258,15 @@ where
                     .and_then(Value::as_str)
                     .map(str::to_owned)
             });
+            // A 400/403 without an OAuth error body is typically an edge or
+            // WAF block (HTML), which is temporary and must not sign the
+            // account out.
+            let oauth_rejection = error_code.is_some();
             let message = error_code.unwrap_or_else(|| {
                 format!("token endpoint returned HTTP {}", response.status_code)
             });
-            if matches!(response.status_code, 400 | 401 | 403)
+            if response.status_code == 401
+                || (oauth_rejection && matches!(response.status_code, 400 | 403))
                 || matches!(
                     message.as_str(),
                     "invalid_grant" | "invalid_client" | "unauthorized_client"
@@ -374,7 +406,8 @@ fn parse_token_response(body: &str) -> Result<OAuthTokenSet, AuthError> {
         .get("expires_in")
         .and_then(|value| value.as_i64().or_else(|| value.as_str()?.parse().ok()))
         .unwrap_or(3600)
-        .max(1);
+        // Bound untrusted values; an enormous lifetime would overflow chrono.
+        .clamp(1, 366 * 24 * 60 * 60);
     Ok(OAuthTokenSet {
         access_token: access_token.to_owned(),
         expires_at_utc: Utc::now() + Duration::seconds(expires_in),
@@ -584,5 +617,112 @@ mod tests {
         assert_eq!(identity.email.as_deref(), Some("codex@example.com"));
         assert_eq!(identity.provider_account_id, None);
         assert_eq!(identity.workspace_id, None);
+    }
+    struct NoCallbacks;
+
+    #[async_trait]
+    impl OAuthCallbackListenerFactory for NoCallbacks {
+        async fn create(
+            &self,
+            _redirect_uri: &Url,
+        ) -> Result<Box<dyn crate::auth::OAuthCallbackListener>, AuthError> {
+            unreachable!("refresh tests never log in")
+        }
+    }
+
+    #[async_trait]
+    impl OAuthBrowserLauncher for NoCallbacks {
+        async fn open(&self, _authorization_uri: &Url) -> Result<(), AuthError> {
+            unreachable!("refresh tests never open a browser")
+        }
+    }
+
+    fn stored(refresh_token: &str) -> StoredOAuthCredential {
+        StoredOAuthCredential {
+            provider_id: OPENAI.to_owned(),
+            refresh_token: refresh_token.to_owned(),
+            client_id: None,
+            client_secret: None,
+            id_token: None,
+            provider_account_id: None,
+            workspace_id: None,
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    /// Simulates another process rotating the refresh credential while this
+    /// process is still using the old one.
+    struct RotatingTokenEndpoint {
+        account_id: AccountId,
+        credentials: Arc<crate::auth::InMemoryOAuthCredentialStore>,
+    }
+
+    #[async_trait]
+    impl UsageHttpTransport for RotatingTokenEndpoint {
+        async fn send(
+            &self,
+            request: UsageHttpRequest,
+        ) -> Result<crate::transport::UsageHttpResponse, crate::transport::TransportError> {
+            let body = request.body.unwrap_or_default();
+            let (status_code, body) = if body.contains("refresh_token=old") {
+                self.credentials
+                    .save(self.account_id, &stored("new"))
+                    .await
+                    .unwrap();
+                (400, r#"{"error":"invalid_grant"}"#.to_owned())
+            } else if body.contains("refresh_token=new") {
+                (
+                    200,
+                    r#"{"access_token":"fresh","expires_in":3600,"refresh_token":"newer"}"#
+                        .to_owned(),
+                )
+            } else {
+                (500, String::new())
+            };
+            Ok(crate::transport::UsageHttpResponse {
+                status_code,
+                body,
+                headers: BTreeMap::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_retries_once_with_a_credential_rotated_by_another_process() {
+        let account_id = AccountId::new();
+        let credentials = Arc::new(crate::auth::InMemoryOAuthCredentialStore::default());
+        credentials.save(account_id, &stored("old")).await.unwrap();
+        let service = OAuthAuthorizationService::new(
+            Arc::new(RotatingTokenEndpoint {
+                account_id,
+                credentials: Arc::clone(&credentials),
+            }),
+            Arc::clone(&credentials),
+            Arc::new(NoCallbacks),
+            Arc::new(NoCallbacks),
+        );
+
+        let tokens = service
+            .access_token(account_id, &codex_oauth_definition())
+            .await
+            .unwrap();
+        assert_eq!(tokens.access_token, "fresh");
+        assert_eq!(
+            credentials
+                .get(account_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .refresh_token,
+            "newer"
+        );
+    }
+
+    #[test]
+    fn huge_token_lifetime_does_not_overflow() {
+        let tokens =
+            parse_token_response(r#"{"access_token":"a","expires_in":9223372036854775807}"#)
+                .unwrap();
+        assert!(tokens.expires_at_utc > Utc::now());
     }
 }

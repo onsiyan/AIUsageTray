@@ -249,9 +249,14 @@ impl App {
             Subscription::run(tray_event_stream),
         ];
 
-        if app.popup_visible
-            && (app.dashboard_refresh_running || app.dashboard.has_active_usage_animation())
-        {
+        let blocking_dialog_open =
+            app.openrouter_credentials_open || app.account_delete_dialog_open;
+        if should_run_popup_animation_ticks(
+            app.popup_visible,
+            blocking_dialog_open,
+            app.dashboard_refresh_running,
+            app.dashboard.has_active_usage_animation(),
+        ) {
             subscriptions.push(Subscription::run(refresh_icon_tick_stream));
         }
 
@@ -1415,6 +1420,15 @@ fn advance_refresh_icon_rotation(rotation: f32, refreshing: bool) -> f32 {
     }
 
     (rotation + 15.0_f32.to_radians()).rem_euclid(std::f32::consts::TAU)
+}
+
+fn should_run_popup_animation_ticks(
+    popup_visible: bool,
+    blocking_dialog_open: bool,
+    refreshing: bool,
+    usage_animation_active: bool,
+) -> bool {
+    popup_visible && !blocking_dialog_open && (refreshing || usage_animation_active)
 }
 
 fn refresh_icon_handle(theme: &'static ThemeDefinition) -> image::Handle {
@@ -2933,6 +2947,15 @@ mod tests {
             advance_refresh_icon_rotation(std::f32::consts::TAU - 0.01, true)
                 < std::f32::consts::TAU
         );
+    }
+
+    #[test]
+    fn popup_animation_ticks_pause_while_a_full_dialog_covers_the_content() {
+        assert!(should_run_popup_animation_ticks(true, false, true, false));
+        assert!(should_run_popup_animation_ticks(true, false, false, true));
+        assert!(!should_run_popup_animation_ticks(true, true, true, false));
+        assert!(!should_run_popup_animation_ticks(true, true, false, true));
+        assert!(!should_run_popup_animation_ticks(false, false, true, false));
     }
 
     #[test]

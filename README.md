@@ -20,11 +20,11 @@ under this `rust/` workspace.
   provider keys use the separate
   `CodexUsageMonitor-Rust/Auth/<account-id>` namespace.
 - `codex-usage-oauth-probe`: real Antigravity OAuth and usage probe.
-- `codex-usage-claude-probe`: Claude Code OAuth account registration and usage
-  probe. It runs Claude Code's official sign-in command in the system-default
-  browser, using a unique temporary config directory for each account. The
-  verified OAuth credentials are stored in Windows Credential Manager and the
-  temporary plaintext profile is removed before usage refresh.
+- `codex-usage-claude-probe`: Claude OAuth account registration and usage
+  probe. Like the Codex and Antigravity flows, it opens Claude's authorization
+  page in the system-default browser (PKCE + localhost callback) and stores the
+  verified OAuth credentials in Windows Credential Manager. The Claude Code CLI
+  is not required.
 - `codex-usage-openrouter-probe`: account-scoped OpenRouter API-key probe. It
   reads the primary key from a process environment variable or stdin, stores
   it in Windows Credential Manager, and never writes it to SQLite or prints it.
@@ -48,12 +48,13 @@ sources are:
 - explicitly account-bound environment variables (`OPENROUTER_API_KEY`,
   `OPENROUTER_MANAGEMENT_API_KEY`, or `OPENCODE_API_KEY`).
 
-Claude account registration has one supported user sign-in path: Claude Code's
-official OAuth login. Each login gets a separate temporary `CLAUDE_CONFIG_DIR`,
-so it neither reuses nor changes the user's regular Claude Code profile. The
-OAuth profile endpoint verifies the signed-in identity, credentials are stored
-per account in Windows Credential Manager, and the temporary plaintext login
-profile is deleted. Claude Web cookies, `sessionKey` import, and free-account
+Claude account registration has one supported user sign-in path: a direct
+browser OAuth authorization-code flow (`claude_oauth::login`) against
+`https://claude.com/cai/oauth/authorize` with PKCE and a `localhost` callback,
+using the same client, scopes, and JSON token exchange as Claude Code's own
+Claude.ai sign-in. It neither reads nor changes the user's regular Claude Code
+profile. The OAuth profile endpoint verifies the signed-in identity and
+credentials are stored per account in Windows Credential Manager. Claude Web cookies, `sessionKey` import, and free-account
 Web login are not used as fallbacks. Normal refresh uses the OAuth usage
 contract and account-scoped token refresh.
 
@@ -189,8 +190,7 @@ To run the real Windows OAuth probe:
 cargo run -p codex-usage-oauth-probe
 ```
 
-To add a Claude account through Claude Code's official browser OAuth login and
-probe its usage (the `claude` CLI must already be installed):
+To add a Claude account through the browser OAuth sign-in and probe its usage:
 
 ```powershell
 cargo run -p codex-usage-claude-probe
@@ -198,8 +198,7 @@ cargo run -p codex-usage-claude-probe
 
 The command opens the system-default browser itself. Complete sign-in there;
 the probe then verifies the identity through `/api/oauth/profile`, stores the
-per-account credentials, removes its isolated temporary profile, and runs the
-normal OAuth-only account refresh. To refresh an already-added account from
+per-account credentials, and runs the normal OAuth-only account refresh. To refresh an already-added account from
 its secure stored credentials, pass `--probe-existing`.
 
 The probe uses `%LOCALAPPDATA%\CodexUsageMonitor-Rust\accounts.db` and does

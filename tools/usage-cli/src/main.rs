@@ -8,19 +8,27 @@ use codex_usage_core::{
         CompositeAuthMaterialProvider, OAuthCredentialProviderRegistry, OAuthCredentialStore,
         StoredAuthMaterialProvider,
     },
+    claude_oauth::ClaudeOAuthRefreshingAuthMaterialProvider,
     oauth_loopback::{CodexOAuthCallbackListenerFactory, LoopbackOAuthCallbackListenerFactory},
     oauth_service::OAuthAuthorizationService,
+    opencode_go_oauth::OpenCodeGoOAuthRefreshingAuthMaterialProvider,
     providers::{
-        antigravity, claude::ClaudeSourceMode, openai, opencode_go::OpenCodeGoSourceMode,
-        registry::ProviderRegistryConfig,
+        antigravity,
+        claude::ClaudeSourceMode,
+        openai,
+        opencode_go::OpenCodeGoSourceMode,
+        registry::{ProviderRegistry, ProviderRegistryConfig, ProviderRegistryError},
     },
     refresh::{
         RefreshCadence, RefreshCoordinatorConfig, RefreshOutcome, RefreshReason, RefreshStatus,
     },
     runtime::UsageRuntime,
     storage::{SqliteStore, default_accounts_database_path},
-    transport::{ReqwestUsageHttpTransport, UsageHttpTransport},
-    usage::{UsageAdapterError, UsageSnapshot, UsageSnapshotStore, UsageWindowKind},
+    transport::{ReqwestUsageHttpTransport, TransportError, UsageHttpTransport},
+    usage::{
+        UsageAdapter, UsageAdapterError, UsageProbeResult, UsageSnapshot, UsageSnapshotStore,
+        UsageWindowKind,
+    },
 };
 use codex_usage_windows_auth::{
     WindowsCredentialManagerAuthMaterialStore, WindowsCredentialManagerStore,
@@ -987,29 +995,17 @@ async fn run_usage_scheduler(
         WindowsBrowserCookieImporter::from_process()
             .map_err(|error| CliFailure::runtime(error.to_string()))?,
     ) as Arc<dyn AccountBrowserSessionRefresher>;
-    let provider_config = ProviderRegistryConfig {
-        // Claude accounts use the OAuth sign-in path; do not fall back to a
-        // global CLI session or an unselected web session in the scheduler.
-        claude_source_mode: ClaudeSourceMode::OAuth,
-        // Automatic mode selects each OpenCode Go account's own saved source.
-        opencode_go_source_mode: OpenCodeGoSourceMode::Automatic,
-        enable_antigravity_local_probe: false,
-        ..ProviderRegistryConfig::default()
-    };
-    let runtime = UsageRuntime::from_dependencies_with_auth_store_and_session_refresher(
+    let providers = per_account_source_registry(transport, auth, auth_store, session_refresher)
+        .map_err(|error| CliFailure::runtime(error.to_string()))?;
+    let runtime = UsageRuntime::new(
         account_store,
         snapshot_store,
-        Arc::clone(&transport) as Arc<dyn UsageHttpTransport>,
-        auth,
-        auth_store as Arc<dyn AccountAuthMaterialStore>,
-        session_refresher,
-        provider_config,
+        Arc::new(providers),
         RefreshCoordinatorConfig {
             cadence: RefreshCadence::Adaptive,
             ..RefreshCoordinatorConfig::default()
         },
-    )
-    .map_err(|error| CliFailure::runtime(error.to_string()))?;
+    );
 
     eprintln!(
         "[scheduler] started for {} saved accounts (adaptive cadence; initial refresh begins now). Stop this process to stop scheduled refreshes.",
@@ -1207,63 +1203,116 @@ fn build_auth_provider(
     ]))
 }
 
+/// Source modes that `provider_config_for` can select for one account.
+const SOURCE_VARIANTS: [(ClaudeSourceMode, OpenCodeGoSourceMode); 4] = [
+    (ClaudeSourceMode::OAuth, OpenCodeGoSourceMode::Web),
+    (ClaudeSourceMode::OAuth, OpenCodeGoSourceMode::Api),
+    (ClaudeSourceMode::AdminApi, OpenCodeGoSourceMode::Web),
+    (ClaudeSourceMode::AdminApi, OpenCodeGoSourceMode::Api),
+];
+
+/// Builds the long-running scheduler's providers so each account is probed
+/// with the same per-account source selection as `usage refresh`, instead of
+/// one global Claude/OpenCode Go mode for every account.
+fn per_account_source_registry(
+    transport: Arc<ReqwestUsageHttpTransport>,
+    auth: Arc<dyn AccountAuthMaterialProvider>,
+    auth_store: Arc<WindowsCredentialManagerAuthMaterialStore>,
+    session_refresher: Arc<dyn AccountBrowserSessionRefresher>,
+) -> Result<ProviderRegistry, ProviderRegistryError> {
+    let transport = transport as Arc<dyn UsageHttpTransport>;
+    let store = Arc::clone(&auth_store) as Arc<dyn AccountAuthMaterialStore>;
+    // One refreshing auth chain shared by every variant keeps per-account
+    // token-rotation locks and back-off state in one place.
+    let auth = Arc::new(OpenCodeGoOAuthRefreshingAuthMaterialProvider::new(
+        auth,
+        Arc::clone(&store),
+        Arc::clone(&transport),
+    )) as Arc<dyn AccountAuthMaterialProvider>;
+    let auth = Arc::new(ClaudeOAuthRefreshingAuthMaterialProvider::new(
+        auth,
+        Arc::clone(&store),
+        Arc::clone(&transport),
+    )) as Arc<dyn AccountAuthMaterialProvider>;
+    let mut variants = Vec::new();
+    for (claude_source_mode, opencode_go_source_mode) in SOURCE_VARIANTS {
+        let registry = ProviderRegistry::from_dependencies_with_auth_store_and_session_refresher(
+            Arc::clone(&transport),
+            Arc::clone(&auth),
+            Arc::clone(&store),
+            Arc::clone(&session_refresher),
+            ProviderRegistryConfig {
+                claude_source_mode,
+                opencode_go_source_mode,
+                enable_antigravity_local_probe: false,
+                ..ProviderRegistryConfig::default()
+            },
+        )?;
+        variants.push(((claude_source_mode, opencode_go_source_mode), registry));
+    }
+    let base = &variants[0].1;
+    let adapters = base
+        .canonical_ids()
+        .iter()
+        .filter_map(|provider_id| {
+            if provider_id == CLAUDE || provider_id == OPENCODE_GO {
+                Some(Arc::new(PerAccountSourceAdapter {
+                    provider_id: provider_id.clone(),
+                    auth_store: Arc::clone(&auth_store),
+                    variants: variants
+                        .iter()
+                        .filter_map(|(modes, registry)| Some((*modes, registry.get(provider_id)?)))
+                        .collect(),
+                }) as Arc<dyn UsageAdapter>)
+            } else {
+                base.get(provider_id)
+            }
+        })
+        .collect::<Vec<_>>();
+    ProviderRegistry::from_adapters(adapters)
+}
+
+struct PerAccountSourceAdapter {
+    provider_id: String,
+    auth_store: Arc<WindowsCredentialManagerAuthMaterialStore>,
+    variants: Vec<(
+        (ClaudeSourceMode, OpenCodeGoSourceMode),
+        Arc<dyn UsageAdapter>,
+    )>,
+}
+
+#[async_trait::async_trait]
+impl UsageAdapter for PerAccountSourceAdapter {
+    fn adapter_id(&self) -> &str {
+        &self.provider_id
+    }
+
+    async fn probe(&self, account: &AccountRecord) -> Result<UsageProbeResult, TransportError> {
+        let material = self.auth_store.get(account.id).await.ok().flatten();
+        let config = provider_config_for(account, material.as_ref());
+        // Only this provider's own source mode is meaningful for the account.
+        let adapter = self
+            .variants
+            .iter()
+            .find(|((claude_mode, opencode_go_mode), _)| {
+                if self.provider_id == CLAUDE {
+                    *claude_mode == config.claude_source_mode
+                } else {
+                    *opencode_go_mode == config.opencode_go_source_mode
+                }
+            })
+            .or_else(|| self.variants.first())
+            .map(|(_, adapter)| adapter)
+            .expect("source variants are registered");
+        adapter.probe(account).await
+    }
+}
+
 fn provider_config_for(
     account: &AccountRecord,
     material: Option<&AccountAuthMaterial>,
 ) -> ProviderRegistryConfig {
-    let mut config = ProviderRegistryConfig {
-        enable_antigravity_local_probe: false,
-        ..ProviderRegistryConfig::default()
-    };
-    match account.provider_id.as_str() {
-        CLAUDE => {
-            let has_oauth = material.is_some_and(|material| {
-                material.oauth_refresh_token.is_some()
-                    || material
-                        .bearer_token
-                        .as_deref()
-                        .is_some_and(|token| token.starts_with("sk-ant-oat"))
-            });
-            let has_admin_key = material.is_some_and(|material| {
-                material
-                    .bearer_token
-                    .as_deref()
-                    .is_some_and(|token| token.starts_with("sk-ant-admin"))
-            });
-            config.claude_source_mode = if has_oauth {
-                ClaudeSourceMode::OAuth
-            } else if has_admin_key {
-                ClaudeSourceMode::AdminApi
-            } else {
-                // Fail closed to the sole supported user sign-in path. A
-                // missing token must not fall back to a free Web session or
-                // an ambient local Claude Code login.
-                ClaudeSourceMode::OAuth
-            };
-        }
-        OPENCODE_GO => {
-            let has_browser_session = material.is_some_and(|material| {
-                material.cookies.iter().any(|cookie| {
-                    ["auth", "__Host-auth", "__Host-console_session"]
-                        .iter()
-                        .any(|name| cookie.name.eq_ignore_ascii_case(name))
-                })
-            });
-            let has_console_oauth = material.is_some_and(|material| {
-                material
-                    .oauth_refresh_token
-                    .as_deref()
-                    .is_some_and(|token| !token.trim().is_empty())
-            });
-            config.opencode_go_source_mode = if has_browser_session || has_console_oauth {
-                OpenCodeGoSourceMode::Web
-            } else {
-                OpenCodeGoSourceMode::Api
-            };
-        }
-        _ => {}
-    }
-    config
+    ProviderRegistryConfig::for_account(account, material)
 }
 
 fn open_store(path: &std::path::Path) -> Result<Arc<SqliteStore>, CliFailure> {
@@ -2178,5 +2227,57 @@ mod tests {
             None,
         );
         assert!(!provider_config_for(&antigravity, None).enable_antigravity_local_probe);
+    }
+
+    struct ModeMarker(&'static str, &'static str);
+
+    #[async_trait::async_trait]
+    impl UsageAdapter for ModeMarker {
+        fn adapter_id(&self) -> &str {
+            self.0
+        }
+
+        async fn probe(
+            &self,
+            _account: &AccountRecord,
+        ) -> Result<UsageProbeResult, TransportError> {
+            Ok(UsageProbeResult::failure(UsageAdapterError {
+                code: codex_usage_core::usage::UsageAdapterErrorCode::Unknown,
+                message: self.1.to_owned(),
+                http_status_code: None,
+                retry_after_seconds: None,
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn scheduler_uses_each_accounts_own_source_mode() {
+        let dispatcher = |provider_id: &'static str| PerAccountSourceAdapter {
+            provider_id: provider_id.to_owned(),
+            auth_store: Arc::new(WindowsCredentialManagerAuthMaterialStore),
+            variants: SOURCE_VARIANTS
+                .iter()
+                .map(|modes| {
+                    let marker: &'static str = match modes {
+                        (ClaudeSourceMode::OAuth, OpenCodeGoSourceMode::Web) => "oauth/web",
+                        (ClaudeSourceMode::OAuth, _) => "oauth/api",
+                        (_, OpenCodeGoSourceMode::Web) => "admin/web",
+                        _ => "admin/api",
+                    };
+                    (
+                        *modes,
+                        Arc::new(ModeMarker(provider_id, marker)) as Arc<dyn UsageAdapter>,
+                    )
+                })
+                .collect(),
+        };
+        // A fresh account id has no saved material: Claude fails closed to
+        // OAuth and OpenCode Go uses the strict API source, as in `refresh`.
+        let claude = account(CLAUDE, "cc1", "Claude", "c@example.com", None, None);
+        let result = dispatcher(CLAUDE).probe(&claude).await.unwrap();
+        assert!(result.error.unwrap().message.starts_with("oauth/"));
+        let opencode = account(OPENCODE_GO, "oc1", "Go", "g@example.com", None, None);
+        let result = dispatcher(OPENCODE_GO).probe(&opencode).await.unwrap();
+        assert!(result.error.unwrap().message.ends_with("/api"));
     }
 }

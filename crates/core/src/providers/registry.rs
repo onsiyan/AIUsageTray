@@ -14,8 +14,11 @@ use super::{
     openrouter::OpenRouterUsageAdapter,
 };
 use crate::{
-    accounts::OPENAI,
-    auth::{AccountAuthMaterialProvider, AccountAuthMaterialStore, AccountBrowserSessionRefresher},
+    accounts::{AccountRecord, CLAUDE, OPENAI, OPENCODE_GO},
+    auth::{
+        AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
+        AccountBrowserSessionRefresher,
+    },
     transport::{TransportError, UsageHttpTransport},
     usage::UsageAdapter,
 };
@@ -63,6 +66,65 @@ impl Default for ProviderRegistryConfig {
             fetch_openrouter_activity: true,
             enable_antigravity_local_probe: true,
         }
+    }
+}
+
+impl ProviderRegistryConfig {
+    /// Host policy for one saved account: pick the source that matches the
+    /// credential that account actually has. Shared by every host (CLI and
+    /// tray) so their source selection cannot drift apart.
+    pub fn for_account(account: &AccountRecord, material: Option<&AccountAuthMaterial>) -> Self {
+        let mut config = Self {
+            enable_antigravity_local_probe: false,
+            ..Self::default()
+        };
+        match account.provider_id.as_str() {
+            CLAUDE => {
+                let has_oauth = material.is_some_and(|material| {
+                    material.oauth_refresh_token.is_some()
+                        || material
+                            .bearer_token
+                            .as_deref()
+                            .is_some_and(|token| token.starts_with("sk-ant-oat"))
+                });
+                let has_admin_key = material.is_some_and(|material| {
+                    material
+                        .bearer_token
+                        .as_deref()
+                        .is_some_and(|token| token.starts_with("sk-ant-admin"))
+                });
+                // Fail closed to the sole supported user sign-in path. A
+                // missing token must not fall back to a free Web session or an
+                // ambient local Claude Code login.
+                config.claude_source_mode = if !has_oauth && has_admin_key {
+                    ClaudeSourceMode::AdminApi
+                } else {
+                    ClaudeSourceMode::OAuth
+                };
+            }
+            OPENCODE_GO => {
+                let has_browser_session = material.is_some_and(|material| {
+                    material.cookies.iter().any(|cookie| {
+                        ["auth", "__Host-auth", "__Host-console_session"]
+                            .iter()
+                            .any(|name| cookie.name.eq_ignore_ascii_case(name))
+                    })
+                });
+                let has_console_oauth = material.is_some_and(|material| {
+                    material
+                        .oauth_refresh_token
+                        .as_deref()
+                        .is_some_and(|token| !token.trim().is_empty())
+                });
+                config.opencode_go_source_mode = if has_browser_session || has_console_oauth {
+                    OpenCodeGoSourceMode::Web
+                } else {
+                    OpenCodeGoSourceMode::Api
+                };
+            }
+            _ => {}
+        }
+        config
     }
 }
 
@@ -342,5 +404,43 @@ mod tests {
         assert_eq!(registry.len(), 5);
         assert!(registry.contains(ANTIGRAVITY));
         assert!(registry.contains(OPENCODE_GO));
+    }
+
+    #[test]
+    fn account_source_selection_follows_the_saved_credential() {
+        let opencode =
+            AccountRecord::create("go", "go@example.com", None, OPENCODE_GO, None).unwrap();
+        let console_oauth = AccountAuthMaterial {
+            bearer_token: Some("access".to_owned()),
+            oauth_refresh_token: Some("refresh".to_owned()),
+            ..AccountAuthMaterial::default()
+        };
+        assert_eq!(
+            ProviderRegistryConfig::for_account(&opencode, Some(&console_oauth))
+                .opencode_go_source_mode,
+            OpenCodeGoSourceMode::Web
+        );
+        let api_key = AccountAuthMaterial {
+            bearer_token: Some("key".to_owned()),
+            ..AccountAuthMaterial::default()
+        };
+        assert_eq!(
+            ProviderRegistryConfig::for_account(&opencode, Some(&api_key)).opencode_go_source_mode,
+            OpenCodeGoSourceMode::Api
+        );
+
+        let claude = AccountRecord::create("c", "c@example.com", None, CLAUDE, None).unwrap();
+        let admin = AccountAuthMaterial {
+            bearer_token: Some("sk-ant-admin-key".to_owned()),
+            ..AccountAuthMaterial::default()
+        };
+        assert_eq!(
+            ProviderRegistryConfig::for_account(&claude, Some(&admin)).claude_source_mode,
+            ClaudeSourceMode::AdminApi
+        );
+        assert_eq!(
+            ProviderRegistryConfig::for_account(&claude, None).claude_source_mode,
+            ClaudeSourceMode::OAuth
+        );
     }
 }

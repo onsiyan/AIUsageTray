@@ -125,15 +125,19 @@ impl OpenCodeGoOAuthRefreshingAuthMaterialProvider {
             .await
             .map_err(|error| AuthError::Transport(error.to_string()))?;
         if !response.is_success() {
-            let error_code = serde_json::from_str::<Value>(&response.body)
+            let parsed_error_code = serde_json::from_str::<Value>(&response.body)
                 .ok()
-                .and_then(|root| root.get("error")?.as_str().map(str::to_owned))
-                .unwrap_or_else(|| "unknown_error".to_owned());
+                .and_then(|root| root.get("error")?.as_str().map(str::to_owned));
+            // A 400/403 without an OAuth error body is typically an edge/WAF
+            // block, which is temporary and must not sign the account out.
+            let oauth_rejection = parsed_error_code.is_some();
+            let error_code = parsed_error_code.unwrap_or_else(|| "unknown_error".to_owned());
             let message = format!(
                 "OpenCode Console token refresh failed (HTTP {}; {error_code})",
                 response.status_code
             );
-            return if matches!(response.status_code, 400 | 401 | 403)
+            return if response.status_code == 401
+                || (oauth_rejection && matches!(response.status_code, 400 | 403))
                 || matches!(
                     error_code.as_str(),
                     "invalid_grant" | "invalid_client" | "access_denied"
@@ -158,7 +162,9 @@ impl OpenCodeGoOAuthRefreshingAuthMaterialProvider {
                 AuthError::TokenEndpoint(
                     "OpenCode token response omitted a valid expires_in".to_owned(),
                 )
-            })?;
+            })?
+            // Bound untrusted values; an enormous lifetime would overflow chrono.
+            .min(366 * 24 * 60 * 60);
 
         material.bearer_token = Some(access_token.clone());
         material.oauth_access_token = Some(access_token);
@@ -194,7 +200,35 @@ impl AccountAuthMaterialProvider for OpenCodeGoOAuthRefreshingAuthMaterialProvid
         if !self.needs_refresh(&latest) {
             return Ok(Some(latest));
         }
-        self.refresh(account.id, latest).await.map(Some)
+        let rejected_token = latest.oauth_refresh_token.clone().unwrap_or_default();
+        let chain_material = latest.clone();
+        match self.refresh(account.id, latest).await {
+            Ok(material) => Ok(Some(material)),
+            Err(AuthError::ReauthenticationRequired(message)) => {
+                // Another process (CLI, tray, `usage watch`) may have rotated
+                // the single-use refresh token after we read it.
+                let rotated = match self.store.get(account.id).await? {
+                    Some(mut stored) => {
+                        stored.fill_missing_from(&chain_material);
+                        stored
+                            .oauth_refresh_token
+                            .as_deref()
+                            .map(str::trim)
+                            .is_some_and(|token| {
+                                !token.is_empty() && token != rejected_token.trim()
+                            })
+                            .then_some(stored)
+                    }
+                    None => None,
+                };
+                match rotated {
+                    Some(stored) if !self.needs_refresh(&stored) => Ok(Some(stored)),
+                    Some(stored) => self.refresh(account.id, stored).await.map(Some),
+                    None => Err(AuthError::ReauthenticationRequired(message)),
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -325,5 +359,72 @@ mod tests {
 
         assert_eq!(returned.bearer_token.as_deref(), Some("expired"));
         assert!(transport.requests.lock().unwrap().is_empty());
+    }
+    struct RotatedElsewhereTransport {
+        account_id: AccountId,
+        store: Arc<InMemoryAuthMaterialStore>,
+    }
+
+    #[async_trait]
+    impl UsageHttpTransport for RotatedElsewhereTransport {
+        async fn send(
+            &self,
+            _request: UsageHttpRequest,
+        ) -> Result<UsageHttpResponse, TransportError> {
+            self.store
+                .save(
+                    self.account_id,
+                    &AccountAuthMaterial {
+                        bearer_token: Some("access-from-other-process".to_owned()),
+                        oauth_access_token: Some("access-from-other-process".to_owned()),
+                        oauth_refresh_token: Some("refresh-rotated".to_owned()),
+                        oauth_expires_at_utc: Some(Utc::now() + Duration::hours(1)),
+                        ..AccountAuthMaterial::default()
+                    },
+                )
+                .await
+                .unwrap();
+            Ok(UsageHttpResponse {
+                status_code: 400,
+                body: r#"{"error":"invalid_grant"}"#.to_owned(),
+                headers: Default::default(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_token_rotated_by_another_process_is_reused() {
+        let store = Arc::new(InMemoryAuthMaterialStore::default());
+        let account =
+            AccountRecord::create("OpenCode", "go@example.com", None, OPENCODE_GO, None).unwrap();
+        store
+            .save(
+                account.id,
+                &AccountAuthMaterial {
+                    bearer_token: Some("expired-access".to_owned()),
+                    oauth_refresh_token: Some("refresh-1".to_owned()),
+                    oauth_expires_at_utc: Some(Utc::now() - Duration::seconds(1)),
+                    ..AccountAuthMaterial::default()
+                },
+            )
+            .await
+            .unwrap();
+        let provider = OpenCodeGoOAuthRefreshingAuthMaterialProvider::with_options(
+            Arc::new(StoredAuthMaterialProvider::new(store.clone())),
+            store.clone(),
+            Arc::new(RotatedElsewhereTransport {
+                account_id: account.id,
+                store: store.clone(),
+            }),
+            Url::parse("https://example.test/token").unwrap(),
+            "client",
+            Duration::minutes(5),
+        );
+
+        let material = provider.get(&account).await.unwrap().unwrap();
+        assert_eq!(
+            material.bearer_token.as_deref(),
+            Some("access-from-other-process")
+        );
     }
 }

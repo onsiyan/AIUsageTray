@@ -562,8 +562,15 @@ impl OAuthCredentialProviderRegistry {
     }
 
     pub fn get(&self, provider_id: &str) -> Option<&OAuthProviderDefinition> {
-        self.definitions
-            .get(&provider_id.trim().to_ascii_lowercase())
+        let provider_id = provider_id.trim().to_ascii_lowercase();
+        // Legacy Codex accounts are stored as `codex` but use the OpenAI
+        // OAuth definition, like the adapter registry alias.
+        let provider_id = if provider_id == "codex" {
+            crate::accounts::OPENAI.to_owned()
+        } else {
+            provider_id
+        };
+        self.definitions.get(&provider_id)
     }
 }
 
@@ -650,4 +657,21 @@ pub trait OAuthTokenProvider: Send + Sync {
         account_id: AccountId,
         provider: &OAuthProviderDefinition,
     ) -> Result<OAuthTokenSet, AuthError>;
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::OAuthCredentialProviderRegistry;
+    use crate::{accounts::OPENAI, providers::openai::oauth_definition};
+
+    #[test]
+    fn legacy_codex_accounts_resolve_the_openai_oauth_definition() {
+        let registry = OAuthCredentialProviderRegistry::new([oauth_definition()]);
+        assert_eq!(
+            registry
+                .get("codex")
+                .map(|definition| definition.provider_id.as_str()),
+            Some(OPENAI)
+        );
+    }
 }

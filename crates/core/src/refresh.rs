@@ -27,7 +27,7 @@ use crate::{
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     sync::Arc,
     time::Duration,
 };
@@ -36,7 +36,6 @@ use tokio::sync::{Mutex, Notify, Semaphore, watch};
 const LOW_POWER_MINIMUM_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const RESET_BOUNDARY_GRACE: Duration = Duration::from_secs(30);
 const RESET_BOUNDARY_MINIMUM_DELAY: Duration = Duration::from_secs(5);
-const MAX_ATTEMPTED_RESET_BOUNDARIES: usize = 64;
 
 /// Automatic refresh cadence. `Adaptive` is the default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,7 +154,6 @@ pub struct RefreshCoordinatorConfig {
     pub max_concurrency: usize,
     pub reset_boundary_grace: Duration,
     pub reset_boundary_minimum_delay: Duration,
-    pub max_attempted_reset_boundaries: usize,
 }
 
 impl Default for RefreshCoordinatorConfig {
@@ -165,7 +163,6 @@ impl Default for RefreshCoordinatorConfig {
             max_concurrency: 4,
             reset_boundary_grace: RESET_BOUNDARY_GRACE,
             reset_boundary_minimum_delay: RESET_BOUNDARY_MINIMUM_DELAY,
-            max_attempted_reset_boundaries: MAX_ATTEMPTED_RESET_BOUNDARIES,
         }
     }
 }
@@ -231,9 +228,11 @@ impl From<AccountStoreError> for RefreshCoordinatorError {
     }
 }
 
+/// Shared state for one in-flight account refresh. Only the worker task owns
+/// the sender, so waiters observe a closed channel (instead of hanging) if the
+/// worker is dropped before publishing.
 struct RefreshFlight {
     account_id: AccountId,
-    sender: watch::Sender<Option<RefreshOutcome>>,
     receiver: watch::Receiver<Option<RefreshOutcome>>,
 }
 
@@ -250,7 +249,8 @@ pub struct UsageRefreshCoordinator {
     signals: Mutex<AdaptiveRefreshSignals>,
     wake: Notify,
     shutdown: watch::Sender<bool>,
-    attempted_reset_boundaries: Mutex<VecDeque<DateTime<Utc>>>,
+    /// Per-account high-water mark of reset boundaries already refreshed.
+    attempted_reset_boundaries: Mutex<HashMap<AccountId, DateTime<Utc>>>,
 }
 
 impl UsageRefreshCoordinator {
@@ -274,7 +274,6 @@ impl UsageRefreshCoordinator {
             max_concurrency: config.max_concurrency.max(1),
             reset_boundary_grace: config.reset_boundary_grace,
             reset_boundary_minimum_delay: config.reset_boundary_minimum_delay,
-            max_attempted_reset_boundaries: config.max_attempted_reset_boundaries.max(1),
         };
         let mut adapter_registry = HashMap::new();
         for adapter in adapters {
@@ -300,7 +299,7 @@ impl UsageRefreshCoordinator {
             signals: Mutex::new(AdaptiveRefreshSignals::default()),
             wake: Notify::new(),
             shutdown,
-            attempted_reset_boundaries: Mutex::new(VecDeque::new()),
+            attempted_reset_boundaries: Mutex::new(HashMap::new()),
         })
     }
 
@@ -315,28 +314,58 @@ impl UsageRefreshCoordinator {
         account: AccountRecord,
         reason: RefreshReason,
     ) -> RefreshOutcome {
-        let (flight, is_owner) = {
+        let (flight, sender) = {
             let mut flights = self.flights.lock().await;
             if let Some(flight) = flights.get(&account.id) {
-                (Arc::clone(flight), false)
+                (Arc::clone(flight), None)
             } else {
                 let (sender, receiver) = watch::channel(None);
                 let flight = Arc::new(RefreshFlight {
                     account_id: account.id,
-                    sender,
                     receiver,
                 });
                 flights.insert(account.id, Arc::clone(&flight));
-                (flight, true)
+                (flight, Some(sender))
             }
         };
 
-        if is_owner {
+        if let Some(sender) = sender {
             let coordinator = Arc::clone(self);
             let worker_flight = Arc::clone(&flight);
             tokio::spawn(async move {
-                let outcome = coordinator.refresh_account_inner(account, reason).await;
-                let _ = worker_flight.sender.send(Some(outcome));
+                // Run the provider work in its own task so a panic inside an
+                // adapter is contained: the flight is still published and
+                // removed instead of wedging this account (and every batch
+                // that waits for it) forever.
+                let work = {
+                    let coordinator = Arc::clone(&coordinator);
+                    let account = account.clone();
+                    tokio::spawn(
+                        async move { coordinator.refresh_account_inner(account, reason).await },
+                    )
+                };
+                let outcome = match work.await {
+                    Ok(outcome) => outcome,
+                    Err(error) => RefreshOutcome::new(
+                        &account,
+                        reason,
+                        RefreshStatus::Failed,
+                        None,
+                        None,
+                        Some(UsageAdapterError {
+                            code: UsageAdapterErrorCode::Unknown,
+                            message: if error.is_panic() {
+                                "refresh worker panicked".to_owned()
+                            } else {
+                                "refresh worker was cancelled".to_owned()
+                            },
+                            http_status_code: None,
+                            retry_after_seconds: None,
+                        }),
+                        None,
+                    ),
+                };
+                let _ = sender.send(Some(outcome));
                 let mut flights = coordinator.flights.lock().await;
                 if flights
                     .get(&worker_flight.account_id)
@@ -377,9 +406,29 @@ impl UsageRefreshCoordinator {
         self: &Arc<Self>,
         reason: RefreshReason,
     ) -> Result<Vec<RefreshOutcome>, RefreshCoordinatorError> {
+        self.refresh_where(reason, |_| true).await
+    }
+
+    /// Refreshes only the selected accounts, e.g. those whose reset boundary
+    /// has passed, without touching every other provider account.
+    async fn refresh_accounts(
+        self: &Arc<Self>,
+        account_ids: &HashSet<AccountId>,
+        reason: RefreshReason,
+    ) -> Result<Vec<RefreshOutcome>, RefreshCoordinatorError> {
+        self.refresh_where(reason, |account| account_ids.contains(&account.id))
+            .await
+    }
+
+    async fn refresh_where(
+        self: &Arc<Self>,
+        reason: RefreshReason,
+        include: impl Fn(&AccountRecord) -> bool,
+    ) -> Result<Vec<RefreshOutcome>, RefreshCoordinatorError> {
         let accounts = self.account_store.list().await?;
         let handles = accounts
             .into_iter()
+            .filter(|account| include(account))
             .map(|account| {
                 let coordinator = Arc::clone(self);
                 tokio::spawn(async move { coordinator.refresh_account(account, reason).await })
@@ -394,14 +443,16 @@ impl UsageRefreshCoordinator {
         Ok(outcomes)
     }
 
+    // Signal changes use `notify_one` so a change made while the background
+    // loop is busy refreshing is kept as a permit instead of being lost.
     pub async fn note_interaction(&self, at: DateTime<Utc>) {
         self.signals.lock().await.last_interaction_at = Some(at);
-        self.wake.notify_waiters();
+        self.wake.notify_one();
     }
 
     pub async fn note_coding_activity(&self, at: DateTime<Utc>) {
         self.signals.lock().await.last_coding_activity_at = Some(at);
-        self.wake.notify_waiters();
+        self.wake.notify_one();
     }
 
     pub async fn set_power_state(&self, low_power_mode_enabled: bool, thermal_constrained: bool) {
@@ -409,7 +460,7 @@ impl UsageRefreshCoordinator {
         signals.low_power_mode_enabled = low_power_mode_enabled;
         signals.thermal_constrained = thermal_constrained;
         drop(signals);
-        self.wake.notify_waiters();
+        self.wake.notify_one();
     }
 
     pub async fn adaptive_decision(&self, now: DateTime<Utc>) -> AdaptiveRefreshDecision {
@@ -427,8 +478,9 @@ impl UsageRefreshCoordinator {
     /// adaptive ticks, with one-shot reset-boundary passes pulled into the
     /// current normal interval.
     pub async fn run(self: Arc<Self>) -> Result<(), RefreshCoordinatorError> {
-        let initial_outcomes = self.refresh_all(RefreshReason::Manual).await?;
-        let mut snapshots = snapshot_cache(initial_outcomes);
+        let mut snapshots = self
+            .full_refresh_pass(HashMap::new(), RefreshReason::Manual)
+            .await;
         let mut shutdown = self.shutdown.subscribe();
         if *shutdown.borrow() {
             return Ok(());
@@ -454,20 +506,24 @@ impl UsageRefreshCoordinator {
                 scheduled_at = Some(now + chrono_from_std(interval));
             }
             let normal_deadline = scheduled_at.expect("scheduled deadline is initialized");
-            let attempted = self.attempted_boundaries().await;
+            let attempted_through = self.attempted_reset_boundaries.lock().await.clone();
             let minimum_automatic_interval = self
                 .signals
                 .lock()
                 .await
                 .low_power_mode_enabled
                 .then_some(LOW_POWER_MINIMUM_INTERVAL);
-            let candidate = next_reset_boundary_refresh_candidate(
-                &snapshots.values().cloned().collect::<Vec<_>>(),
+            let candidate = earliest_reset_boundary_candidate(
+                pending_reset_boundaries(
+                    snapshots.values(),
+                    self.config.reset_boundary_grace,
+                    |snapshot, boundary| {
+                        boundary_already_attempted(&attempted_through, snapshot, boundary)
+                    },
+                ),
                 interval,
-                self.config.reset_boundary_grace,
                 self.config.reset_boundary_minimum_delay,
                 minimum_automatic_interval,
-                &attempted,
                 now,
             );
             let target = candidate
@@ -502,19 +558,31 @@ impl UsageRefreshCoordinator {
                 completed_at >= candidate.refresh_at && candidate.refresh_at <= normal_deadline
             });
             let normal_due = completed_at >= normal_deadline;
-            if reset_due {
-                let boundary = candidate
-                    .expect("reset candidate exists")
-                    .boundary_refresh_at;
-                self.record_attempted_boundary(boundary).await;
-            }
-            let reason = if reset_due {
-                RefreshReason::ResetBoundary
+            // Every boundary that has already passed is covered by this one
+            // pass. Recording them all prevents a stale snapshot with many
+            // past reset times from triggering one pass per window.
+            let reset_accounts = if reset_due {
+                self.record_due_reset_boundaries(&snapshots, completed_at)
+                    .await
             } else {
-                RefreshReason::Scheduled
+                HashSet::new()
             };
-            let outcomes = self.refresh_all(reason).await?;
-            snapshots = update_snapshot_cache(snapshots, outcomes);
+            if normal_due {
+                let reason = if reset_due {
+                    RefreshReason::ResetBoundary
+                } else {
+                    RefreshReason::Scheduled
+                };
+                snapshots = self.full_refresh_pass(snapshots, reason).await;
+            } else if !reset_accounts.is_empty() {
+                // Only the accounts whose window reset need a refresh.
+                if let Ok(outcomes) = self
+                    .refresh_accounts(&reset_accounts, RefreshReason::ResetBoundary)
+                    .await
+                {
+                    snapshots = update_snapshot_cache(snapshots, outcomes);
+                }
+            }
 
             if normal_due {
                 scheduled_at = match self.config.cadence {
@@ -531,6 +599,30 @@ impl UsageRefreshCoordinator {
                 };
             }
         }
+    }
+
+    /// Refreshes every account and rebuilds the loop's snapshot cache from the
+    /// accounts that still exist. A transient account-store failure (for
+    /// example a locked database) keeps the previous cache so the background
+    /// loop survives and retries on its next tick.
+    async fn full_refresh_pass(
+        self: &Arc<Self>,
+        mut snapshots: HashMap<AccountId, UsageSnapshot>,
+        reason: RefreshReason,
+    ) -> HashMap<AccountId, UsageSnapshot> {
+        let Ok(outcomes) = self.refresh_all(reason).await else {
+            return snapshots;
+        };
+        let present = outcomes
+            .iter()
+            .map(|outcome| outcome.account_id)
+            .collect::<HashSet<_>>();
+        snapshots.retain(|account_id, _| present.contains(account_id));
+        self.attempted_reset_boundaries
+            .lock()
+            .await
+            .retain(|account_id, _| present.contains(account_id));
+        update_snapshot_cache(snapshots, outcomes)
     }
 
     async fn normal_interval(&self, now: DateTime<Utc>) -> Option<Duration> {
@@ -550,23 +642,32 @@ impl UsageRefreshCoordinator {
         })
     }
 
-    async fn attempted_boundaries(&self) -> HashSet<DateTime<Utc>> {
-        self.attempted_reset_boundaries
-            .lock()
-            .await
-            .iter()
-            .copied()
-            .collect()
-    }
-
-    async fn record_attempted_boundary(&self, boundary: DateTime<Utc>) {
+    /// Records every reset boundary that has passed by `at` and returns the
+    /// accounts that own them. Boundaries are tracked per account as a
+    /// high-water mark, so an old boundary is never retried.
+    async fn record_due_reset_boundaries(
+        &self,
+        snapshots: &HashMap<AccountId, UsageSnapshot>,
+        at: DateTime<Utc>,
+    ) -> HashSet<AccountId> {
         let mut attempted = self.attempted_reset_boundaries.lock().await;
-        if !attempted.contains(&boundary) {
-            attempted.push_back(boundary);
+        let due = pending_reset_boundaries(
+            snapshots.values(),
+            self.config.reset_boundary_grace,
+            |snapshot, boundary| boundary_already_attempted(&attempted, snapshot, boundary),
+        )
+        .filter(|(_, boundary)| *boundary <= at)
+        .map(|(snapshot, boundary)| (snapshot.account_id, boundary))
+        .collect::<Vec<_>>();
+        let mut accounts = HashSet::new();
+        for (account_id, boundary) in due {
+            let watermark = attempted.entry(account_id).or_insert(boundary);
+            if boundary > *watermark {
+                *watermark = boundary;
+            }
+            accounts.insert(account_id);
         }
-        while attempted.len() > self.config.max_attempted_reset_boundaries {
-            attempted.pop_front();
-        }
+        accounts
     }
 
     async fn refresh_account_inner(
@@ -672,10 +773,13 @@ impl UsageRefreshCoordinator {
                         .await;
                 }
                 let mut identity = probe.identity.clone();
-                if prior
-                    .as_ref()
-                    .is_some_and(|previous| snapshot.observed_at_utc < previous.observed_at_utc)
-                {
+                // A stored snapshot from the future (for example after the
+                // system clock was corrected backwards) must not block every
+                // later refresh until wall-clock time catches up with it.
+                if prior.as_ref().is_some_and(|previous| {
+                    snapshot.observed_at_utc < previous.observed_at_utc
+                        && previous.observed_at_utc <= Utc::now()
+                }) {
                     return self
                         .finish_failure(
                             &account,
@@ -900,26 +1004,36 @@ impl UsageRefreshCoordinator {
                     snapshot = confirmed_snapshot;
                     identity = confirmation.identity.or(identity);
                 }
-                let identity_storage_error = identity.as_ref().and_then(|identity| {
-                    let updated = account
-                        .with_identity(
-                            identity.email.as_deref(),
-                            identity.provider_account_id.as_deref(),
-                        )
-                        .ok()?;
-                    Some(updated)
-                });
-                let identity_storage_error = match identity_storage_error {
-                    Some(updated) => self
-                        .account_store
-                        .upsert(&updated)
-                        .await
-                        .err()
-                        .map(|error| error.to_string()),
-                    None if identity.is_some() => {
-                        Some("verified identity could not be normalized".to_owned())
+                // Apply the identity to the *current* stored record. The
+                // `account` value was read before the provider call, so
+                // writing it back would resurrect an account removed during
+                // the refresh and undo concurrent alias/status changes.
+                let current = match identity.as_ref() {
+                    Some(identity) => {
+                        self.account_store
+                            .apply_verified_identity(
+                                account.id,
+                                identity.email.as_deref(),
+                                identity.provider_account_id.as_deref(),
+                            )
+                            .await
                     }
-                    None => None,
+                    None => self.account_store.get(account.id).await,
+                };
+                let identity_storage_error = match current {
+                    Ok(Some(_)) => None,
+                    Ok(None) => {
+                        return RefreshOutcome::new(
+                            &account,
+                            reason,
+                            RefreshStatus::Skipped,
+                            None,
+                            None,
+                            None,
+                            None,
+                        );
+                    }
+                    Err(error) => Some(error.to_string()),
                 };
                 if let Err(error) = self.snapshot_store.save(snapshot.clone()).await {
                     return RefreshOutcome::new(
@@ -972,15 +1086,23 @@ impl UsageRefreshCoordinator {
         prior: Option<UsageSnapshot>,
         error: UsageAdapterError,
     ) -> RefreshOutcome {
+        let stale_reason = format!("{}: {}", account.provider_id, error.message);
         if should_retain_stale(&error.code) {
             if let Some(prior) = prior {
-                let stale = prior.mark_stale(format!("{}: {}", account.provider_id, error.message));
-                let storage_error = self
+                // Mark the stored latest snapshot stale in place instead of
+                // appending a duplicate history row for every failure.
+                let (stale, storage_error) = match self
                     .snapshot_store
-                    .save(stale.clone())
+                    .mark_latest_stale(account.id, &stale_reason)
                     .await
-                    .err()
-                    .map(|error| error.to_string());
+                {
+                    Ok(Some(stale)) => (stale, None),
+                    Ok(None) => (prior.mark_stale(&stale_reason), None),
+                    Err(storage_error) => (
+                        prior.mark_stale(&stale_reason),
+                        Some(storage_error.to_string()),
+                    ),
+                };
                 return RefreshOutcome::new(
                     account,
                     reason,
@@ -998,7 +1120,27 @@ impl UsageRefreshCoordinator {
         } else {
             RefreshStatus::Failed
         };
-        RefreshOutcome::new(account, reason, status, None, None, Some(error), None)
+        // Hosts reload the stored snapshot after a refresh. Without a stale
+        // marker, an account whose credentials were revoked would keep
+        // showing its last values as current data.
+        let storage_error = if prior.is_some() {
+            self.snapshot_store
+                .mark_latest_stale(account.id, &stale_reason)
+                .await
+                .err()
+                .map(|error| error.to_string())
+        } else {
+            None
+        };
+        RefreshOutcome::new(
+            account,
+            reason,
+            status,
+            None,
+            None,
+            Some(error),
+            storage_error,
+        )
     }
 }
 
@@ -1022,26 +1164,56 @@ pub fn next_reset_boundary_refresh_candidate(
     attempted_boundary_refreshes: &HashSet<DateTime<Utc>>,
     now: DateTime<Utc>,
 ) -> Option<ResetBoundaryRefreshCandidate> {
+    earliest_reset_boundary_candidate(
+        pending_reset_boundaries(snapshots, reset_boundary_grace, |_, boundary| {
+            attempted_boundary_refreshes.contains(&boundary)
+        }),
+        normal_refresh_interval,
+        reset_boundary_minimum_delay,
+        minimum_automatic_refresh_interval,
+        now,
+    )
+}
+
+/// Yields `(snapshot, boundary_refresh_at)` for every window reset that the
+/// snapshot predates and that has not been attempted yet.
+fn pending_reset_boundaries<'a>(
+    snapshots: impl IntoIterator<Item = &'a UsageSnapshot>,
+    reset_boundary_grace: Duration,
+    is_attempted: impl Fn(&UsageSnapshot, DateTime<Utc>) -> bool,
+) -> impl Iterator<Item = (&'a UsageSnapshot, DateTime<Utc>)> {
+    let grace = chrono_from_std(reset_boundary_grace);
+    snapshots
+        .into_iter()
+        .flat_map(|snapshot| {
+            snapshot
+                .all_rate_windows()
+                .map(move |window| (snapshot, window))
+        })
+        .filter_map(move |(snapshot, window)| {
+            let boundary_refresh_at = window.reset_at_utc?.checked_add_signed(grace)?;
+            (snapshot.observed_at_utc < boundary_refresh_at
+                && !is_attempted(snapshot, boundary_refresh_at))
+            .then_some((snapshot, boundary_refresh_at))
+        })
+}
+
+fn earliest_reset_boundary_candidate<'a>(
+    boundaries: impl Iterator<Item = (&'a UsageSnapshot, DateTime<Utc>)>,
+    normal_refresh_interval: Duration,
+    reset_boundary_minimum_delay: Duration,
+    minimum_automatic_refresh_interval: Option<Duration>,
+    now: DateTime<Utc>,
+) -> Option<ResetBoundaryRefreshCandidate> {
     let normal_deadline = now + chrono_from_std(normal_refresh_interval);
     let earliest_allowed = (now + chrono_from_std(reset_boundary_minimum_delay)).max(
         minimum_automatic_refresh_interval
             .map(|interval| now + chrono_from_std(interval))
             .unwrap_or(now),
     );
-    snapshots
-        .iter()
-        .flat_map(|snapshot| {
-            snapshot
-                .all_rate_windows()
-                .map(move |window| (snapshot, window))
-        })
-        .filter_map(|(snapshot, window)| {
-            let reset_at = window.reset_at_utc?;
-            let boundary_refresh_at = reset_at + chrono_from_std(reset_boundary_grace);
-            if attempted_boundary_refreshes.contains(&boundary_refresh_at)
-                || boundary_refresh_at > normal_deadline
-                || snapshot.observed_at_utc >= boundary_refresh_at
-            {
+    boundaries
+        .filter_map(|(_, boundary_refresh_at)| {
+            if boundary_refresh_at > normal_deadline {
                 return None;
             }
             let refresh_at = boundary_refresh_at.max(earliest_allowed);
@@ -1051,6 +1223,16 @@ pub fn next_reset_boundary_refresh_candidate(
             })
         })
         .min_by_key(|candidate| candidate.refresh_at)
+}
+
+fn boundary_already_attempted(
+    attempted_through: &HashMap<AccountId, DateTime<Utc>>,
+    snapshot: &UsageSnapshot,
+    boundary_refresh_at: DateTime<Utc>,
+) -> bool {
+    attempted_through
+        .get(&snapshot.account_id)
+        .is_some_and(|watermark| boundary_refresh_at <= *watermark)
 }
 
 /// Advances from the previous scheduled tick and skips missed ticks instead
@@ -1072,10 +1254,6 @@ pub fn next_fixed_scheduled_at(
     next
 }
 
-fn snapshot_cache(outcomes: Vec<RefreshOutcome>) -> HashMap<AccountId, UsageSnapshot> {
-    update_snapshot_cache(HashMap::new(), outcomes)
-}
-
 fn update_snapshot_cache(
     mut snapshots: HashMap<AccountId, UsageSnapshot>,
     outcomes: Vec<RefreshOutcome>,
@@ -1083,7 +1261,12 @@ fn update_snapshot_cache(
     for outcome in outcomes {
         if let Some(snapshot) = outcome.snapshot {
             snapshots.insert(outcome.account_id, snapshot);
-        } else if outcome.status == RefreshStatus::Invalidated {
+        } else if matches!(
+            outcome.status,
+            RefreshStatus::Invalidated | RefreshStatus::Skipped
+        ) {
+            // Paused, disabled, removed, or unauthenticated accounts must not
+            // keep scheduling reset-boundary refreshes.
             snapshots.remove(&outcome.account_id);
         }
     }
@@ -1196,6 +1379,7 @@ mod tests {
     };
     use async_trait::async_trait;
     use chrono::TimeZone;
+    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn now() -> DateTime<Utc> {
@@ -1937,5 +2121,298 @@ mod tests {
         let persisted = store.get_latest(account.id).await.unwrap().unwrap();
         assert!(persisted.is_stale);
         assert_eq!(persisted.observed_at_utc, prior.observed_at_utc);
+    }
+    struct PanicOnceAdapter {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl UsageAdapter for PanicOnceAdapter {
+        fn adapter_id(&self) -> &str {
+            OPENAI
+        }
+
+        async fn probe(&self, account: &AccountRecord) -> Result<UsageProbeResult, TransportError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("simulated adapter panic");
+            }
+            Ok(UsageProbeResult::success(
+                snapshot(
+                    account.id,
+                    Utc::now(),
+                    Utc::now() + ChronoDuration::hours(1),
+                ),
+                None,
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn adapter_panic_fails_the_refresh_without_wedging_the_account() {
+        let account =
+            AccountRecord::create("test", "test@example.com", None, OPENAI, None).unwrap();
+        let accounts = Arc::new(InMemoryAccountStore::default());
+        accounts.upsert(&account).await.unwrap();
+        let coordinator = UsageRefreshCoordinator::new(
+            accounts,
+            Arc::new(crate::usage::InMemoryUsageSnapshotStore::default()),
+            vec![Arc::new(PanicOnceAdapter {
+                calls: AtomicUsize::new(0),
+            }) as Arc<dyn UsageAdapter>],
+            RefreshCoordinatorConfig::default(),
+        );
+
+        let first = tokio::time::timeout(
+            Duration::from_secs(5),
+            coordinator.refresh_account(account.clone(), RefreshReason::Manual),
+        )
+        .await
+        .expect("a panicking adapter must not hang the refresh");
+        assert_eq!(first.status, RefreshStatus::Failed);
+
+        let second = tokio::time::timeout(
+            Duration::from_secs(5),
+            coordinator.refresh_account(account, RefreshReason::Manual),
+        )
+        .await
+        .expect("the account must be refreshable after a panic");
+        assert_eq!(second.status, RefreshStatus::Updated);
+    }
+
+    #[tokio::test]
+    async fn account_removed_during_refresh_is_not_recreated() {
+        let account =
+            AccountRecord::create("test", "test@example.com", None, OPENAI, None).unwrap();
+        let accounts = Arc::new(InMemoryAccountStore::default());
+        accounts.upsert(&account).await.unwrap();
+        let store = Arc::new(crate::usage::InMemoryUsageSnapshotStore::default());
+        let coordinator = UsageRefreshCoordinator::new(
+            accounts.clone(),
+            store.clone(),
+            vec![Arc::new(CountingAdapter {
+                calls: AtomicUsize::new(0),
+                delay: Duration::from_millis(200),
+            }) as Arc<dyn UsageAdapter>],
+            RefreshCoordinatorConfig::default(),
+        );
+
+        let refresh = {
+            let coordinator = Arc::clone(&coordinator);
+            let account = account.clone();
+            tokio::spawn(async move {
+                coordinator
+                    .refresh_account(account, RefreshReason::Manual)
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        accounts.remove(account.id).await.unwrap();
+        let outcome = refresh.await.unwrap();
+
+        assert_eq!(outcome.status, RefreshStatus::Skipped);
+        assert!(accounts.get(account.id).await.unwrap().is_none());
+        assert!(store.get_latest(account.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn verified_identity_keeps_concurrent_alias_and_pause() {
+        let account =
+            AccountRecord::create("test", "test@example.com", None, OPENAI, None).unwrap();
+        let accounts = Arc::new(InMemoryAccountStore::default());
+        accounts.upsert(&account).await.unwrap();
+        let coordinator = UsageRefreshCoordinator::new(
+            accounts.clone(),
+            Arc::new(crate::usage::InMemoryUsageSnapshotStore::default()),
+            vec![Arc::new(CountingAdapter {
+                calls: AtomicUsize::new(0),
+                delay: Duration::from_millis(200),
+            }) as Arc<dyn UsageAdapter>],
+            RefreshCoordinatorConfig::default(),
+        );
+
+        let refresh = {
+            let coordinator = Arc::clone(&coordinator);
+            let account = account.clone();
+            tokio::spawn(async move {
+                coordinator
+                    .refresh_account(account, RefreshReason::Manual)
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        accounts
+            .set_alias(account.id, Some("Renamed"))
+            .await
+            .unwrap();
+        let mut paused = accounts.get(account.id).await.unwrap().unwrap();
+        paused.status = AccountStatus::Paused;
+        accounts.upsert(&paused).await.unwrap();
+        assert_eq!(refresh.await.unwrap().status, RefreshStatus::Updated);
+
+        let stored = accounts.get(account.id).await.unwrap().unwrap();
+        assert_eq!(stored.alias.as_deref(), Some("Renamed"));
+        assert_eq!(stored.status, AccountStatus::Paused);
+        assert_eq!(stored.email, "verified@example.com");
+    }
+
+    struct UnauthorizedAdapter;
+
+    #[async_trait]
+    impl UsageAdapter for UnauthorizedAdapter {
+        fn adapter_id(&self) -> &str {
+            OPENAI
+        }
+
+        async fn probe(
+            &self,
+            _account: &AccountRecord,
+        ) -> Result<UsageProbeResult, TransportError> {
+            Ok(UsageProbeResult::failure(UsageAdapterError {
+                code: UsageAdapterErrorCode::Unauthorized,
+                message: "token revoked".to_owned(),
+                http_status_code: Some(401),
+                retry_after_seconds: None,
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn invalidated_refresh_marks_the_stored_snapshot_stale() {
+        let account =
+            AccountRecord::create("test", "test@example.com", None, OPENAI, None).unwrap();
+        let accounts = Arc::new(InMemoryAccountStore::default());
+        accounts.upsert(&account).await.unwrap();
+        let store = Arc::new(crate::usage::InMemoryUsageSnapshotStore::default());
+        store
+            .save(snapshot(
+                account.id,
+                Utc::now() - ChronoDuration::hours(3),
+                Utc::now() + ChronoDuration::hours(1),
+            ))
+            .await
+            .unwrap();
+        let coordinator = UsageRefreshCoordinator::new(
+            accounts,
+            store.clone(),
+            vec![Arc::new(UnauthorizedAdapter) as Arc<dyn UsageAdapter>],
+            RefreshCoordinatorConfig::default(),
+        );
+
+        let outcome = coordinator
+            .refresh_account(account.clone(), RefreshReason::Manual)
+            .await;
+        assert_eq!(outcome.status, RefreshStatus::Invalidated);
+        let stored = store.get_latest(account.id).await.unwrap().unwrap();
+        assert!(stored.is_stale);
+        assert!(
+            stored
+                .stale_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("token revoked"))
+        );
+    }
+
+    #[tokio::test]
+    async fn future_dated_stored_snapshot_does_not_block_new_usage() {
+        let account =
+            AccountRecord::create("test", "test@example.com", None, OPENAI, None).unwrap();
+        let accounts = Arc::new(InMemoryAccountStore::default());
+        accounts.upsert(&account).await.unwrap();
+        let store = Arc::new(crate::usage::InMemoryUsageSnapshotStore::default());
+        store
+            .save(snapshot(
+                account.id,
+                Utc::now() + ChronoDuration::days(2),
+                Utc::now() + ChronoDuration::days(3),
+            ))
+            .await
+            .unwrap();
+        let current = snapshot(
+            account.id,
+            Utc::now(),
+            Utc::now() + ChronoDuration::hours(1),
+        );
+        let coordinator = UsageRefreshCoordinator::new(
+            accounts,
+            store.clone(),
+            vec![Arc::new(FixedSnapshotAdapter(current.clone())) as Arc<dyn UsageAdapter>],
+            RefreshCoordinatorConfig::default(),
+        );
+
+        let outcome = coordinator
+            .refresh_account(account, RefreshReason::Manual)
+            .await;
+        assert_eq!(outcome.status, RefreshStatus::Updated);
+    }
+
+    #[test]
+    fn stale_marker_keeps_the_first_stale_time() {
+        let first = snapshot(AccountId::new(), now(), now()).mark_stale("first");
+        let second = first.mark_stale("second");
+        assert_eq!(second.stale_at_utc, first.stale_at_utc);
+        assert_eq!(second.stale_reason.as_deref(), Some("second"));
+    }
+
+    #[tokio::test]
+    async fn one_reset_pass_covers_every_past_boundary_of_a_stale_snapshot() {
+        let account =
+            AccountRecord::create("test", "test@example.com", None, OPENAI, None).unwrap();
+        let accounts = Arc::new(InMemoryAccountStore::default());
+        let coordinator = UsageRefreshCoordinator::new(
+            accounts,
+            Arc::new(crate::usage::InMemoryUsageSnapshotStore::default()),
+            Vec::<Arc<dyn UsageAdapter>>::new(),
+            RefreshCoordinatorConfig::default(),
+        );
+        let at = Utc::now();
+        let mut stale = snapshot(
+            account.id,
+            at - ChronoDuration::hours(10),
+            at - ChronoDuration::hours(1),
+        );
+        stale.additional_windows = (2..7)
+            .map(|hours| crate::usage::AdditionalRateLimitWindow {
+                key: format!("model-{hours}"),
+                name: format!("model-{hours}"),
+                window: RateLimitWindow {
+                    kind: UsageWindowKind::Additional,
+                    name: format!("model-{hours}"),
+                    used_percent: 10.0,
+                    reset_at_utc: Some(at - ChronoDuration::hours(hours)),
+                    limit_window_seconds: 18_000,
+                },
+            })
+            .collect();
+        let snapshots = HashMap::from([(account.id, stale)]);
+
+        let due = coordinator
+            .record_due_reset_boundaries(&snapshots, at)
+            .await;
+        assert_eq!(due, HashSet::from([account.id]));
+
+        let attempted = coordinator.attempted_reset_boundaries.lock().await.clone();
+        let next = earliest_reset_boundary_candidate(
+            pending_reset_boundaries(
+                snapshots.values(),
+                RESET_BOUNDARY_GRACE,
+                |snapshot, boundary| boundary_already_attempted(&attempted, snapshot, boundary),
+            ),
+            Duration::from_secs(30 * 60),
+            RESET_BOUNDARY_MINIMUM_DELAY,
+            None,
+            at,
+        );
+        assert!(
+            next.is_none(),
+            "past boundaries must not schedule more passes"
+        );
+    }
+
+    #[test]
+    fn huge_reset_delay_does_not_panic() {
+        let value = serde_json::json!({ "resetInSec": 1e30 });
+        assert!(crate::providers::shared::reset_at(&value, now()).is_none());
+        let value = serde_json::json!({ "resetInSec": "NaN" });
+        assert!(crate::providers::shared::reset_at(&value, now()).is_none());
     }
 }
