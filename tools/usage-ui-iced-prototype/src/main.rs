@@ -212,6 +212,8 @@ struct App {
     selected_provider: UsageProvider,
     dashboard_refresh_running: bool,
     popup_visible: bool,
+    window_focused: bool,
+    last_focus_lost: Option<Instant>,
     refresh_icon_rotation_radians: f32,
     dashboard: dashboard::DashboardState,
     language: locale::Language,
@@ -241,6 +243,8 @@ impl App {
             selected_provider: UsageProvider::Codex,
             dashboard_refresh_running: false,
             popup_visible: false,
+            window_focused: false,
+            last_focus_lost: None,
             refresh_icon_rotation_radians: 0.0,
             dashboard: dashboard::DashboardState::loading(),
             language: locale::default_language(),
@@ -449,6 +453,15 @@ impl App {
                     self.cancel_openrouter_credentials();
                     self.dashboard.close_any_model_visibility_menu();
                     self.hide_popup()
+                }
+                window::Event::Focused => {
+                    self.window_focused = true;
+                    Task::none()
+                }
+                window::Event::Unfocused => {
+                    self.window_focused = false;
+                    self.last_focus_lost = Some(Instant::now());
+                    Task::none()
                 }
                 _ => Task::none(),
             },
@@ -775,7 +788,12 @@ impl App {
         window_mode: window::Mode,
     ) -> Task<Message> {
         self.popup_visible = window_mode != window::Mode::Hidden;
-        if self.popup_visible {
+        if tray_click_should_hide(
+            self.popup_visible,
+            self.window_focused,
+            self.last_focus_lost,
+            Instant::now(),
+        ) {
             preview_log("hide popup from tray");
             self.hide_popup()
         } else {
@@ -1384,6 +1402,25 @@ enum Message {
         codex_usage_core::accounts::AccountId,
         Result<Vec<dashboard::AccountUsageEntry>, String>,
     ),
+}
+
+/// Pressing the tray icon takes focus from the popup just before the click
+/// arrives, so focus lost this recently still counts as "in front".
+const TRAY_CLICK_FOCUS_GRACE: Duration = Duration::from_millis(500);
+
+/// A tray click hides the popup only when it is visible and in front. A popup
+/// left open behind other windows is brought forward instead, so one click
+/// always shows it.
+fn tray_click_should_hide(
+    visible: bool,
+    focused: bool,
+    last_focus_lost: Option<Instant>,
+    now: Instant,
+) -> bool {
+    visible
+        && (focused
+            || last_focus_lost
+                .is_some_and(|lost| now.saturating_duration_since(lost) <= TRAY_CLICK_FOCUS_GRACE))
 }
 
 fn install_tray(sender: Sender<TrayIconEvent>) -> Result<(), String> {
@@ -3003,6 +3040,28 @@ mod tests {
     use tray_icon::menu::dpi::{PhysicalPosition, PhysicalSize};
 
     #[test]
+    fn tray_click_brings_a_buried_popup_forward_instead_of_hiding_it() {
+        let now = Instant::now();
+        assert!(!tray_click_should_hide(false, false, None, now));
+        assert!(tray_click_should_hide(true, true, None, now));
+        // Focus moved to the taskbar as the tray icon was pressed.
+        assert!(tray_click_should_hide(
+            true,
+            false,
+            Some(now - Duration::from_millis(120)),
+            now
+        ));
+        // Open but buried behind other windows for a while.
+        assert!(!tray_click_should_hide(
+            true,
+            false,
+            Some(now - Duration::from_secs(5)),
+            now
+        ));
+        assert!(!tray_click_should_hide(true, false, None, now));
+    }
+
+    #[test]
     fn rounded_backdrop_mask_clears_corners_and_antialiases_the_edge() {
         assert_eq!(
             rounded_rectangle_coverage(0.5, 0.5, 120.0, 180.0, 16.0),
@@ -3213,10 +3272,16 @@ mod tests {
         assert!(app.popup_visible);
 
         // Conversely, a stale cached "closed" value must not prevent a click
-        // from closing a native window that is actually visible.
+        // from closing a native window that is actually visible and in front.
         app.popup_visible = false;
+        app.window_focused = true;
         let _close_task = app.toggle_popup_from_tray(tray_rect, window::Mode::Windowed);
         assert!(!app.popup_visible);
+
+        // A visible window buried behind other windows is brought forward.
+        app.window_focused = false;
+        let _raise_task = app.toggle_popup_from_tray(tray_rect, window::Mode::Windowed);
+        assert!(app.popup_visible);
     }
 
     #[test]
