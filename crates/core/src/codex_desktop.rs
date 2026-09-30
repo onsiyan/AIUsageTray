@@ -281,6 +281,41 @@ pub fn install_account(
     Ok(link)
 }
 
+/// Fails when Codex is configured to keep its sign-in in the OS keyring
+/// (`cli_auth_credentials_store = "keyring"` or `"auto"`): it would then
+/// ignore `auth.json`, and switching would silently do nothing.
+pub fn ensure_file_credential_store(paths: &CodexDesktopPaths) -> Result<(), AuthError> {
+    let Ok(config) = fs::read_to_string(paths.codex_home.join("config.toml")) else {
+        return Ok(());
+    };
+    match configured_credential_store(&config).as_deref() {
+        Some("keyring" | "auto") => Err(AuthError::Config(
+            "Codex keeps its sign-in in the system keyring (cli_auth_credentials_store in \
+             config.toml), so switching accounts from here is not supported"
+                .to_owned(),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// The top-level `cli_auth_credentials_store` value, ignoring table sections.
+fn configured_credential_store(config: &str) -> Option<String> {
+    for line in config.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            return None;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() == "cli_auth_credentials_store" {
+            let value = value.split('#').next().unwrap_or_default().trim();
+            return Some(value.trim_matches(['"', '\'']).to_ascii_lowercase());
+        }
+    }
+    None
+}
+
 /// Keeps a copy of an `auth.json` this monitor did not write, so switching
 /// never loses a sign-in the user made directly in Codex.
 fn backup_foreign_auth_file(paths: &CodexDesktopPaths) -> Result<(), AuthError> {
@@ -368,6 +403,38 @@ mod tests {
             workspace_id: None,
             metadata: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn keyring_credential_store_blocks_switching() {
+        assert_eq!(
+            configured_credential_store(
+                "model = \"x\"\ncli_auth_credentials_store = \"keyring\" # os\n"
+            ),
+            Some("keyring".to_owned())
+        );
+        assert_eq!(
+            configured_credential_store("[profiles.a]\ncli_auth_credentials_store = \"keyring\"\n"),
+            None,
+            "a value inside a table is not the global setting"
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(directory.path());
+        fs::create_dir_all(&paths.codex_home).unwrap();
+        assert!(ensure_file_credential_store(&paths).is_ok());
+        fs::write(
+            paths.codex_home.join("config.toml"),
+            "cli_auth_credentials_store = \"auto\"\n",
+        )
+        .unwrap();
+        assert!(ensure_file_credential_store(&paths).is_err());
+        fs::write(
+            paths.codex_home.join("config.toml"),
+            "cli_auth_credentials_store = \"file\"\n",
+        )
+        .unwrap();
+        assert!(ensure_file_credential_store(&paths).is_ok());
     }
 
     #[test]

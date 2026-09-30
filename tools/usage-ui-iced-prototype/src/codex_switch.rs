@@ -57,6 +57,27 @@ mod imp {
 
         // Pull the latest tokens of the account Codex is leaving back into
         // the monitor before the link moves; reading through the store syncs.
+        codex_desktop::ensure_file_credential_store(&paths).map_err(|error| error.to_string())?;
+
+        // Close Codex before touching auth.json: it may write its in-memory
+        // tokens while shutting down, which would overwrite the new account.
+        let app = close_codex_app()?;
+
+        let result = install_linked_account(&paths, &credentials, account_id, &account).await;
+        // Start Codex again even when the switch failed, on whichever account
+        // auth.json now holds.
+        let started = start_codex_app(&app);
+        result.and(started)
+    }
+
+    async fn install_linked_account(
+        paths: &CodexDesktopPaths,
+        credentials: &Arc<WindowsCredentialManagerStore>,
+        account_id: AccountId,
+        account: &codex_usage_core::accounts::AccountRecord,
+    ) -> Result<(), String> {
+        let paths = paths.clone();
+        let credentials = Arc::clone(credentials);
         if let Some(previous) = codex_desktop::active_account(&paths)
             && previous != account_id
         {
@@ -104,22 +125,30 @@ mod imp {
             )
             .map_err(|error| error.to_string())?;
         }
-
-        restart_codex_app()
+        Ok(())
     }
 
-    /// Closes the Codex desktop app (package `OpenAI.Codex`) and starts it
-    /// again so it reads the new `auth.json`.
-    fn restart_codex_app() -> Result<(), String> {
+    /// Closes every process of the installed Codex app packages (stable and
+    /// Beta) and returns the package family to start again: the one that was
+    /// running, otherwise the stable app when installed.
+    fn close_codex_app() -> Result<String, String> {
         const SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
-$package = Get-AppxPackage -Name 'OpenAI.Codex' | Select-Object -First 1
-if (-not $package) { Write-Error 'The Codex app is not installed.'; exit 2 }
-$root = $package.InstallLocation.TrimEnd('\') + '\'
-$running = @(Get-Process | Where-Object {
-    $_.Path -and $_.Path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -and
-    $_.ProcessName -ne 'codex-windows-sandbox-service'
-})
+$packages = @(Get-AppxPackage | Where-Object { $_.Name -in @('OpenAI.Codex', 'OpenAI.CodexBeta') } |
+    Sort-Object { if ($_.Name -eq 'OpenAI.Codex') { 0 } else { 1 } })
+if ($packages.Count -eq 0) { [Console]::Error.WriteLine('The Codex app is not installed.'); exit 2 }
+$launch = $null
+$running = @()
+foreach ($package in $packages) {
+    $root = $package.InstallLocation.TrimEnd('\') + '\'
+    $processes = @(Get-Process | Where-Object {
+        $_.Path -and $_.Path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -and
+        $_.ProcessName -ne 'codex-windows-sandbox-service'
+    })
+    if ($processes.Count -gt 0 -and -not $launch) { $launch = $package.PackageFamilyName }
+    $running += $processes
+}
+if (-not $launch) { $launch = $packages[0].PackageFamilyName }
 foreach ($process in $running) { [void]$process.CloseMainWindow() }
 $deadline = (Get-Date).AddSeconds(6)
 while ((Get-Date) -lt $deadline -and @($running | Where-Object { -not $_.HasExited }).Count -gt 0) {
@@ -128,25 +157,46 @@ while ((Get-Date) -lt $deadline -and @($running | Where-Object { -not $_.HasExit
 }
 $running | Where-Object { -not $_.HasExited } | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500
-Start-Process "shell:AppsFolder\$($package.PackageFamilyName)!App"
+Write-Output $launch
 "#;
+        let family = run_powershell(SCRIPT, "could not close Codex")?;
+        let family = family.trim();
+        if family.is_empty() || family.contains(['"', '\'', '`', '$', ';']) {
+            return Err("could not identify the Codex app package".to_owned());
+        }
+        Ok(family.to_owned())
+    }
+
+    fn start_codex_app(package_family: &str) -> Result<(), String> {
+        let script = format!("Start-Process 'shell:AppsFolder\\{package_family}!App'");
+        run_powershell(
+            &script,
+            "Codex was switched but could not be started again; open it manually",
+        )
+        .map(|_| ())
+    }
+
+    fn run_powershell(script: &str, failure: &str) -> Result<String, String> {
         let output = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
-            .map_err(|error| format!("could not restart Codex: {error}"))?;
+            .map_err(|error| format!("{failure}: {error}"))?;
         if output.status.success() {
-            Ok(())
-        } else {
-            let detail = String::from_utf8_lossy(&output.stderr);
-            let detail = detail
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or("");
-            Err(format!(
-                "Codex was switched but could not be restarted; restart it manually. {detail}"
-            ))
+            return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
         }
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("")
+            .trim()
+            .to_owned();
+        Err(if detail.is_empty() {
+            failure.to_owned()
+        } else {
+            format!("{failure}: {detail}")
+        })
     }
 }
 
