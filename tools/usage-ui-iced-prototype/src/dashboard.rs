@@ -1317,48 +1317,59 @@ fn codex_desktop_button(
         )
     };
     let accent = theme.accent_color();
-    let mut control = button(
-        row![
-            glyph.size(12).color(theme.colors.text()),
-            text(locale::text(language, label))
-                .size(typography::CONTROL_SIZE)
-                .wrapping(text::Wrapping::None),
-        ]
-        .spacing(4)
-        .align_y(Alignment::Center),
-    )
-    .padding([3, 7])
-    .style(move |framework_theme, status| {
-        let mut style = button::text(framework_theme, status);
-        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-        style.background = Some(Background::Color(if is_active {
-            accent.scale_alpha(0.18)
-        } else if hovered {
-            theme.colors.hover()
-        } else {
-            theme.colors.control_surface()
-        }));
-        style.text_color = theme.colors.text();
-        style.border = Border {
-            color: if is_active {
-                accent.scale_alpha(0.62)
+    let glyph_color = if is_active {
+        accent
+    } else if is_switching {
+        muted_text(theme)
+    } else {
+        theme.colors.text()
+    };
+    // Icon-only so it always fits beside long account names; the tooltip
+    // names the action.
+    let mut control = button(container(glyph.size(14).color(glyph_color)).center(26))
+        .width(26)
+        .height(26)
+        .padding(0)
+        .style(move |framework_theme, status| {
+            let mut style = button::text(framework_theme, status);
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            style.background = Some(Background::Color(if is_active {
+                accent.scale_alpha(0.18)
+            } else if hovered {
+                theme.colors.hover()
             } else {
-                theme.colors.border(0.18)
-            },
-            width: 1.0,
-            radius: 7.0.into(),
-        };
-        style.shadow = Default::default();
-        style
-    });
+                theme.colors.control_surface()
+            }));
+            style.text_color = theme.colors.text();
+            style.border = Border {
+                color: if is_active {
+                    accent.scale_alpha(0.62)
+                } else {
+                    theme.colors.border(0.18)
+                },
+                width: 1.0,
+                radius: 7.0.into(),
+            };
+            style.shadow = Default::default();
+            style
+        });
     // The active account can be pressed again to restart Codex on it.
     if codex_desktop.switching.is_none() {
         control = control.on_press(Message::SwitchCodexDesktopAccount(account_id));
     }
 
+    let tip = if is_switching {
+        locale::text(language, tip).to_owned()
+    } else {
+        format!(
+            "{} · {}",
+            locale::text(language, label),
+            locale::text(language, tip)
+        )
+    };
     tooltip(
         control,
-        text(locale::text(language, tip)).size(typography::METADATA_SIZE),
+        text(tip).size(typography::METADATA_SIZE),
         tooltip::Position::Bottom,
     )
     .delay(Duration::from_millis(350))
