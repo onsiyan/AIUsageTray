@@ -19,7 +19,7 @@ use iced::{
     keyboard,
     widget::{
         Space, button, column, container, image, mouse_area, row, scrollable, stack, text,
-        text_input, tooltip,
+        text_input,
     },
     window,
 };
@@ -32,6 +32,7 @@ use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, 
 
 mod codex_switch;
 mod dashboard;
+mod hint;
 mod locale;
 mod percent_display;
 mod theme;
@@ -1997,13 +1998,11 @@ fn add_account_button(
             style
         });
 
-    tooltip(
+    hint::hint(
         button,
-        text(locale::text(language, locale::Text::AddAccount)).size(typography::METADATA_SIZE),
-        tooltip::Position::Bottom,
+        locale::text(language, locale::Text::AddAccount),
+        active_theme,
     )
-    .delay(Duration::from_millis(350))
-    .into()
 }
 
 fn delete_account_button(
@@ -2042,13 +2041,11 @@ fn delete_account_button(
             style
         });
 
-    tooltip(
+    hint::hint(
         button,
-        text(locale::text(language, locale::Text::DeleteAccount)).size(typography::METADATA_SIZE),
-        tooltip::Position::Bottom,
+        locale::text(language, locale::Text::DeleteAccount),
+        active_theme,
     )
-    .delay(Duration::from_millis(350))
-    .into()
 }
 
 fn theme_button(active_theme: &'static ThemeDefinition) -> Element<'static, Message> {
@@ -2110,39 +2107,18 @@ fn refresh_button(
             style
         });
 
-    tooltip(
+    hint::hint(
         button,
-        text(locale::text(
+        locale::text(
             language,
             if refreshing {
                 locale::Text::RefreshingUsage
             } else {
                 locale::Text::RefreshUsage
             },
-        ))
-        .size(typography::BODY_SIZE)
-        .color(active_theme.colors.text()),
-        tooltip::Position::Bottom,
+        ),
+        active_theme,
     )
-    .padding(8)
-    .gap(5)
-    .delay(Duration::from_millis(350))
-    .style(move |_| container::Style {
-        background: Some(Background::Color(active_theme.colors.control_surface())),
-        text_color: Some(active_theme.colors.text()),
-        border: Border {
-            color: active_theme.colors.border(if active_theme.colors.is_light {
-                0.35
-            } else {
-                0.22
-            }),
-            width: 1.0,
-            radius: 8.0.into(),
-        },
-        shadow: Shadow::default(),
-        ..Default::default()
-    })
-    .into()
 }
 
 fn provider_tab_bar(
@@ -2206,13 +2182,7 @@ fn provider_tab(
         style
     });
 
-    tooltip(
-        tab_button,
-        text(tab.label).size(typography::METADATA_SIZE),
-        tooltip::Position::Bottom,
-    )
-    .delay(Duration::from_millis(350))
-    .into()
+    hint::hint(tab_button, tab.label, active_theme)
 }
 
 fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -> image::Handle {

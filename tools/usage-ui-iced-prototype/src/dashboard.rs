@@ -17,7 +17,7 @@ use iced::{
     },
     widget::{
         button, checkbox, column, container, image, mouse_area, progress_bar, rich_text, row,
-        scrollable, space, span, text, text_input, tooltip,
+        scrollable, space, span, text, text_input,
     },
 };
 use lucide_icons::iced::{
@@ -1367,13 +1367,7 @@ fn codex_desktop_button(
             locale::text(language, tip)
         )
     };
-    tooltip(
-        control,
-        text(tip).size(typography::METADATA_SIZE),
-        tooltip::Position::Bottom,
-    )
-    .delay(Duration::from_millis(350))
-    .into()
+    crate::hint::hint(control, tip, theme)
 }
 
 fn move_account_button(
@@ -1418,13 +1412,7 @@ fn move_account_button(
     } else {
         Text::MoveAccountDown
     };
-    tooltip(
-        control,
-        text(locale::text(language, tip)).size(typography::METADATA_SIZE),
-        tooltip::Position::Bottom,
-    )
-    .delay(Duration::from_millis(350))
-    .into()
+    crate::hint::hint(control, locale::text(language, tip), theme)
 }
 
 fn edit_name_button(
@@ -1452,13 +1440,7 @@ fn edit_name_button(
                 style
             });
 
-    tooltip(
-        edit_button,
-        text(locale::text(language, Text::EditName)).size(typography::METADATA_SIZE),
-        tooltip::Position::Bottom,
-    )
-    .delay(Duration::from_millis(350))
-    .into()
+    crate::hint::hint(edit_button, locale::text(language, Text::EditName), theme)
 }
 
 fn alias_action_style(
@@ -1527,13 +1509,7 @@ fn model_visibility_button(
             style
         });
 
-    let trigger = tooltip(
-        button,
-        text(locale::text(language, Text::ModelVisibility)).size(typography::METADATA_SIZE),
-        tooltip::Position::Bottom,
-    )
-    .delay(Duration::from_millis(350))
-    .into();
+    let trigger = crate::hint::hint(button, locale::text(language, Text::ModelVisibility), theme);
     let menu: Element<'static, Message> = if menu_open {
         model_visibility_menu(
             account_id,
