@@ -2112,17 +2112,21 @@ fn append_snapshot_rows(
         .filter(|metric| !duplicates_rate_window(metric, &windows))
         .collect::<Vec<_>>();
 
+    // Reset credits sit under the last weekly lane: the additional weekly
+    // window when there is one, otherwise the regular weekly window.
+    let reset_inventory_anchor = windows.iter().rposition(|window| {
+        let is_primary = snapshot
+            .primary
+            .as_ref()
+            .is_some_and(|primary| std::ptr::eq(primary, *window));
+        is_weekly_usage_window(window, is_primary, snapshot.primary_window_kind)
+            || is_additional_weekly_window(window)
+    });
     let mut reset_inventory_rendered = false;
     if !windows.is_empty() || !metrics.is_empty() {
-        for window in windows {
+        for (index, window) in windows.into_iter().enumerate() {
             rows.push(rate_window_row(window, theme, language));
-            let is_primary = snapshot
-                .primary
-                .as_ref()
-                .is_some_and(|primary| std::ptr::eq(primary, window));
-            if !reset_inventory_rendered
-                && is_weekly_usage_window(window, is_primary, snapshot.primary_window_kind)
-            {
+            if !reset_inventory_rendered && reset_inventory_anchor == Some(index) {
                 if let Some(inventory) = &snapshot.credit_inventory {
                     if inventory.available_count > 0 {
                         rows.push(space().height(Length::Fixed(8.0)).into());
@@ -2553,6 +2557,12 @@ fn is_weekly_usage_window(
     }
 
     is_weekly_usage_name(&window.name)
+}
+
+fn is_additional_weekly_window(window: &RateLimitWindow) -> bool {
+    window.kind == UsageWindowKind::Additional
+        && (window.limit_window_seconds >= 6 * 24 * 60 * 60
+            || window.name.to_ascii_lowercase().contains("weekly"))
 }
 
 fn is_weekly_usage_name(name: &str) -> bool {
