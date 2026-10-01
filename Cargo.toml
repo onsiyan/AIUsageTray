@@ -11,7 +11,5 @@ members = [
     "tools/usage-cli",
 ]
 exclude = [
-    "tools/usage-ui-prototype",
-    "tools/usage-ui-tauri-prototype",
     "tools/usage-ui-iced-prototype",
 ]
