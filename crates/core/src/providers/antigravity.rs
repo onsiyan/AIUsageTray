@@ -1,5 +1,5 @@
 use crate::{
-    accounts::{ANTIGRAVITY, AccountRecord, VerifiedIdentity},
+    accounts::{ANTIGRAVITY, AccountId, AccountRecord, VerifiedIdentity},
     auth::{AccountAuthMaterial, AccountAuthMaterialProvider, AuthError, OAuthProviderDefinition},
     providers::shared::{
         bearer_headers, invalid_payload, json_number, json_string, map_antigravity_http_error,
@@ -20,9 +20,41 @@ use reqwest::Method;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::process::Command;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 use url::Url;
+
+/// How long an account's `loadCodeAssist` answer is reused. It only yields
+/// the Cloud Code project and the subscription tier, which rarely change,
+/// while the call costs about a second on every refresh.
+const CODE_ASSIST_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
+
+#[derive(Clone)]
+struct CodeAssistInfo {
+    fetched_at: Instant,
+    project_id: Option<String>,
+    plan_type: Option<String>,
+}
+
+static CODE_ASSIST_CACHE: LazyLock<Mutex<HashMap<AccountId, CodeAssistInfo>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn cached_code_assist(account_id: AccountId) -> Option<CodeAssistInfo> {
+    let cache = CODE_ASSIST_CACHE.lock().ok()?;
+    cache
+        .get(&account_id)
+        .filter(|info| info.fetched_at.elapsed() < CODE_ASSIST_CACHE_TTL)
+        .cloned()
+}
+
+fn store_code_assist(account_id: AccountId, info: Option<CodeAssistInfo>) {
+    if let Ok(mut cache) = CODE_ASSIST_CACHE.lock() {
+        match info {
+            Some(info) => cache.insert(account_id, info),
+            None => cache.remove(&account_id),
+        };
+    }
+}
 
 pub fn oauth_definition() -> OAuthProviderDefinition {
     const DEFAULT_CLIENT_ID: &str =
@@ -237,24 +269,12 @@ impl AntigravityUsageAdapter {
 
         let mut best_result = None;
         for endpoint in endpoints {
-            let summary_groups = local_post(
-                transport,
-                &endpoint,
-                LOCAL_QUOTA_SUMMARY_PATH,
-                json!({ "forceRefresh": true }),
-            )
-            .await;
-            let summary_groups = summary_groups
-                .filter(UsageHttpResponse::is_success)
-                .and_then(|response| serde_json::from_str::<Value>(&response.body).ok())
-                .map(|root| parse_quota_summary(&root))
-                .filter(|groups| has_usable_quota_summary(groups));
-
             // CodexBar treats the quota summary as the richest local source,
             // but obtains identity from GetUserStatus before accepting it.
             // That account check is essential when several Google accounts
             // are registered in the monitor: a local language server is not
-            // account-scoped by the request itself.
+            // account-scoped by the request itself. Identify first, so the
+            // slow forced summary refresh only runs for the signed-in account.
             let status_root = local_post(
                 transport,
                 &endpoint,
@@ -265,15 +285,28 @@ impl AntigravityUsageAdapter {
             .filter(UsageHttpResponse::is_success)
             .and_then(|response| serde_json::from_str::<Value>(&response.body).ok());
             let email = status_root.as_ref().and_then(find_local_email);
+            if !local_identity_matches(account, email.as_deref()) {
+                continue;
+            }
             let plan_type = status_root.as_ref().and_then(find_local_plan_type);
             let status_models = status_root
                 .as_ref()
                 .map(parse_local_model_quotas)
                 .unwrap_or_default();
 
-            if let Some(groups) = summary_groups
-                && local_identity_matches(account, email.as_deref())
-            {
+            let summary_groups = local_post(
+                transport,
+                &endpoint,
+                LOCAL_QUOTA_SUMMARY_PATH,
+                json!({ "forceRefresh": true }),
+            )
+            .await
+            .filter(UsageHttpResponse::is_success)
+            .and_then(|response| serde_json::from_str::<Value>(&response.body).ok())
+            .map(|root| parse_quota_summary(&root))
+            .filter(|groups| has_usable_quota_summary(groups));
+
+            if let Some(groups) = summary_groups {
                 let score = local_snapshot_score(
                     Some(&groups),
                     &status_models,
@@ -306,8 +339,8 @@ impl AntigravityUsageAdapter {
             // IDE language servers commonly return 404 for the summary.  The
             // proven fallback order is GetUserStatus, then
             // GetCommandModelConfigs; neither path is allowed to win without
-            // a matching account identity.
-            if local_identity_matches(account, email.as_deref()) {
+            // a matching account identity (checked above).
+            {
                 if !status_models.is_empty() {
                     let score = local_snapshot_score(
                         None,
@@ -465,41 +498,73 @@ impl UsageAdapter for AntigravityUsageAdapter {
             return Ok(missing_auth("Antigravity"));
         }
 
-        let assist = self
-            .post_remote(
-                "v1internal:loadCodeAssist",
-                json!({
-                    "metadata": {
-                        "ideType": "ANTIGRAVITY",
-                        "platform": "PLATFORM_UNSPECIFIED",
-                        "pluginType": "GEMINI"
-                    }
-                }),
-                &material,
-            )
-            .await?;
-        if !assist.is_success() {
-            return Ok(map_antigravity_http_error(&assist, "loadCodeAssist"));
-        }
-        let assist_root: Value = match serde_json::from_str(&assist.body) {
-            Ok(value) => value,
-            Err(error) => return Ok(invalid_payload("Antigravity", error.to_string())),
+        let code_assist = match cached_code_assist(account.id) {
+            Some(info) => info,
+            None => {
+                let assist = self
+                    .post_remote(
+                        "v1internal:loadCodeAssist",
+                        json!({
+                            "metadata": {
+                                "ideType": "ANTIGRAVITY",
+                                "platform": "PLATFORM_UNSPECIFIED",
+                                "pluginType": "GEMINI"
+                            }
+                        }),
+                        &material,
+                    )
+                    .await?;
+                if !assist.is_success() {
+                    return Ok(map_antigravity_http_error(&assist, "loadCodeAssist"));
+                }
+                let assist_root: Value = match serde_json::from_str(&assist.body) {
+                    Ok(value) => value,
+                    Err(error) => return Ok(invalid_payload("Antigravity", error.to_string())),
+                };
+                let mut project_id =
+                    find_project_id(&assist_root).or_else(|| account.workspace_id.clone());
+                if project_id.is_none() {
+                    project_id = self.onboard_remote(&assist_root, &material).await;
+                }
+                let info = CodeAssistInfo {
+                    fetched_at: Instant::now(),
+                    project_id,
+                    plan_type: find_plan_type(&assist_root),
+                };
+                // Only a resolved project is worth reusing; without one the
+                // next refresh should ask (and onboard) again.
+                if info.project_id.is_some() {
+                    store_code_assist(account.id, Some(info.clone()));
+                }
+                info
+            }
         };
-        let mut project_id = find_project_id(&assist_root).or_else(|| account.workspace_id.clone());
-        if project_id.is_none() {
-            project_id = self.onboard_remote(&assist_root, &material).await;
-        }
+        let project_id = code_assist.project_id.clone();
 
-        let models = self
-            .post_remote(
+        let project_body = project_id
+            .as_deref()
+            .map(|project| json!({ "project": project }))
+            .unwrap_or_else(|| json!({}));
+        // The model catalogue and the grouped quota summary are independent
+        // calls; fetch them together rather than one after the other.
+        let (models, quota_summary_response) = tokio::join!(
+            self.post_remote(
                 "v1internal:fetchAvailableModels",
-                project_id
-                    .as_deref()
-                    .map(|project| json!({ "project": project }))
-                    .unwrap_or_else(|| json!({})),
+                project_body.clone(),
+                &material
+            ),
+            self.post_remote_best_effort(
+                "v1internal:retrieveUserQuotaSummary",
+                project_body,
                 &material,
-            )
-            .await?;
+            ),
+        );
+        let models = models?;
+        if !models.is_success() {
+            // A rejected project (or token) may mean the cached project is no
+            // longer valid; resolve it afresh next time.
+            store_code_assist(account.id, None);
+        }
         let mut remote_quota_verified = false;
         let mut quotas = if models.is_success() {
             let models_root: Value = match serde_json::from_str(&models.body) {
@@ -563,16 +628,6 @@ impl UsageAdapter for AntigravityUsageAdapter {
         // values. Do not require fixed group names: Google can return either
         // shared pools or per-model groups for the same account.
         let mut quota_summary_diagnostics = Vec::new();
-        let quota_summary_response = self
-            .post_remote_best_effort(
-                "v1internal:retrieveUserQuotaSummary",
-                project_id
-                    .as_deref()
-                    .map(|project| json!({ "project": project }))
-                    .unwrap_or_else(|| json!({})),
-                &material,
-            )
-            .await;
         let quota_summary = match quota_summary_response {
             Ok(response) if !response.is_success() => {
                 quota_summary_diagnostics.push(quota_summary_response_diagnostic(&response));
@@ -620,7 +675,7 @@ impl UsageAdapter for AntigravityUsageAdapter {
                 .collect()
         };
         quotas = effective_quotas;
-        let plan_type = find_plan_type(&assist_root);
+        let plan_type = code_assist.plan_type.clone();
         let mut snapshot = if quota_summary.is_empty() {
             snapshot_from_model_quotas(
                 account,
