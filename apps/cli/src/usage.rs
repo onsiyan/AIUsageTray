@@ -122,11 +122,7 @@ pub(super) async fn run_usage_scheduler(
         Arc::clone(&oauth_store),
         Arc::clone(&auth_store),
     );
-    let session_refresher = Arc::new(
-        WindowsBrowserCookieImporter::from_process()
-            .map_err(|error| CliFailure::runtime(error.to_string()))?,
-    ) as Arc<dyn AccountBrowserSessionRefresher>;
-    let providers = per_account_source_registry(transport, auth, auth_store, session_refresher)
+    let providers = per_account_source_registry(transport, auth, auth_store)
         .map_err(|error| CliFailure::runtime(error.to_string()))?;
     let runtime = UsageRuntime::new(
         account_store,
@@ -258,10 +254,6 @@ pub(super) async fn collect_refresh_results(
         Arc::clone(&oauth_store),
         Arc::clone(&auth_store),
     );
-    let session_refresher = Arc::new(
-        WindowsBrowserCookieImporter::from_process()
-            .map_err(|error| CliFailure::runtime(error.to_string()))?,
-    ) as Arc<dyn AccountBrowserSessionRefresher>;
 
     let mut results = Vec::with_capacity(accounts.len());
     for account in accounts {
@@ -270,13 +262,12 @@ pub(super) async fn collect_refresh_results(
             .await
             .map_err(|error| CliFailure::runtime(error.to_string()))?;
         let provider_config = provider_config_for(account, saved_material.as_ref());
-        let runtime = UsageRuntime::from_dependencies_with_auth_store_and_session_refresher(
+        let runtime = UsageRuntime::from_dependencies_with_auth_store(
             Arc::clone(account_store),
             Arc::clone(snapshot_store),
             Arc::clone(&transport) as Arc<dyn UsageHttpTransport>,
             Arc::clone(&auth),
             Arc::clone(&auth_store) as Arc<dyn AccountAuthMaterialStore>,
-            Arc::clone(&session_refresher),
             provider_config,
             RefreshCoordinatorConfig {
                 cadence: RefreshCadence::Manual,
@@ -334,22 +325,18 @@ pub(super) fn build_auth_provider(
     ]))
 }
 
-/// Source modes that `provider_config_for` can select for one account.
-pub(super) const SOURCE_VARIANTS: [(ClaudeSourceMode, OpenCodeGoSourceMode); 4] = [
-    (ClaudeSourceMode::OAuth, OpenCodeGoSourceMode::Web),
-    (ClaudeSourceMode::OAuth, OpenCodeGoSourceMode::Api),
-    (ClaudeSourceMode::AdminApi, OpenCodeGoSourceMode::Web),
-    (ClaudeSourceMode::AdminApi, OpenCodeGoSourceMode::Api),
-];
+/// OpenCode Go source modes that `provider_config_for` can select for one
+/// account. Every other provider has a single source.
+pub(super) const OPENCODE_GO_SOURCE_VARIANTS: [OpenCodeGoSourceMode; 2] =
+    [OpenCodeGoSourceMode::Web, OpenCodeGoSourceMode::Api];
 
-/// Builds the long-running scheduler's providers so each account is probed
-/// with the same per-account source selection as `usage refresh`, instead of
-/// one global Claude/OpenCode Go mode for every account.
+/// Builds the long-running scheduler's providers so each OpenCode Go account
+/// is probed with the same per-account source selection as `usage refresh`,
+/// instead of one global mode for every account.
 pub(super) fn per_account_source_registry(
     transport: Arc<ReqwestUsageHttpTransport>,
     auth: Arc<dyn AccountAuthMaterialProvider>,
     auth_store: Arc<WindowsCredentialManagerAuthMaterialStore>,
-    session_refresher: Arc<dyn AccountBrowserSessionRefresher>,
 ) -> Result<ProviderRegistry, ProviderRegistryError> {
     let transport = transport as Arc<dyn UsageHttpTransport>;
     let store = Arc::clone(&auth_store) as Arc<dyn AccountAuthMaterialStore>;
@@ -366,33 +353,30 @@ pub(super) fn per_account_source_registry(
         Arc::clone(&transport),
     )) as Arc<dyn AccountAuthMaterialProvider>;
     let mut variants = Vec::new();
-    for (claude_source_mode, opencode_go_source_mode) in SOURCE_VARIANTS {
-        let registry = ProviderRegistry::from_dependencies_with_auth_store_and_session_refresher(
+    for opencode_go_source_mode in OPENCODE_GO_SOURCE_VARIANTS {
+        let registry = ProviderRegistry::from_dependencies(
             Arc::clone(&transport),
             Arc::clone(&auth),
-            Arc::clone(&store),
-            Arc::clone(&session_refresher),
             ProviderRegistryConfig {
-                claude_source_mode,
                 opencode_go_source_mode,
                 enable_antigravity_local_probe: false,
                 ..ProviderRegistryConfig::default()
             },
         )?;
-        variants.push(((claude_source_mode, opencode_go_source_mode), registry));
+        variants.push((opencode_go_source_mode, registry));
     }
     let base = &variants[0].1;
     let adapters = base
         .canonical_ids()
         .iter()
         .filter_map(|provider_id| {
-            if provider_id == CLAUDE || provider_id == OPENCODE_GO {
+            if provider_id == OPENCODE_GO {
                 Some(Arc::new(PerAccountSourceAdapter {
                     provider_id: provider_id.clone(),
                     auth_store: Arc::clone(&auth_store),
                     variants: variants
                         .iter()
-                        .filter_map(|(modes, registry)| Some((*modes, registry.get(provider_id)?)))
+                        .filter_map(|(mode, registry)| Some((*mode, registry.get(provider_id)?)))
                         .collect(),
                 }) as Arc<dyn UsageAdapter>)
             } else {
@@ -406,10 +390,7 @@ pub(super) fn per_account_source_registry(
 pub(super) struct PerAccountSourceAdapter {
     pub(super) provider_id: String,
     pub(super) auth_store: Arc<WindowsCredentialManagerAuthMaterialStore>,
-    pub(super) variants: Vec<(
-        (ClaudeSourceMode, OpenCodeGoSourceMode),
-        Arc<dyn UsageAdapter>,
-    )>,
+    pub(super) variants: Vec<(OpenCodeGoSourceMode, Arc<dyn UsageAdapter>)>,
 }
 
 #[async_trait::async_trait]
@@ -420,18 +401,11 @@ impl UsageAdapter for PerAccountSourceAdapter {
 
     async fn probe(&self, account: &AccountRecord) -> Result<UsageProbeResult, TransportError> {
         let material = self.auth_store.get(account.id).await.ok().flatten();
-        let config = provider_config_for(account, material.as_ref());
-        // Only this provider's own source mode is meaningful for the account.
+        let mode = provider_config_for(account, material.as_ref()).opencode_go_source_mode;
         let adapter = self
             .variants
             .iter()
-            .find(|((claude_mode, opencode_go_mode), _)| {
-                if self.provider_id == CLAUDE {
-                    *claude_mode == config.claude_source_mode
-                } else {
-                    *opencode_go_mode == config.opencode_go_source_mode
-                }
-            })
+            .find(|(variant, _)| *variant == mode)
             .or_else(|| self.variants.first())
             .map(|(_, adapter)| adapter)
             .expect("source variants are registered");

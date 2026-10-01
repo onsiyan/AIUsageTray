@@ -27,9 +27,8 @@ mod windows {
         accounts::{AccountRecord, AccountStore},
         auth::{
             AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
-            AccountBrowserSessionRefresher, AccountOAuthMaterialProvider,
-            CompositeAuthMaterialProvider, OAuthCredentialProviderRegistry,
-            StoredAuthMaterialProvider,
+            AccountOAuthMaterialProvider, CompositeAuthMaterialProvider,
+            OAuthCredentialProviderRegistry, StoredAuthMaterialProvider,
         },
         oauth_loopback::{CodexOAuthCallbackListenerFactory, LoopbackOAuthCallbackListenerFactory},
         oauth_service::OAuthAuthorizationService,
@@ -42,7 +41,7 @@ mod windows {
     };
     use usage_monitor_windows::{
         WindowsCredentialManagerAuthMaterialStore, WindowsCredentialManagerStore,
-        WindowsDefaultBrowserLauncher, browser_cookies::WindowsBrowserCookieImporter,
+        WindowsDefaultBrowserLauncher,
     };
 
     #[cfg(test)]
@@ -62,7 +61,6 @@ mod windows {
         transport: Arc<ReqwestUsageHttpTransport>,
         auth: Arc<dyn AccountAuthMaterialProvider>,
         auth_store: Arc<dyn AccountAuthMaterialStore>,
-        session_refresher: Arc<dyn AccountBrowserSessionRefresher>,
     }
 
     static REFRESH_CONTEXT: OnceLock<Result<RefreshContext, String>> = OnceLock::new();
@@ -96,10 +94,6 @@ mod windows {
             Arc::clone(&oauth_store),
             Arc::clone(&auth_store),
         );
-        let session_refresher = Arc::new(
-            WindowsBrowserCookieImporter::from_process()
-                .map_err(|error| format!("could not initialize browser session access: {error}"))?,
-        ) as Arc<dyn AccountBrowserSessionRefresher>;
         Ok(RefreshContext {
             runtime,
             account_store: store.clone(),
@@ -107,7 +101,6 @@ mod windows {
             transport,
             auth,
             auth_store,
-            session_refresher,
         })
     }
 
@@ -163,7 +156,6 @@ mod windows {
         if !targets.is_empty() {
             let transport = Arc::clone(&context.transport);
             let auth = Arc::clone(&context.auth);
-            let session_refresher = Arc::clone(&context.session_refresher);
             let account_store = Arc::clone(&context.account_store);
             let snapshot_store = Arc::clone(&context.snapshot_store);
             let account_auth_store = Arc::clone(&context.auth_store);
@@ -182,7 +174,6 @@ mod windows {
                     Arc::clone(&transport),
                     Arc::clone(&auth),
                     Arc::clone(&account_auth_store),
-                    Arc::clone(&session_refresher),
                 );
             }
 
@@ -217,7 +208,6 @@ mod windows {
                         Arc::clone(&transport),
                         Arc::clone(&auth),
                         Arc::clone(&account_auth_store),
-                        Arc::clone(&session_refresher),
                     );
                 }
             }
@@ -238,7 +228,6 @@ mod windows {
         transport: Arc<ReqwestUsageHttpTransport>,
         auth: Arc<dyn AccountAuthMaterialProvider>,
         auth_store: Arc<dyn AccountAuthMaterialStore>,
-        session_refresher: Arc<dyn AccountBrowserSessionRefresher>,
     ) {
         tasks.spawn(async move {
             let material = match auth_store.get(account.id).await {
@@ -248,26 +237,24 @@ mod windows {
                     return Ok((entry, false, true));
                 }
             };
-            let runtime =
-                match UsageRuntime::from_dependencies_with_auth_store_and_session_refresher(
-                    account_store,
-                    snapshot_store.clone(),
-                    transport as Arc<dyn UsageHttpTransport>,
-                    auth,
-                    auth_store,
-                    session_refresher,
-                    provider_config_for(&account, material.as_ref()),
-                    RefreshCoordinatorConfig {
-                        cadence: RefreshCadence::Manual,
-                        ..RefreshCoordinatorConfig::default()
-                    },
-                ) {
-                    Ok(runtime) => runtime,
-                    Err(_) => {
-                        let entry = account_usage_entry(account, snapshot_store.as_ref()).await?;
-                        return Ok((entry, false, true));
-                    }
-                };
+            let runtime = match UsageRuntime::from_dependencies_with_auth_store(
+                account_store,
+                snapshot_store.clone(),
+                transport as Arc<dyn UsageHttpTransport>,
+                auth,
+                auth_store,
+                provider_config_for(&account, material.as_ref()),
+                RefreshCoordinatorConfig {
+                    cadence: RefreshCadence::Manual,
+                    ..RefreshCoordinatorConfig::default()
+                },
+            ) {
+                Ok(runtime) => runtime,
+                Err(_) => {
+                    let entry = account_usage_entry(account, snapshot_store.as_ref()).await?;
+                    return Ok((entry, false, true));
+                }
+            };
 
             let outcome = runtime
                 .refresh_account(account.clone(), RefreshReason::Manual)

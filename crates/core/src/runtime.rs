@@ -7,14 +7,11 @@
 
 use crate::{
     accounts::{AccountRecord, AccountStore},
-    auth::{AccountAuthMaterialProvider, AccountAuthMaterialStore, AccountBrowserSessionRefresher},
+    auth::{AccountAuthMaterialProvider, AccountAuthMaterialStore},
     claude_oauth::ClaudeOAuthRefreshingAuthMaterialProvider,
     opencode_go_oauth::OpenCodeGoOAuthRefreshingAuthMaterialProvider,
     providers::registry::{ProviderRegistry, ProviderRegistryConfig, ProviderRegistryError},
-    refresh::{
-        RefreshCoordinatorConfig, RefreshCoordinatorError, RefreshOutcome, RefreshReason,
-        UsageRefreshCoordinator,
-    },
+    refresh::{RefreshCoordinatorConfig, RefreshOutcome, RefreshReason, UsageRefreshCoordinator},
     storage::SqliteStore,
     transport::UsageHttpTransport,
     usage::{StorageError, UsageSnapshotStore},
@@ -85,61 +82,15 @@ impl UsageRuntime {
     }
 
     /// Composition root for hosts that also provide the secure per-account
-    /// auth store. Claude OAuth refresh is installed here so a tray host does
-    /// not need to remember provider-specific refresh plumbing; all other
-    /// providers continue through the injected auth chain unchanged.
+    /// auth store. Claude and OpenCode Go OAuth refresh is installed here so a
+    /// host does not need to remember provider-specific refresh plumbing; all
+    /// other providers continue through the injected auth chain unchanged.
     pub fn from_dependencies_with_auth_store(
         account_store: Arc<dyn AccountStore>,
         snapshot_store: Arc<dyn UsageSnapshotStore>,
         transport: Arc<dyn UsageHttpTransport>,
         auth: Arc<dyn AccountAuthMaterialProvider>,
         auth_store: Arc<dyn AccountAuthMaterialStore>,
-        provider_config: ProviderRegistryConfig,
-        refresh_config: RefreshCoordinatorConfig,
-    ) -> Result<Arc<Self>, RuntimeBootstrapError> {
-        Self::from_dependencies_with_auth_services(
-            account_store,
-            snapshot_store,
-            transport,
-            auth,
-            auth_store,
-            None,
-            provider_config,
-            refresh_config,
-        )
-    }
-
-    /// Composition root for hosts that also support non-interactive browser
-    /// session re-import from each account's saved browser/profile binding.
-    pub fn from_dependencies_with_auth_store_and_session_refresher(
-        account_store: Arc<dyn AccountStore>,
-        snapshot_store: Arc<dyn UsageSnapshotStore>,
-        transport: Arc<dyn UsageHttpTransport>,
-        auth: Arc<dyn AccountAuthMaterialProvider>,
-        auth_store: Arc<dyn AccountAuthMaterialStore>,
-        session_refresher: Arc<dyn AccountBrowserSessionRefresher>,
-        provider_config: ProviderRegistryConfig,
-        refresh_config: RefreshCoordinatorConfig,
-    ) -> Result<Arc<Self>, RuntimeBootstrapError> {
-        Self::from_dependencies_with_auth_services(
-            account_store,
-            snapshot_store,
-            transport,
-            auth,
-            auth_store,
-            Some(session_refresher),
-            provider_config,
-            refresh_config,
-        )
-    }
-
-    fn from_dependencies_with_auth_services(
-        account_store: Arc<dyn AccountStore>,
-        snapshot_store: Arc<dyn UsageSnapshotStore>,
-        transport: Arc<dyn UsageHttpTransport>,
-        auth: Arc<dyn AccountAuthMaterialProvider>,
-        auth_store: Arc<dyn AccountAuthMaterialStore>,
-        session_refresher: Option<Arc<dyn AccountBrowserSessionRefresher>>,
         provider_config: ProviderRegistryConfig,
         refresh_config: RefreshCoordinatorConfig,
     ) -> Result<Arc<Self>, RuntimeBootstrapError> {
@@ -150,47 +101,9 @@ impl UsageRuntime {
         )) as Arc<dyn AccountAuthMaterialProvider>;
         let auth = Arc::new(ClaudeOAuthRefreshingAuthMaterialProvider::new(
             auth,
-            Arc::clone(&auth_store),
+            auth_store,
             Arc::clone(&transport),
         )) as Arc<dyn AccountAuthMaterialProvider>;
-        let providers = Arc::new(match session_refresher {
-            Some(session_refresher) => {
-                ProviderRegistry::from_dependencies_with_auth_store_and_session_refresher(
-                    Arc::clone(&transport),
-                    auth,
-                    auth_store,
-                    session_refresher,
-                    provider_config,
-                )?
-            }
-            None => ProviderRegistry::from_dependencies_with_auth_store(
-                Arc::clone(&transport),
-                auth,
-                auth_store,
-                provider_config,
-            )?,
-        });
-        Ok(Self::new(
-            account_store,
-            snapshot_store,
-            providers,
-            refresh_config,
-        ))
-    }
-
-    /// Convenience composition root for the durable SQLite-backed runtime.
-    /// Credential/token policy remains injected through `auth`; this method
-    /// never stores access tokens in SQLite.
-    pub fn from_sqlite_path(
-        path: impl AsRef<Path>,
-        transport: Arc<dyn UsageHttpTransport>,
-        auth: Arc<dyn AccountAuthMaterialProvider>,
-        provider_config: ProviderRegistryConfig,
-        refresh_config: RefreshCoordinatorConfig,
-    ) -> Result<Arc<Self>, RuntimeBootstrapError> {
-        let sqlite_store = Arc::new(SqliteStore::open(path)?);
-        let account_store: Arc<dyn AccountStore> = sqlite_store.clone();
-        let snapshot_store: Arc<dyn UsageSnapshotStore> = sqlite_store;
         Self::from_dependencies(
             account_store,
             snapshot_store,
@@ -239,10 +152,6 @@ impl UsageRuntime {
 
     pub fn coordinator(&self) -> &Arc<UsageRefreshCoordinator> {
         &self.coordinator
-    }
-
-    pub async fn refresh_now(&self) -> Result<Vec<RefreshOutcome>, RefreshCoordinatorError> {
-        self.coordinator.refresh_all(RefreshReason::Manual).await
     }
 
     pub async fn refresh_account(

@@ -14,10 +14,7 @@ use usage_monitor_core::{
     },
     claude_oauth,
     oauth_loopback::LoopbackOAuthCallbackListenerFactory,
-    providers::{
-        claude::{ClaudeSourceMode, fetch_oauth_identity},
-        registry::ProviderRegistryConfig,
-    },
+    providers::{claude::fetch_oauth_identity, registry::ProviderRegistryConfig},
     refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
     runtime::UsageRuntime,
     storage::{SqliteStore, default_accounts_database_path},
@@ -131,10 +128,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         auth,
         secure_material_store as Arc<dyn AccountAuthMaterialStore>,
         ProviderRegistryConfig {
-            claude_source_mode: ClaudeSourceMode::OAuth,
             fetch_claude_account_identity: true,
-            fetch_claude_web_extras: false,
-            fetch_claude_prepaid_credits: true,
             ..ProviderRegistryConfig::default()
         },
         RefreshCoordinatorConfig {

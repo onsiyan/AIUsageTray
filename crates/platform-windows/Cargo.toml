@@ -1,6 +1,6 @@
 [package]
 name = "usage-monitor-windows"
-description = "Windows integration for Usage Monitor: Credential Manager storage, browser sessions, and desktop apps."
+description = "Windows integration for Usage Monitor: Credential Manager storage, the default browser, and desktop-app sign-in."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,21 +8,12 @@ publish.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-base64.workspace = true
-ring.workspace = true
-rusqlite.workspace = true
-rand.workspace = true
-serde.workspace = true
 serde_json.workspace = true
-tempfile.workspace = true
-thiserror.workspace = true
-tokio.workspace = true
 url.workspace = true
 usage-monitor-core.workspace = true
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security_Credentials",
-    "Win32_Security_Cryptography",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

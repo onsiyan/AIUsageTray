@@ -16,18 +16,15 @@ use usage_monitor_core::{
     accounts::{ANTIGRAVITY, AccountRecord, AccountStore, CLAUDE, OPENAI, OPENCODE_GO, OPENROUTER},
     auth::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
-        AccountBrowserSessionRefresher, AccountOAuthMaterialProvider,
-        CompositeAuthMaterialProvider, OAuthCredentialProviderRegistry, OAuthCredentialStore,
-        StoredAuthMaterialProvider,
+        AccountOAuthMaterialProvider, CompositeAuthMaterialProvider,
+        OAuthCredentialProviderRegistry, OAuthCredentialStore, StoredAuthMaterialProvider,
     },
     claude_oauth::ClaudeOAuthRefreshingAuthMaterialProvider,
     oauth_loopback::{CodexOAuthCallbackListenerFactory, LoopbackOAuthCallbackListenerFactory},
     oauth_service::OAuthAuthorizationService,
     opencode_go_oauth::OpenCodeGoOAuthRefreshingAuthMaterialProvider,
     providers::{
-        antigravity,
-        claude::ClaudeSourceMode,
-        openai,
+        antigravity, openai,
         opencode_go::OpenCodeGoSourceMode,
         registry::{ProviderRegistry, ProviderRegistryConfig, ProviderRegistryError},
     },
@@ -44,7 +41,7 @@ use usage_monitor_core::{
 };
 use usage_monitor_windows::{
     WindowsCredentialManagerAuthMaterialStore, WindowsCredentialManagerStore,
-    WindowsDefaultBrowserLauncher, browser_cookies::WindowsBrowserCookieImporter,
+    WindowsDefaultBrowserLauncher,
 };
 
 const EXIT_REFRESH_FAILED: i32 = 6;

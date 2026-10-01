@@ -1,12 +1,12 @@
-pub use super::claude_planner::ClaudeSourceMode;
+//! Claude usage through the account's own OAuth sign-in.
+//!
+//! Every Claude account is added with Claude's browser OAuth flow, so the
+//! OAuth usage API is the one source: it returns the session, weekly, and
+//! model-scoped windows, extra-usage spend, and usage-limit reset grants.
+
 use crate::{
-    accounts::{AccountId, AccountRecord, CLAUDE, VerifiedIdentity},
-    auth::{
-        AccountAuthMaterialProvider, AccountAuthMaterialStore, AccountBrowserSessionRefresher,
-        AuthError,
-    },
-    providers::claude_cli::{self, ClaudeCliError, ClaudeCliProbeOptions},
-    providers::claude_planner::{self, ClaudeRuntime, ClaudeSource},
+    accounts::{AccountRecord, CLAUDE, VerifiedIdentity},
+    auth::{AccountAuthMaterialProvider, AuthError},
     providers::shared::{
         invalid_payload, json_number, json_string, missing_auth, normalize_percent, reset_at,
     },
@@ -14,28 +14,21 @@ use crate::{
     usage::{
         AdditionalRateLimitWindow, CreditsSnapshot, RateLimitWindow, SpendSnapshot, UsageAdapter,
         UsageAdapterErrorCode, UsageCreditInventory, UsageCreditRecord, UsageMetric,
-        UsagePrimaryWindowKind, UsageProbeResult, UsageSnapshot, UsageSourceDiagnostic,
-        UsageWindowKind,
+        UsagePrimaryWindowKind, UsageProbeResult, UsageSnapshot, UsageWindowKind,
     },
 };
 
 /// Claude Code version reported to the OAuth usage endpoint. The server only
 /// includes reset grants for sufficiently recent CLI versions.
 const CLAUDE_CODE_CLIENT_VERSION: &str = "2.1.999";
-mod admin;
-mod cli;
 mod oauth;
 mod spend;
-mod web;
 
-use admin::*;
-use cli::*;
 use oauth::*;
 use spend::*;
-use web::*;
 
 use async_trait::async_trait;
-use chrono::{Duration, SecondsFormat, Utc};
+use chrono::Utc;
 pub use oauth::fetch_oauth_identity;
 use reqwest::Method;
 use serde_json::Value;
@@ -43,88 +36,34 @@ use sha2::{Digest, Sha256};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
 use url::Url;
-pub use web::fetch_web_identity;
 
 pub struct ClaudeUsageAdapter {
     transport: Arc<dyn UsageHttpTransport>,
     auth: Arc<dyn AccountAuthMaterialProvider>,
-    auth_material_store: Option<Arc<dyn AccountAuthMaterialStore>>,
-    browser_session_refresher: Option<Arc<dyn AccountBrowserSessionRefresher>>,
-    base_url: Url,
     oauth_base_url: Url,
-    fetch_prepaid_credits: bool,
-    fetch_web_extras: bool,
     fetch_account_identity: bool,
-    source_mode: ClaudeSourceMode,
-    runtime: ClaudeRuntime,
     oauth_rate_limit_until: Arc<Mutex<HashMap<String, chrono::DateTime<Utc>>>>,
-    cli_rate_limit_until: Arc<Mutex<HashMap<String, chrono::DateTime<Utc>>>>,
-    cli_cache: Arc<Mutex<HashMap<CliCacheKey, CachedCliResult>>>,
 }
 
 impl ClaudeUsageAdapter {
     pub fn new(
         transport: Arc<dyn UsageHttpTransport>,
         auth: Arc<dyn AccountAuthMaterialProvider>,
-        fetch_prepaid_credits: bool,
     ) -> Result<Self, TransportError> {
         Ok(Self {
             transport,
             auth,
-            auth_material_store: None,
-            browser_session_refresher: None,
-            base_url: Url::parse("https://claude.ai/")
-                .map_err(|error| TransportError::InvalidUrl(error.to_string()))?,
             oauth_base_url: Url::parse("https://api.anthropic.com/")
                 .map_err(|error| TransportError::InvalidUrl(error.to_string()))?,
-            fetch_prepaid_credits,
-            fetch_web_extras: true,
             fetch_account_identity: false,
-            source_mode: ClaudeSourceMode::Automatic,
-            runtime: ClaudeRuntime::App,
             oauth_rate_limit_until: Arc::new(Mutex::new(HashMap::new())),
-            cli_rate_limit_until: Arc::new(Mutex::new(HashMap::new())),
-            cli_cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
-    /// Enables the same optional identity enrichment used by the reference
-    /// implementation. It is deliberately opt-in at the adapter constructor
-    /// so a plain usage poll never adds a second identity request.
+    /// Also reads the OAuth profile to verify the account's identity and
+    /// name its plan. Opt-in so a plain usage poll stays a single request.
     pub fn with_account_identity(mut self, enabled: bool) -> Self {
         self.fetch_account_identity = enabled;
-        self
-    }
-
-    /// Persists a server-rotated Claude Web session only after the adapter has
-    /// verified the response identity against this account's recorded email.
-    pub fn with_auth_material_store(mut self, store: Arc<dyn AccountAuthMaterialStore>) -> Self {
-        self.auth_material_store = Some(store);
-        self
-    }
-
-    /// Enables account-bound browser session recovery after a real 401. The
-    /// replacement cookie is identity-checked before secure storage or retry.
-    pub fn with_browser_session_refresher(
-        mut self,
-        refresher: Arc<dyn AccountBrowserSessionRefresher>,
-    ) -> Self {
-        self.browser_session_refresher = Some(refresher);
-        self
-    }
-
-    pub fn with_web_extras(mut self, enabled: bool) -> Self {
-        self.fetch_web_extras = enabled;
-        self
-    }
-
-    pub fn with_source_mode(mut self, source_mode: ClaudeSourceMode) -> Self {
-        self.source_mode = source_mode;
-        self
-    }
-
-    pub fn with_runtime(mut self, runtime: ClaudeRuntime) -> Self {
-        self.runtime = runtime;
         self
     }
 }
@@ -139,80 +78,34 @@ impl UsageAdapter for ClaudeUsageAdapter {
         let material = match self.auth.get(account).await {
             Ok(Some(material)) => material,
             Ok(None) | Err(AuthError::ReauthenticationRequired(_)) => {
-                crate::auth::AccountAuthMaterial::default()
+                return Ok(missing_auth("Claude OAuth"));
             }
             Err(error) => return Ok(invalid_payload("Claude", error.to_string())),
         };
-        let admin_key = material
+        let Some(access_token) = material
             .bearer_token
             .as_deref()
-            .and_then(normalize_claude_admin_token);
-        let access_token = material
-            .bearer_token
-            .as_deref()
-            .and_then(normalize_claude_oauth_token);
-        let session_key = claude_session_key(&material);
-        let environment = std::env::vars().collect::<HashMap<_, _>>();
-        let plan = claude_planner::plan(claude_planner::ClaudeSourcePlanningInput {
-            runtime: self.runtime,
-            selected_source: self.source_mode,
-            has_admin_api_key: admin_key.is_some(),
-            has_web_session: session_key.is_some(),
-            has_cli: claude_cli::is_available(&environment),
-            has_oauth_credentials: access_token.is_some(),
-        });
-
-        // Report the failure of the first source actually attempted (the
-        // account's preferred one). A later fallback failing for an unrelated
-        // reason must not replace, for example, a retryable OAuth rate limit.
-        let mut first_failure = None;
-        for step in &plan.ordered_steps {
-            if !step.is_plausibly_available {
-                continue;
-            }
-            let result = match step.source {
-                ClaudeSource::AdminApi => {
-                    self.probe_admin(account, admin_key.as_deref().expect("planner checked key"))
-                        .await
-                }
-                ClaudeSource::OAuth => {
-                    probe_oauth_with_scope(
-                        self,
-                        account,
-                        access_token.as_deref().expect("planner checked token"),
-                        &material,
-                        session_key.as_deref(),
-                    )
-                    .await
-                }
-                ClaudeSource::Web => {
-                    self.probe_web(
-                        account,
-                        session_key.as_deref().expect("planner checked session"),
-                    )
-                    .await
-                }
-                ClaudeSource::Cli => {
-                    let options = if self.source_mode == ClaudeSourceMode::Automatic {
-                        ClaudeCliProbeOptions::automatic()
-                    } else {
-                        ClaudeCliProbeOptions::explicit()
-                    };
-                    Ok(self
-                        .probe_cli(account, options, session_key.as_deref())
-                        .await)
-                }
-            };
-            // A transport error in one source must not skip the remaining
-            // fallbacks.
-            let result = result.unwrap_or_else(transport_failure);
-            if result.succeeded() || oauth_is_account_boundary(&result) {
-                return Ok(result);
-            }
-            first_failure.get_or_insert(result);
+            .and_then(normalize_claude_oauth_token)
+        else {
+            return Ok(missing_auth("Claude OAuth"));
+        };
+        if !material.oauth_scopes.is_empty()
+            && !material
+                .oauth_scopes
+                .iter()
+                .any(|scope| scope.eq_ignore_ascii_case("user:profile"))
+        {
+            return Ok(UsageProbeResult::failure(crate::usage::UsageAdapterError {
+                code: UsageAdapterErrorCode::Forbidden,
+                message: "Claude OAuth token is missing the required user:profile scope".to_owned(),
+                http_status_code: Some(403),
+                retry_after_seconds: None,
+            }));
         }
-
-        Ok(first_failure.unwrap_or_else(|| missing_auth(missing_source_label(self.source_mode))))
+        Ok(self
+            .probe_oauth(account, &access_token)
+            .await
+            .unwrap_or_else(transport_failure))
     }
 }
 
@@ -232,16 +125,6 @@ fn transport_failure(error: TransportError) -> UsageProbeResult {
         http_status_code: None,
         retry_after_seconds: None,
     })
-}
-
-fn missing_source_label(source_mode: ClaudeSourceMode) -> &'static str {
-    match source_mode {
-        ClaudeSourceMode::Automatic => "Claude",
-        ClaudeSourceMode::Cli => "Claude CLI",
-        ClaudeSourceMode::OAuth => "Claude OAuth",
-        ClaudeSourceMode::Web => "Claude Web",
-        ClaudeSourceMode::AdminApi => "Claude Admin API",
-    }
 }
 
 fn parse_window(
@@ -265,16 +148,6 @@ fn parse_window(
         reset_at_utc: reset,
         limit_window_seconds: window_seconds,
     })
-}
-
-fn synthetic_session_window() -> RateLimitWindow {
-    RateLimitWindow {
-        kind: UsageWindowKind::Primary,
-        name: "Session".to_owned(),
-        used_percent: 0.0,
-        reset_at_utc: None,
-        limit_window_seconds: 5 * 60 * 60,
-    }
 }
 
 fn primary_window_kind(window: Option<&RateLimitWindow>) -> Option<UsagePrimaryWindowKind> {
@@ -310,14 +183,14 @@ fn map_claude_http_error(
 ) -> UsageProbeResult {
     let challenge = crate::providers::shared::is_cloudflare_challenge(response);
     let code = if challenge {
-        crate::usage::UsageAdapterErrorCode::CloudflareChallenge
+        UsageAdapterErrorCode::CloudflareChallenge
     } else {
         match response.status_code {
-            401 => crate::usage::UsageAdapterErrorCode::Unauthorized,
-            403 => crate::usage::UsageAdapterErrorCode::Forbidden,
-            429 => crate::usage::UsageAdapterErrorCode::RateLimited,
-            500..=599 => crate::usage::UsageAdapterErrorCode::TransientHttp,
-            _ => crate::usage::UsageAdapterErrorCode::HttpError,
+            401 => UsageAdapterErrorCode::Unauthorized,
+            403 => UsageAdapterErrorCode::Forbidden,
+            429 => UsageAdapterErrorCode::RateLimited,
+            500..=599 => UsageAdapterErrorCode::TransientHttp,
+            _ => UsageAdapterErrorCode::HttpError,
         }
     };
     let message = if challenge {
@@ -360,15 +233,9 @@ fn identity_matches<'a>(
     email_matches && id_matches
 }
 
-fn email_matches(account: &AccountRecord, response_email: Option<&str>) -> bool {
-    response_email
-        .map(|email| email.trim().eq_ignore_ascii_case(&account.email))
-        .unwrap_or(true)
-}
-
 fn account_mismatch(message: &str) -> UsageProbeResult {
     UsageProbeResult::failure(crate::usage::UsageAdapterError {
-        code: crate::usage::UsageAdapterErrorCode::AccountMismatch,
+        code: UsageAdapterErrorCode::AccountMismatch,
         message: message.to_owned(),
         http_status_code: None,
         retry_after_seconds: None,

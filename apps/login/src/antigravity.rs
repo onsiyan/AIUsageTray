@@ -6,7 +6,6 @@ use usage_monitor_core::{
         OAuthCredentialProviderRegistry, OAuthCredentialStore, StoredAuthMaterialProvider,
         StoredOAuthCredential,
     },
-    auth_sources::{EnvironmentAuthMaterialProvider, LocalFileAuthMaterialProvider},
     oauth_loopback::LoopbackOAuthCallbackListenerFactory,
     oauth_service::OAuthAuthorizationService,
     providers::antigravity::oauth_definition,
@@ -230,15 +229,9 @@ async fn probe_and_print(
     let imported_material = Arc::new(StoredAuthMaterialProvider::new(
         secure_material_store.clone(),
     )) as Arc<dyn AccountAuthMaterialProvider>;
-    let local_file_material = Arc::new(LocalFileAuthMaterialProvider::from_process(account.id))
-        as Arc<dyn AccountAuthMaterialProvider>;
-    let environment_material = Arc::new(EnvironmentAuthMaterialProvider::from_process(account.id))
-        as Arc<dyn AccountAuthMaterialProvider>;
     let base_auth_material = Arc::new(CompositeAuthMaterialProvider::new([
         imported_material,
         oauth_material,
-        local_file_material,
-        environment_material,
     ])) as Arc<dyn AccountAuthMaterialProvider>;
     let runtime = UsageRuntime::from_sqlite_path_with_auth_store(
         database_path,

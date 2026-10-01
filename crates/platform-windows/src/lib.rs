@@ -1,11 +1,9 @@
 use async_trait::async_trait;
 use std::{
-    env,
-    path::PathBuf,
-    process::Command,
+    ffi::c_void,
+    ptr, slice,
     sync::{Mutex, MutexGuard, OnceLock},
 };
-use std::{ffi::c_void, ptr, slice};
 use url::Url;
 use usage_monitor_core::{
     accounts::AccountId,
@@ -23,8 +21,6 @@ use windows_sys::Win32::{
     },
     UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
 };
-
-pub mod browser_cookies;
 
 const TARGET_PREFIX: &str = "UsageMonitor/OAuth/";
 const AUTH_MATERIAL_TARGET_PREFIX: &str = "UsageMonitor/Auth/";
@@ -130,39 +126,6 @@ impl AccountAuthMaterialStore for WindowsCredentialManagerAuthMaterialStore {
     async fn remove(&self, account_id: AccountId) -> Result<(), AuthError> {
         let _guard = auth_material_store_lock()?;
         remove_blob(AUTH_MATERIAL_TARGET_PREFIX, account_id)
-    }
-
-    async fn replace_cookie_if_matches(
-        &self,
-        account_id: AccountId,
-        cookie_name: &str,
-        expected_value: &str,
-        replacement_value: &str,
-    ) -> Result<bool, AuthError> {
-        if cookie_name.trim().is_empty()
-            || expected_value.is_empty()
-            || replacement_value.trim().is_empty()
-        {
-            return Ok(false);
-        }
-
-        let _guard = auth_material_store_lock()?;
-        let Some(mut material) = load_auth_material(account_id)? else {
-            return Ok(false);
-        };
-        let Some(cookie) = material
-            .cookies
-            .iter_mut()
-            .find(|cookie| cookie.name.eq_ignore_ascii_case(cookie_name))
-        else {
-            return Ok(false);
-        };
-        if cookie.value != expected_value {
-            return Ok(false);
-        }
-        cookie.value = replacement_value.to_owned();
-        save_auth_material(account_id, &material)?;
-        Ok(true)
     }
 }
 
@@ -527,80 +490,6 @@ impl OAuthBrowserLauncher for WindowsDefaultBrowserLauncher {
         }
         Ok(())
     }
-}
-
-/// Opens a specific supported Chromium browser for an account-add flow.
-///
-/// The cookie importer can scan a selected browser/profile, so opening the
-/// same browser is important when another browser is the Windows default.  The
-/// spawned browser remains owned by the browser itself; this process does not
-/// keep a child handle or a WebView alive.
-pub struct WindowsBrowserLauncher;
-
-impl WindowsBrowserLauncher {
-    pub async fn open(browser: browser_cookies::BrowserKind, url: &Url) -> Result<(), AuthError> {
-        let executable = browser_executable(browser).unwrap_or_else(|| {
-            PathBuf::from(match browser {
-                browser_cookies::BrowserKind::Chrome => "chrome.exe",
-                browser_cookies::BrowserKind::Edge => "msedge.exe",
-                browser_cookies::BrowserKind::Brave => "brave.exe",
-                browser_cookies::BrowserKind::Chromium => "chromium.exe",
-            })
-        });
-        Command::new(&executable)
-            .arg(url.as_str())
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| {
-                AuthError::Callback(format!(
-                    "could not open {} ({}): {error}",
-                    browser.as_str(),
-                    executable.display()
-                ))
-            })
-    }
-}
-
-fn browser_executable(browser: browser_cookies::BrowserKind) -> Option<PathBuf> {
-    let local_app_data = env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    let program_files = env::var_os("PROGRAMFILES").map(PathBuf::from);
-    let program_files_x86 = env::var_os("PROGRAMFILES(X86)").map(PathBuf::from);
-    let mut candidates = Vec::new();
-    match browser {
-        browser_cookies::BrowserKind::Chrome => {
-            if let Some(root) = local_app_data {
-                candidates.push(root.join("Google/Chrome/Application/chrome.exe"));
-            }
-            for root in [program_files, program_files_x86].into_iter().flatten() {
-                candidates.push(root.join("Google/Chrome/Application/chrome.exe"));
-            }
-        }
-        browser_cookies::BrowserKind::Edge => {
-            for root in [program_files_x86, program_files, local_app_data]
-                .into_iter()
-                .flatten()
-            {
-                candidates.push(root.join("Microsoft/Edge/Application/msedge.exe"));
-            }
-        }
-        browser_cookies::BrowserKind::Brave => {
-            for root in [program_files, program_files_x86, local_app_data]
-                .into_iter()
-                .flatten()
-            {
-                candidates.push(root.join("BraveSoftware/Brave-Browser/Application/brave.exe"));
-            }
-        }
-        browser_cookies::BrowserKind::Chromium => {
-            for root in [program_files, program_files_x86, local_app_data]
-                .into_iter()
-                .flatten()
-            {
-                candidates.push(root.join("Chromium/Application/chrome.exe"));
-            }
-        }
-    }
-    candidates.into_iter().find(|path| path.is_file())
 }
 
 #[cfg(test)]

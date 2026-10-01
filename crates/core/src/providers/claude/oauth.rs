@@ -283,33 +283,6 @@ impl ClaudeUsageAdapter {
     }
 }
 
-pub(super) async fn probe_oauth_with_scope(
-    adapter: &ClaudeUsageAdapter,
-    account: &AccountRecord,
-    access_token: &str,
-    material: &crate::auth::AccountAuthMaterial,
-    session_key: Option<&str>,
-) -> Result<UsageProbeResult, TransportError> {
-    if !material.oauth_scopes.is_empty()
-        && !material
-            .oauth_scopes
-            .iter()
-            .any(|scope| scope.eq_ignore_ascii_case("user:profile"))
-    {
-        return Ok(UsageProbeResult::failure(crate::usage::UsageAdapterError {
-            code: crate::usage::UsageAdapterErrorCode::Forbidden,
-            message: "Claude OAuth token is missing the required user:profile scope".to_owned(),
-            http_status_code: Some(403),
-            retry_after_seconds: None,
-        }));
-    }
-    let oauth = adapter.probe_oauth(account, access_token).await?;
-    if !oauth.succeeded() || !adapter.fetch_web_extras {
-        return Ok(oauth);
-    }
-    Ok(adapter.merge_web_extras(account, oauth, session_key).await)
-}
-
 #[derive(Debug, Clone)]
 pub(super) struct ClaudeProfile {
     pub(super) account_id: Option<String>,
@@ -489,13 +462,6 @@ pub(super) fn max_usage_multiplier(rate_limit_tier: &str) -> Option<String> {
     let multiplier = words.get(max_index + 1)?.to_owned();
     (multiplier.ends_with('x') && multiplier[..multiplier.len() - 1].parse::<u32>().is_ok())
         .then_some(multiplier)
-}
-
-pub(super) fn oauth_is_account_boundary(result: &UsageProbeResult) -> bool {
-    result
-        .error
-        .as_ref()
-        .is_some_and(|error| error.code == crate::usage::UsageAdapterErrorCode::AccountMismatch)
 }
 
 pub(super) fn oauth_token_key(access_token: &str) -> String {

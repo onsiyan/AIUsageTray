@@ -6,19 +6,14 @@
 
 use super::{
     antigravity::AntigravityUsageAdapter,
-    claude::ClaudeSourceMode,
     claude::ClaudeUsageAdapter,
-    claude_planner::ClaudeRuntime,
     openai::WhamUsageAdapter,
     opencode_go::{OpenCodeGoSourceMode, OpenCodeGoUsageAdapter},
     openrouter::OpenRouterUsageAdapter,
 };
 use crate::{
-    accounts::{AccountRecord, CLAUDE, OPENAI, OPENCODE_GO},
-    auth::{
-        AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
-        AccountBrowserSessionRefresher,
-    },
+    accounts::{AccountRecord, OPENAI, OPENCODE_GO},
+    auth::{AccountAuthMaterial, AccountAuthMaterialProvider},
     transport::{TransportError, UsageHttpTransport},
     usage::UsageAdapter,
 };
@@ -32,16 +27,9 @@ pub struct ProviderRegistryConfig {
     pub fetch_openai_spend_controls: bool,
     pub fetch_openai_workspace_balance: bool,
     pub fetch_openai_reset_credits: bool,
-    pub fetch_claude_prepaid_credits: bool,
-    /// Optional `/api/oauth/profile` and `/api/account` enrichment. The
-    /// usage routes remain authoritative even when these identity calls fail.
+    /// Also read Claude's OAuth profile to verify identity and name the plan.
+    /// The usage route stays authoritative when the profile call fails.
     pub fetch_claude_account_identity: bool,
-    /// Optional browser-session enrichment after an OAuth/CLI usage probe.
-    /// This is separate from prepaid-credit requests because the extra usage
-    /// windows are useful even when credit balances are disabled.
-    pub fetch_claude_web_extras: bool,
-    pub claude_source_mode: ClaudeSourceMode,
-    pub claude_runtime: ClaudeRuntime,
     pub opencode_go_source_mode: OpenCodeGoSourceMode,
     pub fetch_openrouter_credits: bool,
     /// Optional 30-day Activity enrichment. The key quota remains enabled
@@ -56,11 +44,7 @@ impl Default for ProviderRegistryConfig {
             fetch_openai_spend_controls: false,
             fetch_openai_workspace_balance: false,
             fetch_openai_reset_credits: true,
-            fetch_claude_prepaid_credits: true,
             fetch_claude_account_identity: true,
-            fetch_claude_web_extras: true,
-            claude_source_mode: ClaudeSourceMode::Automatic,
-            claude_runtime: ClaudeRuntime::App,
             opencode_go_source_mode: OpenCodeGoSourceMode::Automatic,
             fetch_openrouter_credits: true,
             fetch_openrouter_activity: true,
@@ -78,51 +62,20 @@ impl ProviderRegistryConfig {
             enable_antigravity_local_probe: false,
             ..Self::default()
         };
-        match account.provider_id.as_str() {
-            CLAUDE => {
-                let has_oauth = material.is_some_and(|material| {
-                    material.oauth_refresh_token.is_some()
-                        || material
-                            .bearer_token
-                            .as_deref()
-                            .is_some_and(|token| token.starts_with("sk-ant-oat"))
-                });
-                let has_admin_key = material.is_some_and(|material| {
-                    material
-                        .bearer_token
-                        .as_deref()
-                        .is_some_and(|token| token.starts_with("sk-ant-admin"))
-                });
-                // Fail closed to the sole supported user sign-in path. A
-                // missing token must not fall back to a free Web session or an
-                // ambient local Claude Code login.
-                config.claude_source_mode = if !has_oauth && has_admin_key {
-                    ClaudeSourceMode::AdminApi
-                } else {
-                    ClaudeSourceMode::OAuth
-                };
-            }
-            OPENCODE_GO => {
-                let has_browser_session = material.is_some_and(|material| {
-                    material.cookies.iter().any(|cookie| {
-                        ["auth", "__Host-auth", "__Host-console_session"]
-                            .iter()
-                            .any(|name| cookie.name.eq_ignore_ascii_case(name))
-                    })
-                });
-                let has_console_oauth = material.is_some_and(|material| {
-                    material
-                        .oauth_refresh_token
-                        .as_deref()
-                        .is_some_and(|token| !token.trim().is_empty())
-                });
-                config.opencode_go_source_mode = if has_browser_session || has_console_oauth {
-                    OpenCodeGoSourceMode::Web
-                } else {
-                    OpenCodeGoSourceMode::Api
-                };
-            }
-            _ => {}
+        if account.provider_id == OPENCODE_GO {
+            // A console sign-in (device authorization) leaves a refresh token;
+            // anything else is an OpenCode API key.
+            let has_console_oauth = material.is_some_and(|material| {
+                material
+                    .oauth_refresh_token
+                    .as_deref()
+                    .is_some_and(|token| !token.trim().is_empty())
+            });
+            config.opencode_go_source_mode = if has_console_oauth {
+                OpenCodeGoSourceMode::Web
+            } else {
+                OpenCodeGoSourceMode::Api
+            };
         }
         config
     }
@@ -187,44 +140,12 @@ impl ProviderRegistry {
         auth: Arc<dyn AccountAuthMaterialProvider>,
         config: ProviderRegistryConfig,
     ) -> Result<Self, ProviderRegistryError> {
-        Self::from_dependencies_inner(transport, auth, None, None, config)
-    }
-
-    /// Constructs the complete adapter set and gives Claude Web access to the
-    /// same secure account-scoped credential store used by the host. This is
-    /// required only for persisting a verified server-rotated session cookie.
-    pub fn from_dependencies_with_auth_store(
-        transport: Arc<dyn UsageHttpTransport>,
-        auth: Arc<dyn AccountAuthMaterialProvider>,
-        auth_store: Arc<dyn AccountAuthMaterialStore>,
-        config: ProviderRegistryConfig,
-    ) -> Result<Self, ProviderRegistryError> {
-        Self::from_dependencies_inner(transport, auth, Some(auth_store), None, config)
-    }
-
-    /// Constructs the provider set with Claude's secure session store and a
-    /// host-supplied importer for the account's previously bound browser.
-    pub fn from_dependencies_with_auth_store_and_session_refresher(
-        transport: Arc<dyn UsageHttpTransport>,
-        auth: Arc<dyn AccountAuthMaterialProvider>,
-        auth_store: Arc<dyn AccountAuthMaterialStore>,
-        session_refresher: Arc<dyn AccountBrowserSessionRefresher>,
-        config: ProviderRegistryConfig,
-    ) -> Result<Self, ProviderRegistryError> {
-        Self::from_dependencies_inner(
-            transport,
-            auth,
-            Some(auth_store),
-            Some(session_refresher),
-            config,
-        )
+        Self::from_dependencies_inner(transport, auth, config)
     }
 
     fn from_dependencies_inner(
         transport: Arc<dyn UsageHttpTransport>,
         auth: Arc<dyn AccountAuthMaterialProvider>,
-        auth_store: Option<Arc<dyn AccountAuthMaterialStore>>,
-        session_refresher: Option<Arc<dyn AccountBrowserSessionRefresher>>,
         config: ProviderRegistryConfig,
     ) -> Result<Self, ProviderRegistryError> {
         let openai_adapter = WhamUsageAdapter::new(
@@ -235,22 +156,10 @@ impl ProviderRegistry {
         )?
         .with_reset_credits(config.fetch_openai_reset_credits);
         let openai = Arc::new(openai_adapter) as Arc<dyn UsageAdapter>;
-        let mut claude_adapter = ClaudeUsageAdapter::new(
-            Arc::clone(&transport),
-            Arc::clone(&auth),
-            config.fetch_claude_prepaid_credits,
-        )?
-        .with_account_identity(config.fetch_claude_account_identity)
-        .with_web_extras(config.fetch_claude_web_extras)
-        .with_source_mode(config.claude_source_mode)
-        .with_runtime(config.claude_runtime);
-        if let Some(auth_store) = auth_store {
-            claude_adapter = claude_adapter.with_auth_material_store(auth_store);
-        }
-        if let Some(session_refresher) = session_refresher {
-            claude_adapter = claude_adapter.with_browser_session_refresher(session_refresher);
-        }
-        let claude = Arc::new(claude_adapter) as Arc<dyn UsageAdapter>;
+        let claude = Arc::new(
+            ClaudeUsageAdapter::new(Arc::clone(&transport), Arc::clone(&auth))?
+                .with_account_identity(config.fetch_claude_account_identity),
+        ) as Arc<dyn UsageAdapter>;
         let opencode_go = Arc::new(
             OpenCodeGoUsageAdapter::new(Arc::clone(&transport), Arc::clone(&auth))?
                 .with_source_mode(config.opencode_go_source_mode),
@@ -407,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn account_source_selection_follows_the_saved_credential() {
+    fn opencode_go_source_follows_the_saved_credential() {
         let opencode =
             AccountRecord::create("go", "go@example.com", None, OPENCODE_GO, None).unwrap();
         let console_oauth = AccountAuthMaterial {
@@ -427,20 +336,6 @@ mod tests {
         assert_eq!(
             ProviderRegistryConfig::for_account(&opencode, Some(&api_key)).opencode_go_source_mode,
             OpenCodeGoSourceMode::Api
-        );
-
-        let claude = AccountRecord::create("c", "c@example.com", None, CLAUDE, None).unwrap();
-        let admin = AccountAuthMaterial {
-            bearer_token: Some("sk-ant-admin-key".to_owned()),
-            ..AccountAuthMaterial::default()
-        };
-        assert_eq!(
-            ProviderRegistryConfig::for_account(&claude, Some(&admin)).claude_source_mode,
-            ClaudeSourceMode::AdminApi
-        );
-        assert_eq!(
-            ProviderRegistryConfig::for_account(&claude, None).claude_source_mode,
-            ClaudeSourceMode::OAuth
         );
     }
 }

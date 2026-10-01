@@ -10,7 +10,6 @@ publish.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 chrono.workspace = true
-portable-pty.workspace = true
 rand.workspace = true
 regex.workspace = true
 reqwest.workspace = true

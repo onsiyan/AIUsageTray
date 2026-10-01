@@ -467,16 +467,7 @@ fn test_snapshot(account: &AccountRecord, is_stale: bool) -> UsageSnapshot {
 }
 
 #[test]
-fn refresh_modes_do_not_fall_back_to_claude_web_or_global_cli() {
-    let claude = account(CLAUDE, "cc1", "Claude", "claude@example.com", None, None);
-    let config = provider_config_for(&claude, None);
-    assert_eq!(config.claude_source_mode, ClaudeSourceMode::OAuth);
-    let web_material = AccountAuthMaterial::from_cookie_header("sessionKey=web-session", None);
-    assert_eq!(
-        provider_config_for(&claude, Some(&web_material)).claude_source_mode,
-        ClaudeSourceMode::OAuth
-    );
-
+fn refresh_mode_follows_each_accounts_saved_credential() {
     let opencode = account(
         OPENCODE_GO,
         "oc1",
@@ -489,11 +480,6 @@ fn refresh_modes_do_not_fall_back_to_claude_web_or_global_cli() {
         provider_config_for(&opencode, None).opencode_go_source_mode,
         OpenCodeGoSourceMode::Api
     );
-    let browser_material = AccountAuthMaterial::from_cookie_header("auth=browser-session", None);
-    assert_eq!(
-        provider_config_for(&opencode, Some(&browser_material)).opencode_go_source_mode,
-        OpenCodeGoSourceMode::Web
-    );
     let console_oauth_material = AccountAuthMaterial {
         bearer_token: Some("console-access-token".to_owned()),
         oauth_access_token: Some("console-access-token".to_owned()),
@@ -504,9 +490,12 @@ fn refresh_modes_do_not_fall_back_to_claude_web_or_global_cli() {
         provider_config_for(&opencode, Some(&console_oauth_material)).opencode_go_source_mode,
         OpenCodeGoSourceMode::Web
     );
-    let unrelated_cookie = AccountAuthMaterial::from_cookie_header("unrelated=value", None);
+    let api_key = AccountAuthMaterial {
+        bearer_token: Some("opencode-api-key".to_owned()),
+        ..AccountAuthMaterial::default()
+    };
     assert_eq!(
-        provider_config_for(&opencode, Some(&unrelated_cookie)).opencode_go_source_mode,
+        provider_config_for(&opencode, Some(&api_key)).opencode_go_source_mode,
         OpenCodeGoSourceMode::Api
     );
 
@@ -544,28 +533,23 @@ async fn scheduler_uses_each_accounts_own_source_mode() {
     let dispatcher = |provider_id: &'static str| PerAccountSourceAdapter {
         provider_id: provider_id.to_owned(),
         auth_store: Arc::new(WindowsCredentialManagerAuthMaterialStore),
-        variants: SOURCE_VARIANTS
+        variants: OPENCODE_GO_SOURCE_VARIANTS
             .iter()
-            .map(|modes| {
-                let marker: &'static str = match modes {
-                    (ClaudeSourceMode::OAuth, OpenCodeGoSourceMode::Web) => "oauth/web",
-                    (ClaudeSourceMode::OAuth, _) => "oauth/api",
-                    (_, OpenCodeGoSourceMode::Web) => "admin/web",
-                    _ => "admin/api",
+            .map(|mode| {
+                let marker: &'static str = match mode {
+                    OpenCodeGoSourceMode::Web => "web",
+                    _ => "api",
                 };
                 (
-                    *modes,
+                    *mode,
                     Arc::new(ModeMarker(provider_id, marker)) as Arc<dyn UsageAdapter>,
                 )
             })
             .collect(),
     };
-    // A fresh account id has no saved material: Claude fails closed to
-    // OAuth and OpenCode Go uses the strict API source, as in `refresh`.
-    let claude = account(CLAUDE, "cc1", "Claude", "c@example.com", None, None);
-    let result = dispatcher(CLAUDE).probe(&claude).await.unwrap();
-    assert!(result.error.unwrap().message.starts_with("oauth/"));
+    // A fresh account id has no saved material, so OpenCode Go uses the
+    // strict API source, as in `refresh`.
     let opencode = account(OPENCODE_GO, "oc1", "Go", "g@example.com", None, None);
     let result = dispatcher(OPENCODE_GO).probe(&opencode).await.unwrap();
-    assert!(result.error.unwrap().message.ends_with("/api"));
+    assert_eq!(result.error.unwrap().message, "api");
 }

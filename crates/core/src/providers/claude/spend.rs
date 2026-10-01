@@ -1,4 +1,4 @@
-//! Extra-usage spend, overage limits, and prepaid credit parsing shared by the OAuth and web sources.
+//! Extra-usage spend reported by the OAuth usage API.
 
 use super::*;
 
@@ -52,57 +52,6 @@ pub(super) fn parse_extra_usage(root: &Value) -> (Option<SpendSnapshot>, Option<
         }),
         None,
     )
-}
-
-pub(super) fn parse_overage_spend(body: &str) -> Option<SpendSnapshot> {
-    let root: Value = serde_json::from_str(body).ok()?;
-    if root.get("is_enabled").and_then(Value::as_bool) != Some(true) {
-        return None;
-    }
-    let used = json_number(&root, &["used_credits", "usedCredits"])
-        .filter(|value| value.is_finite() && *value >= 0.0)?;
-    let limit = json_number(
-        &root,
-        &["monthly_credit_limit", "monthly_limit", "monthlyLimit"],
-    )
-    .filter(|value| value.is_finite() && *value > 0.0)?;
-    let currency_code = normalized_claude_currency(json_string(&root, &["currency"]))?;
-    let used = used / 100.0;
-    let limit = limit / 100.0;
-    if limit <= 0.0 {
-        return None;
-    }
-    let used_percent = json_number(&root, &["utilization", "used_percent", "usedPercent"])
-        .filter(|value| value.is_finite())
-        .map(normalize_percent)
-        .or_else(|| {
-            let percent = used / limit * 100.0;
-            percent.is_finite().then(|| normalize_percent(percent))
-        });
-    Some(SpendSnapshot {
-        monthly_usage: Some(used),
-        monthly_limit: Some(limit),
-        used_percent,
-        limit_enabled: Some(true),
-        currency_code: Some(currency_code),
-    })
-}
-
-pub(super) fn parse_prepaid_credits(body: &str) -> Option<CreditsSnapshot> {
-    let root: Value = serde_json::from_str(body).ok()?;
-    let amount = json_number(&root, &["amount", "balance", "remaining"])
-        .filter(|value| value.is_finite() && *value >= 0.0)?;
-    let currency_code = normalized_claude_currency(json_string(&root, &["currency"]))?;
-    Some(CreditsSnapshot {
-        has_credits: Some(true),
-        unlimited: Some(false),
-        balance: Some(amount / 100.0),
-        currency_code: Some(currency_code),
-        approximate_message_cost: None,
-        limit: None,
-        balance_read_succeeded: Some(true),
-        credits_available: Some(amount > 0.0),
-    })
 }
 
 pub(super) fn normalized_claude_currency(value: Option<String>) -> Option<String> {

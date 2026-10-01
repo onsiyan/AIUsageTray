@@ -55,18 +55,6 @@ fn oauth_weekly_lane_is_selected_when_five_hour_is_missing() {
 }
 
 #[test]
-fn web_missing_five_hour_uses_a_synthetic_session_lane() {
-    let primary = synthetic_session_window();
-    assert_eq!(primary.name, "Session");
-    assert_eq!(primary.used_percent, 0.0);
-    assert_eq!(primary.reset_at_utc, None);
-    assert_eq!(
-        primary_window_kind(Some(&primary)),
-        Some(UsagePrimaryWindowKind::Session)
-    );
-}
-
-#[test]
 fn spend_limit_becomes_primary_only_when_no_usage_lane_exists() {
     let root = serde_json::json!({
         "extra_usage": {
@@ -117,86 +105,6 @@ fn extra_usage_rejects_disabled_or_invalid_values_and_preserves_currency() {
 }
 
 #[test]
-fn overage_spend_requires_enabled_state_currency_and_finite_amounts() {
-    let valid =
-        r#"{"is_enabled":true,"used_credits":125,"monthly_credit_limit":1000,"currency":"USD"}"#;
-    let spend = parse_overage_spend(valid).unwrap();
-    assert_eq!(spend.monthly_usage, Some(1.25));
-    assert_eq!(spend.monthly_limit, Some(10.0));
-    assert_eq!(spend.currency_code.as_deref(), Some("USD"));
-
-    assert!(parse_overage_spend(
-            r#"{"is_enabled":false,"used_credits":125,"monthly_credit_limit":1000,"currency":"USD"}"#
-        )
-        .is_none());
-    assert!(
-        parse_overage_spend(
-            r#"{"is_enabled":true,"used_credits":125,"monthly_credit_limit":1000}"#
-        )
-        .is_none()
-    );
-    assert!(parse_overage_spend(
-            r#"{"is_enabled":true,"used_credits":"NaN","monthly_credit_limit":1000,"currency":"USD"}"#
-        )
-        .is_none());
-}
-
-#[test]
-fn prepaid_credits_requires_a_valid_amount_and_currency() {
-    let credits = parse_prepaid_credits(r#"{"amount":0,"currency":"usd"}"#).unwrap();
-    assert_eq!(credits.balance, Some(0.0));
-    assert_eq!(credits.currency_code.as_deref(), Some("USD"));
-    assert_eq!(credits.credits_available, Some(false));
-
-    assert!(parse_prepaid_credits(r#"{"amount":100}"#).is_none());
-    assert!(parse_prepaid_credits(r#"{"amount":-1,"currency":"USD"}"#).is_none());
-    assert!(parse_prepaid_credits(r#"{"amount":"Infinity","currency":"USD"}"#).is_none());
-}
-
-#[test]
-fn organization_selection_prefers_chat_capability_arrays() {
-    let organizations = r#"[
-            {"uuid":"api-org","capabilities":["api"]},
-            {"uuid":"chat-org","capabilities":["chat"]}
-        ]"#;
-    assert_eq!(
-        select_organization(organizations, None).as_deref(),
-        Some("chat-org")
-    );
-}
-
-#[test]
-fn organization_selection_honors_bound_org_and_supports_legacy_flags() {
-    let organizations = r#"[
-            {"uuid":"api-org","capabilities":["api"]},
-            {"uuid":"legacy-chat-org","has_chat_capability":true,"is_api_only":false}
-        ]"#;
-    assert_eq!(
-        select_organization(organizations, Some("api-org")).as_deref(),
-        Some("api-org")
-    );
-    assert_eq!(
-        select_organization(organizations, None).as_deref(),
-        Some("legacy-chat-org")
-    );
-}
-
-#[test]
-fn organization_selection_does_not_fallback_when_bound_org_is_missing() {
-    let organizations = r#"[
-            {"uuid":"another-chat-org","capabilities":["chat"]}
-        ]"#;
-    assert_eq!(
-        select_organization(organizations, Some("missing-org")),
-        None
-    );
-    assert_eq!(
-        select_organization(organizations, Some(" another-chat-org ")).as_deref(),
-        Some("another-chat-org")
-    );
-}
-
-#[test]
 fn claude_profile_accepts_nested_account_and_organization_shape() {
     let profile = parse_claude_profile(
             r#"{"account":{"uuid":"acct-1","email_address":"user@example.com"},"organization":{"uuid":"org-1"}}"#,
@@ -205,69 +113,6 @@ fn claude_profile_accepts_nested_account_and_organization_shape() {
     assert_eq!(profile.account_id.as_deref(), Some("acct-1"));
     assert_eq!(profile.organization_id.as_deref(), Some("org-1"));
     assert_eq!(profile.email.as_deref(), Some("user@example.com"));
-}
-
-#[test]
-fn admin_usage_parser_normalizes_cost_and_model_tokens() {
-    let costs = parse_admin_usage(
-            r#"{"data":[{"starting_at":"2030-01-01T00:00:00Z","ending_at":"2030-01-02T00:00:00Z","results":[{"amount":"1250","description":"Claude"}]}]}"#,
-        )
-        .unwrap();
-    assert_eq!(costs.cost_usd, Some(12.5));
-
-    let messages = parse_admin_usage(
-            r#"{"data":[{"starting_at":"2030-01-01T00:00:00Z","ending_at":"2030-01-02T00:00:00Z","results":[{"uncached_input_tokens":10,"cache_creation":{"ephemeral_5m_input_tokens":2},"cache_read_input_tokens":3,"output_tokens":5,"model":"claude-sonnet"}]}]}"#,
-        )
-        .unwrap();
-    assert_eq!(messages.total_tokens, 20);
-    assert_eq!(messages.models[0].name, "claude-sonnet");
-}
-
-#[test]
-fn web_session_key_requires_a_claude_session_cookie() {
-    let invalid = crate::auth::AccountAuthMaterial {
-        bearer_token: Some("sk-ant-api-invalid".to_owned()),
-        cookies: vec![crate::auth::CookieValue {
-            name: "sessionKey".to_owned(),
-            value: "not-a-session".to_owned(),
-        }],
-        ..Default::default()
-    };
-    assert!(claude_session_key(&invalid).is_none());
-
-    let valid = crate::auth::AccountAuthMaterial {
-        cookies: vec![crate::auth::CookieValue {
-            name: "sessionKey".to_owned(),
-            value: "sk-ant-sid-test".to_owned(),
-        }],
-        ..Default::default()
-    };
-    assert_eq!(
-        claude_session_key(&valid).as_deref(),
-        Some("sk-ant-sid-test")
-    );
-}
-
-#[test]
-fn rotated_web_session_key_requires_success_and_a_valid_cookie() {
-    let response = |status_code, set_cookie: &str| crate::transport::UsageHttpResponse {
-        status_code,
-        body: String::new(),
-        headers: [("Set-Cookie".to_owned(), set_cookie.to_owned())]
-            .into_iter()
-            .collect(),
-    };
-
-    let renewed = response(
-        200,
-        "__cf_bm=cloudflare; Expires=Wed, 21 Oct 2030 07:28:00 GMT\nsessionKey=sk-ant-sid-renewed; Path=/; HttpOnly",
-    );
-    assert_eq!(
-        rotated_claude_session_key(&renewed).as_deref(),
-        Some("sk-ant-sid-renewed")
-    );
-    assert!(rotated_claude_session_key(&response(401, "sessionKey=sk-ant-sid-new")).is_none());
-    assert!(rotated_claude_session_key(&response(200, "sessionKey=not-a-claude-cookie")).is_none());
 }
 
 #[test]
@@ -303,15 +148,6 @@ fn cloudflare_challenge_is_distinct_from_a_rejected_claude_session() {
         error.code,
         crate::usage::UsageAdapterErrorCode::Unauthorized
     );
-}
-#[test]
-fn automatic_cli_fallback_requires_the_same_signed_in_account() {
-    let account = AccountRecord::create("Claude", "me@example.com", None, CLAUDE, None).unwrap();
-    let automatic = ClaudeSourceMode::Automatic;
-    assert!(unverified_cli_fallback(automatic, &account, None).is_some());
-    assert!(unverified_cli_fallback(automatic, &account, Some("other@example.com")).is_some());
-    assert!(unverified_cli_fallback(automatic, &account, Some("ME@example.com")).is_none());
-    assert!(unverified_cli_fallback(ClaudeSourceMode::Cli, &account, None).is_none());
 }
 
 #[test]
