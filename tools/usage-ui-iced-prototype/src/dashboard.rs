@@ -355,6 +355,8 @@ pub struct DashboardState {
 #[derive(Default)]
 struct CodexDesktopState {
     active_account: Option<AccountId>,
+    /// Email the Antigravity desktop app is signed in with.
+    antigravity_email: Option<String>,
     switching: Option<AccountId>,
     failure: Option<(AccountId, String)>,
 }
@@ -432,6 +434,7 @@ impl DashboardState {
             show_antigravity_quota_groups: true,
             codex_desktop: CodexDesktopState {
                 active_account: current_codex_desktop_account(),
+                antigravity_email: current_antigravity_app_email(),
                 ..CodexDesktopState::default()
             },
             account_order: load_account_order(),
@@ -529,6 +532,7 @@ impl DashboardState {
             self.codex_desktop.failure = Some((account_id, error));
         }
         self.codex_desktop.active_account = current_codex_desktop_account();
+        self.codex_desktop.antigravity_email = current_antigravity_app_email();
     }
 
     pub fn set_accounts(&mut self, entries: Vec<AccountUsageEntry>) {
@@ -555,6 +559,7 @@ impl DashboardState {
         self.has_loaded = true;
         self.failed = false;
         self.codex_desktop.active_account = current_codex_desktop_account();
+        self.codex_desktop.antigravity_email = current_antigravity_app_email();
     }
 
     pub fn update_account_usage(&mut self, entry: AccountUsageEntry) {
@@ -762,6 +767,16 @@ fn load_hide_antigravity_claude_gpt() -> bool {
             fs::read_to_string(directory.join(HIDE_ANTIGRAVITY_CLAUDE_GPT_FILE)).ok()
         })
         .is_some_and(|value| value.trim() == "hide")
+}
+
+#[cfg(target_os = "windows")]
+fn current_antigravity_app_email() -> Option<String> {
+    codex_usage_windows_auth::antigravity_app::signed_in_email()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn current_antigravity_app_email() -> Option<String> {
+    None
 }
 
 fn current_codex_desktop_account() -> Option<AccountId> {
@@ -1168,10 +1183,29 @@ fn account_card(
             language,
         ));
     }
-    let is_codex_account = belongs_to_provider(&account.provider_id, UsageProvider::Codex);
-    if is_codex_account && editing.is_none() {
-        header = header.push(codex_desktop_button(
+    let desktop_app = if belongs_to_provider(&account.provider_id, UsageProvider::Codex) {
+        Some((
+            DesktopApp::Codex,
+            codex_desktop.active_account == Some(account_id),
+        ))
+    } else if is_antigravity_account {
+        Some((
+            DesktopApp::Antigravity,
+            codex_desktop
+                .antigravity_email
+                .as_deref()
+                .is_some_and(|email| email.eq_ignore_ascii_case(account.email.trim())),
+        ))
+    } else {
+        None
+    };
+    if let Some((app, is_active)) = desktop_app
+        && editing.is_none()
+    {
+        header = header.push(desktop_app_button(
             account_id,
+            app,
+            is_active,
             codex_desktop,
             theme,
             language,
@@ -1179,15 +1213,13 @@ fn account_card(
     }
     let mut rows: Vec<Element<'static, Message>> = vec![header.width(Fill).into()];
 
-    if let Some((_, error)) = codex_desktop
-        .failure
-        .as_ref()
-        .filter(|(failed_account, _)| *failed_account == account_id)
+    if let Some((app, _)) = desktop_app
+        && let Some((_, error)) = codex_desktop
+            .failure
+            .as_ref()
+            .filter(|(failed_account, _)| *failed_account == account_id)
     {
-        let message = format!(
-            "{}: {error}",
-            locale::text(language, Text::CodexSwitchFailed)
-        );
+        let message = format!("{}: {error}", locale::text(language, app.texts().failed));
         rows.push(warning_line(&message, theme));
     }
 
@@ -1293,13 +1325,60 @@ fn account_separator(theme: &'static crate::theme::ThemeDefinition) -> Element<'
 
 /// "Use in Codex" for a saved Codex account, or a marker on the account the
 /// Codex desktop app is currently signed in with.
-fn codex_desktop_button(
+/// A desktop app a saved account can be switched into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesktopApp {
+    Codex,
+    Antigravity,
+}
+
+struct DesktopAppTexts {
+    use_label: Text,
+    use_hint: Text,
+    active_label: Text,
+    active_hint: Text,
+    failed: Text,
+}
+
+impl DesktopApp {
+    fn texts(self) -> DesktopAppTexts {
+        match self {
+            DesktopApp::Codex => DesktopAppTexts {
+                use_label: Text::UseInCodex,
+                use_hint: Text::UseInCodexHint,
+                active_label: Text::InCodex,
+                active_hint: Text::InCodexHint,
+                failed: Text::CodexSwitchFailed,
+            },
+            DesktopApp::Antigravity => DesktopAppTexts {
+                use_label: Text::UseInAntigravity,
+                use_hint: Text::UseInAntigravityHint,
+                active_label: Text::InAntigravity,
+                active_hint: Text::InAntigravityHint,
+                failed: Text::AntigravitySwitchFailed,
+            },
+        }
+    }
+
+    fn switch_message(self, account_id: AccountId) -> Message {
+        match self {
+            DesktopApp::Codex => Message::SwitchCodexDesktopAccount(account_id),
+            DesktopApp::Antigravity => Message::SwitchAntigravityAppAccount(account_id),
+        }
+    }
+}
+
+/// Icon button that signs a desktop app in with this account, or marks the
+/// account the app currently uses.
+fn desktop_app_button(
     account_id: AccountId,
+    app: DesktopApp,
+    is_active: bool,
     codex_desktop: &CodexDesktopState,
     theme: &'static crate::theme::ThemeDefinition,
     language: Language,
 ) -> Element<'static, Message> {
-    let is_active = codex_desktop.active_account == Some(account_id);
+    let texts = app.texts();
     let is_switching = codex_desktop.switching == Some(account_id);
     let (glyph, label, tip) = if is_switching {
         (
@@ -1308,13 +1387,9 @@ fn codex_desktop_button(
             Text::CodexSwitching,
         )
     } else if is_active {
-        (icon_check(), Text::InCodex, Text::InCodexHint)
+        (icon_check(), texts.active_label, texts.active_hint)
     } else {
-        (
-            icon_arrow_left_right(),
-            Text::UseInCodex,
-            Text::UseInCodexHint,
-        )
+        (icon_arrow_left_right(), texts.use_label, texts.use_hint)
     };
     let accent = theme.accent_color();
     let glyph_color = if is_active {
@@ -1355,7 +1430,7 @@ fn codex_desktop_button(
         });
     // The active account can be pressed again to restart Codex on it.
     if codex_desktop.switching.is_none() {
-        control = control.on_press(Message::SwitchCodexDesktopAccount(account_id));
+        control = control.on_press(app.switch_message(account_id));
     }
 
     let tip = if is_switching {

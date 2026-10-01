@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod antigravity_desktop;
 pub mod auth;
 pub mod auth_sources;
 pub mod claude_oauth;

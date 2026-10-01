@@ -365,9 +365,13 @@ fn read_raw(name: &str) -> Result<Option<Vec<u8>>, AuthError> {
 }
 
 fn write_raw(name: &str, blob: &[u8]) -> Result<(), AuthError> {
+    write_raw_as(name, blob, "CodexUsageMonitor")
+}
+
+fn write_raw_as(name: &str, blob: &[u8], user: &str) -> Result<(), AuthError> {
     let mut blob = blob.to_vec();
     let mut target = wide(name);
-    let user_name: Vec<u16> = "CodexUsageMonitor\0".encode_utf16().collect();
+    let user_name: Vec<u16> = wide(user);
     let credential = CREDENTIALW {
         Flags: 0,
         Type: CRED_TYPE_GENERIC,
@@ -408,6 +412,48 @@ fn delete_raw(name: &str) -> Result<(), AuthError> {
         )));
     }
     Ok(())
+}
+
+/// The Antigravity desktop app's own sign-in entry (see
+/// `codex_usage_core::antigravity_desktop`).
+pub mod antigravity_app {
+    use super::{delete_raw, read_raw, write_raw_as};
+    use codex_usage_core::{
+        antigravity_desktop::{
+            APP_CREDENTIAL_TARGET, APP_CREDENTIAL_USER, app_credential, app_credential_email,
+        },
+        auth::{AuthError, OAuthTokenSet},
+    };
+
+    const BACKUP_TARGET: &str = "CodexUsageMonitor-Rust/Backup/gemini-antigravity";
+
+    /// The email the Antigravity app is currently signed in with.
+    pub fn signed_in_email() -> Option<String> {
+        read_raw(APP_CREDENTIAL_TARGET)
+            .ok()
+            .flatten()
+            .and_then(|credential| app_credential_email(&credential))
+    }
+
+    /// Writes `tokens` as the app's sign-in. When the app is signed in with
+    /// an account outside `known_emails`, its entry is first copied to a
+    /// backup entry so that sign-in is not lost.
+    pub fn install(tokens: &OAuthTokenSet, known_emails: &[String]) -> Result<(), AuthError> {
+        let payload = app_credential(tokens)?;
+        if let Some(current) = read_raw(APP_CREDENTIAL_TARGET)? {
+            let known = app_credential_email(&current).is_some_and(|email| {
+                known_emails
+                    .iter()
+                    .any(|known| known.trim().eq_ignore_ascii_case(&email))
+            });
+            if !known {
+                write_raw_as(BACKUP_TARGET, &current, APP_CREDENTIAL_USER)?;
+            }
+        }
+        // Replace the entry outright, as the app expects a clean write.
+        delete_raw(APP_CREDENTIAL_TARGET)?;
+        write_raw_as(APP_CREDENTIAL_TARGET, &payload, APP_CREDENTIAL_USER)
+    }
 }
 
 pub struct WindowsDefaultBrowserLauncher;

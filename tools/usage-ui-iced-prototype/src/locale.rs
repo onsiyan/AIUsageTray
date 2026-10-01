@@ -78,6 +78,11 @@ pub enum Text {
     MoveAccountUp,
     MoveAccountDown,
     ShowClaudeGptGroup,
+    UseInAntigravity,
+    UseInAntigravityHint,
+    InAntigravity,
+    InAntigravityHint,
+    AntigravitySwitchFailed,
 }
 
 pub fn default_language() -> Language {
@@ -173,6 +178,13 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, MoveAccountUp) => "Move up",
         (English, MoveAccountDown) => "Move down",
         (English, ShowClaudeGptGroup) => "Show Claude and GPT models",
+        (English, UseInAntigravity) => "Use in Antigravity",
+        (English, UseInAntigravityHint) => {
+            "Sign the Antigravity app in with this account and restart it"
+        }
+        (English, InAntigravity) => "In Antigravity",
+        (English, InAntigravityHint) => "Antigravity is using this account · press to restart it",
+        (English, AntigravitySwitchFailed) => "Could not switch Antigravity",
         (Arabic, LoadingAccounts) => "جارٍ تحميل الحسابات وقراءات الاستخدام المحفوظة",
         (Arabic, AccountsDatabaseUnavailable) => "تعذرت قراءة قاعدة بيانات الحسابات المحلية",
         (Arabic, NoAccountsForProvider) => "لا توجد حسابات محفوظة لهذا المزود",
@@ -247,5 +259,10 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (Arabic, MoveAccountUp) => "نقل للأعلى",
         (Arabic, MoveAccountDown) => "نقل للأسفل",
         (Arabic, ShowClaudeGptGroup) => "إظهار نماذج Claude وGPT",
+        (Arabic, UseInAntigravity) => "استخدم في Antigravity",
+        (Arabic, UseInAntigravityHint) => "يسجّل برنامج Antigravity بهذا الحساب ويعيد تشغيله",
+        (Arabic, InAntigravity) => "في Antigravity",
+        (Arabic, InAntigravityHint) => "Antigravity يعمل بهذا الحساب الآن · اضغط لإعادة تشغيله",
+        (Arabic, AntigravitySwitchFailed) => "تعذر تبديل حساب Antigravity",
     }
 }

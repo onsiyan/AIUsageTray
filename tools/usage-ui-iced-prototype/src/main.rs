@@ -790,6 +790,15 @@ impl App {
                     move |result| Message::CodexDesktopSwitchFinished(account_id, result),
                 )
             }
+            Message::SwitchAntigravityAppAccount(account_id) => {
+                if !self.dashboard.begin_codex_switch(account_id) {
+                    return Task::none();
+                }
+                Task::perform(
+                    codex_switch::switch_antigravity_app_account(account_id),
+                    move |result| Message::CodexDesktopSwitchFinished(account_id, result),
+                )
+            }
             Message::CodexDesktopSwitchFinished(account_id, result) => {
                 if let Err(error) = &result {
                     preview_log(format!("Codex desktop switch failed: {error}"));
@@ -1441,6 +1450,7 @@ enum Message {
     SelectTheme(ThemeId),
     SelectPercentDisplay(PercentDisplay),
     SwitchCodexDesktopAccount(codex_usage_core::accounts::AccountId),
+    SwitchAntigravityAppAccount(codex_usage_core::accounts::AccountId),
     CodexDesktopSwitchFinished(codex_usage_core::accounts::AccountId, Result<(), String>),
     SelectProvider(UsageProvider),
     DashboardLoaded(Result<Vec<dashboard::AccountUsageEntry>, String>),
