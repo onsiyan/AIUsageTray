@@ -24,7 +24,6 @@ use windows_sys::Win32::{
     UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
 };
 
-pub mod browser_bridge;
 pub mod browser_cookies;
 
 const TARGET_PREFIX: &str = "UsageMonitor/OAuth/";
