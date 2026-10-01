@@ -20,35 +20,11 @@ use crate::{
 use std::{collections::HashMap, sync::Arc};
 use thiserror::Error;
 
-/// Options that affect provider-side enrichment requests. Usage extraction
-/// remains enabled for every provider in this configuration.
-#[derive(Debug, Clone, Copy)]
+/// Per-account provider options. Only OpenCode Go has more than one source;
+/// every other provider always uses its single source with all enrichments.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ProviderRegistryConfig {
-    pub fetch_openai_spend_controls: bool,
-    pub fetch_openai_workspace_balance: bool,
-    pub fetch_openai_reset_credits: bool,
-    /// Also read Claude's OAuth profile to verify identity and name the plan.
-    /// The usage route stays authoritative when the profile call fails.
-    pub fetch_claude_account_identity: bool,
     pub opencode_go_source_mode: OpenCodeGoSourceMode,
-    pub fetch_openrouter_credits: bool,
-    /// Optional 30-day Activity enrichment. The key quota remains enabled
-    /// even when this management-key-only request is disabled.
-    pub fetch_openrouter_activity: bool,
-}
-
-impl Default for ProviderRegistryConfig {
-    fn default() -> Self {
-        Self {
-            fetch_openai_spend_controls: false,
-            fetch_openai_workspace_balance: false,
-            fetch_openai_reset_credits: true,
-            fetch_claude_account_identity: true,
-            opencode_go_source_mode: OpenCodeGoSourceMode::Web,
-            fetch_openrouter_credits: true,
-            fetch_openrouter_activity: true,
-        }
-    }
 }
 
 impl ProviderRegistryConfig {
@@ -143,29 +119,21 @@ impl ProviderRegistry {
         auth: Arc<dyn AccountAuthMaterialProvider>,
         config: ProviderRegistryConfig,
     ) -> Result<Self, ProviderRegistryError> {
-        let openai_adapter = WhamUsageAdapter::new(
+        let openai = Arc::new(WhamUsageAdapter::new(
             Arc::clone(&transport),
             Arc::clone(&auth),
-            config.fetch_openai_spend_controls,
-            config.fetch_openai_workspace_balance,
-        )?
-        .with_reset_credits(config.fetch_openai_reset_credits);
-        let openai = Arc::new(openai_adapter) as Arc<dyn UsageAdapter>;
+        )?) as Arc<dyn UsageAdapter>;
         let claude = Arc::new(
             ClaudeUsageAdapter::new(Arc::clone(&transport), Arc::clone(&auth))?
-                .with_account_identity(config.fetch_claude_account_identity),
+                .with_account_identity(true),
         ) as Arc<dyn UsageAdapter>;
         let opencode_go = Arc::new(
             OpenCodeGoUsageAdapter::new(Arc::clone(&transport), Arc::clone(&auth))?
                 .with_source_mode(config.opencode_go_source_mode),
         ) as Arc<dyn UsageAdapter>;
         let openrouter = Arc::new(
-            OpenRouterUsageAdapter::new(
-                Arc::clone(&transport),
-                Arc::clone(&auth),
-                config.fetch_openrouter_credits,
-            )?
-            .with_activity(config.fetch_openrouter_activity),
+            OpenRouterUsageAdapter::new(Arc::clone(&transport), Arc::clone(&auth), true)?
+                .with_activity(true),
         ) as Arc<dyn UsageAdapter>;
         let antigravity = Arc::new(AntigravityUsageAdapter::new(
             Arc::clone(&transport),

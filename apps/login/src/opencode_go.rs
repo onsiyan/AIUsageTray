@@ -12,7 +12,7 @@ use std::{env, path::PathBuf, sync::Arc, time::Duration};
 use tokio::time::{Instant, sleep};
 use url::Url;
 use usage_monitor_core::{
-    accounts::{AccountId, AccountRecord, AccountStore, OPENCODE_GO},
+    accounts::{AccountRecord, AccountStore, OPENCODE_GO},
     auth::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
         OAuthBrowserLauncher, StoredAuthMaterialProvider,
@@ -30,13 +30,13 @@ use usage_monitor_windows::{
 };
 
 const OPENCODE_CONSOLE_BASE_URL: &str = "https://opencode.ai/console/";
+/// How long to wait for the user to approve the device authorization.
+const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(900);
 
 #[derive(Debug, Default)]
 struct Arguments {
     database: Option<PathBuf>,
     label: Option<String>,
-    resume_account: Option<AccountId>,
-    timeout_seconds: u64,
 }
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -54,50 +54,29 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let secure_material_store = Arc::new(WindowsCredentialManagerAuthMaterialStore);
     let transport = Arc::new(ReqwestUsageHttpTransport::new(Duration::from_secs(45))?);
 
-    let account = if let Some(account_id) = arguments.resume_account {
-        let account = account_store
-            .get(account_id)
-            .await?
-            .ok_or("OpenCode Go account was not found in the selected database")?;
-        if account.provider_id != OPENCODE_GO {
-            return Err("the selected account is not an OpenCode Go account".into());
-        }
-        let material = secure_material_store
-            .get(account.id)
-            .await?
-            .ok_or("the account has no saved OpenCode credentials in Credential Manager")?;
-        if !material.has_bearer_token() {
-            return Err("the account has no saved OpenCode access token".into());
-        }
-        println!("Reusing the saved OpenCode Go OAuth session (token withheld).");
-        account
-    } else {
-        // Keep the authorized account and OAuth material even when the first
-        // usage probe fails, so API authorization can be tested independently.
-        let label = arguments
-            .label
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("OpenCode Go account");
-        let timeout = Duration::from_secs(arguments.timeout_seconds.max(1));
-        let login = login_with_device_code(transport.as_ref(), timeout).await?;
-        let account = AccountRecord::create(
-            label,
-            &login.email,
-            Some(login.user_id),
-            OPENCODE_GO,
-            login.workspace_id.clone(),
-        )?
-        .with_workspace_name(login.workspace_name.as_deref());
-        let account = account_store
-            .upsert_or_get_by_provider_identity(&account)
-            .await?;
-        secure_material_store
-            .save(account.id, &login.material)
-            .await?;
-        println!("OpenCode Console authorized as {}.", account.email);
-        account
-    };
+    // Keep the authorized account and OAuth material even when the first
+    // usage probe fails, so a later refresh can retry without signing in again.
+    let label = arguments
+        .label
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("OpenCode Go account");
+    let login = login_with_device_code(transport.as_ref(), SIGN_IN_TIMEOUT).await?;
+    let account = AccountRecord::create(
+        label,
+        &login.email,
+        Some(login.user_id),
+        OPENCODE_GO,
+        login.workspace_id.clone(),
+    )?
+    .with_workspace_name(login.workspace_name.as_deref());
+    let account = account_store
+        .upsert_or_get_by_provider_identity(&account)
+        .await?;
+    secure_material_store
+        .save(account.id, &login.material)
+        .await?;
+    println!("OpenCode Console authorized as {}.", account.email);
 
     let account = account_store
         .get(account.id)
@@ -119,7 +98,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         secure_material_store,
         ProviderRegistryConfig {
             opencode_go_source_mode: OpenCodeGoSourceMode::Web,
-            ..ProviderRegistryConfig::default()
         },
         RefreshCoordinatorConfig {
             cadence: RefreshCadence::Manual,
@@ -219,10 +197,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
-    let mut arguments = Arguments {
-        timeout_seconds: 900,
-        ..Arguments::default()
-    };
+    let mut arguments = Arguments::default();
     let mut values = env::args_os().skip(2);
     while let Some(argument) = values.next() {
         match argument.to_string_lossy().as_ref() {
@@ -240,28 +215,9 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
                         .into_owned(),
                 );
             }
-            "--timeout-seconds" => {
-                arguments.timeout_seconds = values
-                    .next()
-                    .ok_or("--timeout-seconds requires a number")?
-                    .to_string_lossy()
-                    .parse::<u64>()
-                    .map_err(|_| "--timeout-seconds must be a positive integer")?;
-            }
-            "--resume-account" => {
-                let raw = values
-                    .next()
-                    .ok_or("--resume-account requires an account UUID")?
-                    .to_string_lossy()
-                    .into_owned();
-                arguments.resume_account = Some(
-                    raw.parse::<AccountId>()
-                        .map_err(|_| "--resume-account must be a valid account UUID")?,
-                );
-            }
             "--help" | "-h" => {
                 println!(
-                    "Usage: usage-monitor-login opencode-go [--database PATH] [--label LABEL] [--timeout-seconds N] [--resume-account ACCOUNT_ID]\n\nWithout --resume-account, starts OpenCode Console device authorization, opens the verification page in the Windows default browser, and waits for approval. The resulting OAuth access and refresh tokens are stored in Windows Credential Manager. --resume-account retries usage against a saved account/session without reopening the browser."
+                    "Usage: usage-monitor-login opencode-go [--database PATH] [--label LABEL]\n\nStarts OpenCode Console device authorization, opens the verification page in the Windows default browser, and waits for approval. The resulting OAuth access and refresh tokens are stored in Windows Credential Manager."
                 );
                 std::process::exit(0);
             }

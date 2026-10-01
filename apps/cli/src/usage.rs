@@ -359,7 +359,6 @@ pub(super) fn per_account_source_registry(
             Arc::clone(&auth),
             ProviderRegistryConfig {
                 opencode_go_source_mode,
-                ..ProviderRegistryConfig::default()
             },
         )?;
         variants.push((opencode_go_source_mode, registry));

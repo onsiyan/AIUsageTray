@@ -25,14 +25,13 @@ use usage_monitor_windows::{
     WindowsCredentialManagerAuthMaterialStore, WindowsDefaultBrowserLauncher,
 };
 
+/// How long to wait for the browser sign-in to complete.
+const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
+
 #[derive(Debug, Default)]
 struct Arguments {
     database: Option<PathBuf>,
     label: Option<String>,
-    email: Option<String>,
-    force_new: bool,
-    login: bool,
-    timeout_seconds: u64,
 }
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,61 +49,26 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let secure_material_store = Arc::new(WindowsCredentialManagerAuthMaterialStore);
     let transport = Arc::new(ReqwestUsageHttpTransport::new(Duration::from_secs(45))?);
 
-    let (identity, material) = if arguments.login {
-        let timeout = Duration::from_secs(arguments.timeout_seconds.max(1));
-        println!("Opening Claude sign-in in your default browser. Complete authentication there.");
-        let material = claude_oauth::login(
-            transport.as_ref(),
-            &LoopbackOAuthCallbackListenerFactory,
-            &WindowsDefaultBrowserLauncher,
-            timeout,
-        )
-        .await?;
-        require_claude_code_oauth_material(&material)?;
-        let access_token = material
-            .bearer_token
-            .as_deref()
-            .expect("OAuth material validation requires an access token");
-        let identity = fetch_oauth_identity(transport.as_ref(), access_token).await?;
-        (identity, material)
-    } else {
-        let account =
-            find_existing_account(account_store.as_ref(), arguments.email.as_deref()).await?;
-        let material = secure_material_store
-            .get(account.id)
-            .await?
-            .ok_or("the selected Claude account has no stored Claude Code OAuth credentials")?;
-        require_claude_code_oauth_material(&material)?;
-        let identity = VerifiedIdentity {
-            email: Some(account.email.clone()),
-            provider_account_id: account.provider_account_id.clone(),
-            plan_type: None,
-        };
-        (identity, material)
-    };
-
-    let email = identity
-        .email
+    println!("Opening Claude sign-in in your default browser. Complete authentication there.");
+    let material = claude_oauth::login(
+        transport.as_ref(),
+        &LoopbackOAuthCallbackListenerFactory,
+        &WindowsDefaultBrowserLauncher,
+        SIGN_IN_TIMEOUT,
+    )
+    .await?;
+    require_claude_code_oauth_material(&material)?;
+    let access_token = material
+        .bearer_token
         .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or("Claude OAuth profile did not return an email address")?;
-    if let Some(expected_email) = arguments.email.as_deref()
-        && !expected_email.eq_ignore_ascii_case(email)
-    {
-        return Err(format!("Claude login belongs to {}, not {}", email, expected_email).into());
-    }
-
-    let account = if arguments.login {
-        find_or_create_account(
-            account_store.as_ref(),
-            &identity,
-            arguments.label.as_deref(),
-            arguments.force_new,
-        )
-        .await?
-    } else {
-        find_existing_account(account_store.as_ref(), arguments.email.as_deref()).await?
-    };
+        .expect("OAuth material validation requires an access token");
+    let identity = fetch_oauth_identity(transport.as_ref(), access_token).await?;
+    let account = find_or_create_account(
+        account_store.as_ref(),
+        &identity,
+        arguments.label.as_deref(),
+    )
+    .await?;
     account_store.upsert(&account).await?;
 
     secure_material_store.save(account.id, &material).await?;
@@ -125,10 +89,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         transport,
         auth,
         secure_material_store as Arc<dyn AccountAuthMaterialStore>,
-        ProviderRegistryConfig {
-            fetch_claude_account_identity: true,
-            ..ProviderRegistryConfig::default()
-        },
+        ProviderRegistryConfig::default(),
         RefreshCoordinatorConfig {
             cadence: RefreshCadence::Manual,
             ..RefreshCoordinatorConfig::default()
@@ -201,23 +162,20 @@ async fn find_or_create_account(
     store: &dyn AccountStore,
     identity: &VerifiedIdentity,
     label: Option<&str>,
-    force_new: bool,
 ) -> Result<AccountRecord, Box<dyn std::error::Error>> {
     let email = identity
         .email
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .ok_or("Claude OAuth profile did not return an email address")?;
-    if !force_new
-        && let Some(account) = store.list().await?.into_iter().find(|account| {
-            account.provider_id == CLAUDE
-                && (account.email.eq_ignore_ascii_case(email)
-                    || identity
-                        .provider_account_id
-                        .as_deref()
-                        .is_some_and(|id| account.provider_account_id.as_deref() == Some(id)))
-        })
-    {
+    if let Some(account) = store.list().await?.into_iter().find(|account| {
+        account.provider_id == CLAUDE
+            && (account.email.eq_ignore_ascii_case(email)
+                || identity
+                    .provider_account_id
+                    .as_deref()
+                    .is_some_and(|id| account.provider_account_id.as_deref() == Some(id)))
+    }) {
         return Ok(account.with_identity(Some(email), identity.provider_account_id.as_deref())?);
     }
     Ok(AccountRecord::create(
@@ -229,35 +187,8 @@ async fn find_or_create_account(
     )?)
 }
 
-async fn find_existing_account(
-    store: &dyn AccountStore,
-    email: Option<&str>,
-) -> Result<AccountRecord, Box<dyn std::error::Error>> {
-    let mut accounts = store
-        .list()
-        .await?
-        .into_iter()
-        .filter(|account| account.provider_id == CLAUDE)
-        .collect::<Vec<_>>();
-    if let Some(email) = email {
-        accounts.retain(|account| account.email.eq_ignore_ascii_case(email));
-    }
-    match accounts.len() {
-        1 => Ok(accounts.remove(0)),
-        0 => Err("no matching Claude account exists".into()),
-        count => Err(format!(
-            "{count} Claude accounts exist; pass --email when using --probe-existing"
-        )
-        .into()),
-    }
-}
-
 fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
-    let mut arguments = Arguments {
-        login: true,
-        timeout_seconds: 300,
-        ..Arguments::default()
-    };
+    let mut arguments = Arguments::default();
     let mut values = env::args_os().skip(2);
     while let Some(argument) = values.next() {
         match argument.to_string_lossy().as_ref() {
@@ -275,28 +206,9 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
                         .into_owned(),
                 );
             }
-            "--email" => {
-                arguments.email = Some(
-                    values
-                        .next()
-                        .ok_or("--email requires a value")?
-                        .to_string_lossy()
-                        .into_owned(),
-                );
-            }
-            "--timeout-seconds" => {
-                arguments.timeout_seconds = values
-                    .next()
-                    .ok_or("--timeout-seconds requires a number")?
-                    .to_string_lossy()
-                    .parse::<u64>()
-                    .map_err(|_| "--timeout-seconds must be a positive integer")?;
-            }
-            "--new" => arguments.force_new = true,
-            "--probe-existing" => arguments.login = false,
             "--help" | "-h" => {
                 println!(
-                    "Usage: usage-monitor-login claude [--database PATH] [--label LABEL] [--email EMAIL] [--new] [--timeout-seconds N] [--probe-existing]\n\nSigns in to Claude with OAuth in the default browser, verifies the account with Claude's OAuth profile endpoint, stores per-account credentials in Windows Credential Manager, and probes OAuth usage."
+                    "Usage: usage-monitor-login claude [--database PATH] [--label LABEL]\n\nSigns in to Claude with OAuth in the default browser, verifies the account with Claude's OAuth profile endpoint, stores per-account credentials in Windows Credential Manager, and probes OAuth usage."
                 );
                 std::process::exit(0);
             }

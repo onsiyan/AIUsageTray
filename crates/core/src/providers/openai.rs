@@ -3,7 +3,7 @@ use crate::{
     auth::{AccountAuthMaterial, AccountAuthMaterialProvider, AuthError, OAuthProviderDefinition},
     providers::shared::{
         bearer_headers, invalid_payload, json_bool, json_number, json_string, map_http_error,
-        missing_auth, normalize_percent,
+        missing_auth,
     },
     transport::{TransportError, UsageHttpRequest, UsageHttpResponse, UsageHttpTransport},
     usage::{
@@ -63,8 +63,6 @@ pub struct WhamUsageAdapter {
     transport: Arc<dyn UsageHttpTransport>,
     auth: Arc<dyn AccountAuthMaterialProvider>,
     base_url: Url,
-    fetch_spend_controls: bool,
-    fetch_workspace_balance: bool,
     fetch_reset_credits: bool,
 }
 
@@ -72,16 +70,12 @@ impl WhamUsageAdapter {
     pub fn new(
         transport: Arc<dyn UsageHttpTransport>,
         auth: Arc<dyn AccountAuthMaterialProvider>,
-        fetch_spend_controls: bool,
-        fetch_workspace_balance: bool,
     ) -> Result<Self, TransportError> {
         let environment = env::vars().collect::<HashMap<_, _>>();
         Ok(Self {
             transport,
             auth,
             base_url: resolve_base_url(&environment)?,
-            fetch_spend_controls,
-            fetch_workspace_balance,
             fetch_reset_credits: true,
         })
     }
@@ -234,117 +228,6 @@ impl UsageAdapter for WhamUsageAdapter {
             }
         }
 
-        let workspace_account_id = account
-            .workspace_id
-            .clone()
-            .or_else(|| snapshot.response_account_id.clone());
-        let is_workspace_plan =
-            is_backend_api_base(&base_url) && is_workspace_plan(snapshot.plan_type.as_deref());
-        let monthly_usage_path = if is_workspace_plan && self.fetch_spend_controls {
-            workspace_account_id.as_deref().map(|account_id| {
-                // Relative to the `/backend-api/` base URL; a leading
-                // `/backend-api` segment would be duplicated by `Url::join`.
-                format!(
-                    "accounts/{}/spend-controls/current-user/monthly-usage",
-                    percent_encode(account_id)
-                )
-            })
-        } else {
-            None
-        };
-        let needs_workspace_balance = self.fetch_workspace_balance
-            && snapshot
-                .credits
-                .as_ref()
-                .and_then(|credits| credits.balance)
-                .is_none();
-        let workspace_balance_path = if is_workspace_plan && needs_workspace_balance {
-            workspace_account_id.as_deref().map(|account_id| {
-                format!("accounts/{}/remaining_balance", percent_encode(account_id))
-            })
-        } else {
-            None
-        };
-        let monthly_usage_request = async {
-            match monthly_usage_path.as_deref() {
-                Some(path) => Some(self.get(path, Some(account), &material, true).await),
-                None => None,
-            }
-        };
-        let workspace_balance_request = async {
-            match workspace_balance_path.as_deref() {
-                Some(path) => Some(self.get(path, Some(account), &material, true).await),
-                None => None,
-            }
-        };
-        let (monthly_usage_response, workspace_balance_response) =
-            tokio::join!(monthly_usage_request, workspace_balance_request);
-
-        if let Some(monthly_usage_response) = monthly_usage_response {
-            match monthly_usage_response {
-                Ok(response) if response.is_success() => {
-                    if let Some(enrichment) = parse_monthly_usage(&response.body) {
-                        snapshot.spend = Some(merge_spend(snapshot.spend.take(), enrichment));
-                    } else {
-                        source_diagnostics
-                            .push(optional_payload_diagnostic("workspace.monthly-usage"));
-                    }
-                }
-                Ok(response) => source_diagnostics.push(optional_response_diagnostic(
-                    "workspace.monthly-usage",
-                    &response,
-                )),
-                Err(error) => source_diagnostics.push(optional_transport_diagnostic(
-                    "workspace.monthly-usage",
-                    &error,
-                )),
-            }
-        }
-
-        if let Some(workspace_balance_response) = workspace_balance_response {
-            match workspace_balance_response {
-                Ok(response) if response.is_success() => {
-                    if let Some(balance) = parse_balance(&response.body) {
-                        snapshot.credits = Some(CreditsSnapshot {
-                            has_credits: snapshot
-                                .credits
-                                .as_ref()
-                                .and_then(|credits| credits.has_credits),
-                            unlimited: snapshot
-                                .credits
-                                .as_ref()
-                                .and_then(|credits| credits.unlimited),
-                            balance: Some(balance),
-                            currency_code: snapshot
-                                .credits
-                                .as_ref()
-                                .and_then(|credits| credits.currency_code.clone()),
-                            approximate_message_cost: snapshot
-                                .credits
-                                .as_ref()
-                                .and_then(|credits| credits.approximate_message_cost),
-                            limit: snapshot
-                                .credits
-                                .as_ref()
-                                .and_then(|credits| credits.limit.clone()),
-                            balance_read_succeeded: Some(true),
-                            credits_available: Some(balance > 0.0),
-                        });
-                    } else {
-                        source_diagnostics
-                            .push(optional_payload_diagnostic("workspace.remaining-balance"));
-                    }
-                }
-                Ok(response) => source_diagnostics.push(optional_response_diagnostic(
-                    "workspace.remaining-balance",
-                    &response,
-                )),
-                Err(error) => source_diagnostics.push(optional_transport_diagnostic(
-                    "workspace.remaining-balance",
-                    &error,
-                )),
-            }
-        }
         snapshot.source_diagnostics = source_diagnostics;
         let identity = VerifiedIdentity {
             email: Some(account.email.clone()),
@@ -794,36 +677,6 @@ fn parse_spend(root: &Value) -> Option<SpendSnapshot> {
     .then_some(result)
 }
 
-fn parse_monthly_usage(body: &str) -> Option<SpendSnapshot> {
-    let root: Value = serde_json::from_str(body).ok()?;
-    let usage = json_number(&root, &["current_month_usage"]);
-    let limit_object = root.get("effective_monthly_limit");
-    let limit = limit_object.and_then(|value| json_number(value, &["limit"]));
-    let mode = limit_object.and_then(|value| json_string(value, &["enforcement_mode"]));
-    let limit_enabled = mode.map(|mode| {
-        !matches!(
-            mode.to_ascii_lowercase().as_str(),
-            "none" | "off" | "disabled" | "no_limit"
-        )
-    });
-    let used_percent = usage
-        .zip(limit.filter(|value| *value > 0.0))
-        .map(|(usage, limit)| normalize_percent(usage / limit * 100.0));
-    (usage.is_some() || limit.is_some() || used_percent.is_some() || limit_enabled.is_some())
-        .then_some(SpendSnapshot {
-            monthly_usage: usage,
-            monthly_limit: limit,
-            used_percent,
-            limit_enabled,
-            currency_code: None,
-        })
-}
-
-fn parse_balance(body: &str) -> Option<f64> {
-    let root: Value = serde_json::from_str(body).ok()?;
-    json_number(&root, &["balance"]).map(|value| value.max(0.0))
-}
-
 fn parse_credit_inventory(body: &str) -> Option<UsageCreditInventory> {
     let root: Value = serde_json::from_str(body).ok()?;
     let entries = root.get("credits")?.as_array()?;
@@ -877,55 +730,6 @@ fn epoch_or_rfc3339(value: &Value) -> Option<DateTime<Utc>> {
     }
 }
 
-fn merge_spend(current: Option<SpendSnapshot>, enrichment: SpendSnapshot) -> SpendSnapshot {
-    let Some(current) = current else {
-        return enrichment;
-    };
-    let currencies_match = match (
-        current.currency_code.as_deref(),
-        enrichment.currency_code.as_deref(),
-    ) {
-        (Some(current), Some(enrichment)) => current.eq_ignore_ascii_case(enrichment),
-        (None, None) => true,
-        _ => false,
-    };
-    if !currencies_match {
-        return match (
-            current.currency_code.is_some(),
-            enrichment.currency_code.is_some(),
-        ) {
-            (true, false) => current,
-            _ => enrichment,
-        };
-    }
-
-    SpendSnapshot {
-        monthly_usage: enrichment.monthly_usage.or(current.monthly_usage),
-        monthly_limit: enrichment.monthly_limit.or(current.monthly_limit),
-        used_percent: enrichment.used_percent.or(current.used_percent),
-        limit_enabled: enrichment.limit_enabled.or(current.limit_enabled),
-        currency_code: enrichment.currency_code.or(current.currency_code),
-    }
-}
-
-fn is_workspace_plan(plan_type: Option<&str>) -> bool {
-    matches!(
-        plan_type
-            .map(|value| value.trim().to_ascii_lowercase())
-            .as_deref(),
-        Some(
-            "team"
-                | "business"
-                | "education"
-                | "quorum"
-                | "k12"
-                | "enterprise"
-                | "edu"
-                | "free_workspace"
-        )
-    )
-}
-
 fn metric(key: &str, window: &RateLimitWindow) -> UsageMetric {
     UsageMetric {
         key: key.to_owned(),
@@ -939,10 +743,6 @@ fn metric(key: &str, window: &RateLimitWindow) -> UsageMetric {
         reset_label: None,
         metadata: HashMap::new(),
     }
-}
-
-fn percent_encode(value: &str) -> String {
-    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
 fn resolve_base_url(environment: &HashMap<String, String>) -> Result<Url, TransportError> {

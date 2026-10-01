@@ -30,24 +30,12 @@ type Authorization =
 struct Arguments {
     database: Option<PathBuf>,
     label: Option<String>,
-    resolve_workspace_names: bool,
 }
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let Arguments {
-        database,
-        label,
-        resolve_workspace_names,
-    } = parse_arguments()?;
+    let Arguments { database, label } = parse_arguments()?;
 
     let database_path = database.unwrap_or_else(default_accounts_database_path);
-    if resolve_workspace_names && !database_path.is_file() {
-        return Err(format!(
-            "Codex account database does not exist: {}",
-            database_path.display()
-        )
-        .into());
-    }
     if let Some(parent) = database_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -58,10 +46,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let credential_store = Arc::new(WindowsCredentialManagerStore);
     let provider = oauth_definition();
     let authorization = create_authorization(transport.clone(), credential_store.clone());
-    if resolve_workspace_names {
-        return resolve_saved_workspace_names(&database_path, transport, &provider, authorization)
-            .await;
-    }
     let provisional =
         AccountRecord::create("Codex account", "pending@local.invalid", None, OPENAI, None)?;
 
@@ -272,77 +256,6 @@ fn create_authorization(
     )
 }
 
-async fn resolve_saved_workspace_names(
-    database_path: &std::path::Path,
-    transport: Arc<Transport>,
-    provider: &usage_monitor_core::auth::OAuthProviderDefinition,
-    authorization: Authorization,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let store = SqliteStore::open(database_path)?;
-    let accounts = store
-        .list()
-        .await?
-        .into_iter()
-        .filter(|account| {
-            account.provider_id == OPENAI
-                && account.workspace_id.is_some()
-                && account.workspace_name.is_none()
-        })
-        .collect::<Vec<_>>();
-    if accounts.is_empty() {
-        println!("No Codex accounts are missing a workspace name.");
-        return Ok(());
-    }
-
-    let mut updated = 0;
-    let mut unresolved = 0;
-    let mut failed = 0;
-    for account in accounts {
-        let workspace_id = account
-            .workspace_id
-            .as_deref()
-            .expect("filtered account has a workspace id");
-        let tokens = match authorization.access_token(account.id, provider).await {
-            Ok(tokens) => tokens,
-            Err(error) => {
-                failed += 1;
-                eprintln!(
-                    "Workspace name lookup failed for {}: {error}",
-                    account.email
-                );
-                continue;
-            }
-        };
-        match resolve_workspace_name(transport.as_ref(), &tokens.access_token, workspace_id).await {
-            Ok(Some(workspace_name)) => {
-                let named_account = account.with_workspace_name(Some(&workspace_name));
-                store.upsert(&named_account).await?;
-                println!("{} — workspace: {}", account.email, workspace_name);
-                updated += 1;
-            }
-            Ok(None) => {
-                eprintln!(
-                    "Workspace id was not listed for {}; keeping it unchanged.",
-                    account.email
-                );
-                unresolved += 1;
-            }
-            Err(error) => {
-                eprintln!(
-                    "Workspace name lookup failed for {}: {error}",
-                    account.email
-                );
-                failed += 1;
-            }
-        }
-    }
-    println!("Workspace-name lookup: {updated} updated, {unresolved} unresolved, {failed} failed.");
-    if failed > 0 {
-        return Err(format!("workspace-name lookup failed for {failed} Codex account(s)").into());
-    }
-    Ok(())
-}
-
 async fn probe_and_print(
     database_path: &std::path::Path,
     transport: Arc<Transport>,
@@ -469,12 +382,9 @@ fn parse_arguments_from(
                         .into_owned(),
                 );
             }
-            "--resolve-workspace-names" => {
-                arguments.resolve_workspace_names = true;
-            }
             "--help" | "-h" => {
                 println!(
-                    "Usage: usage-monitor-login codex [--database PATH] [--label LABEL]\n       usage-monitor-login codex --resolve-workspace-names [--database PATH]\n\nAdds a Codex account through OpenAI OAuth in the default browser and receives the authorization callback on localhost. OAuth credentials are stored per account in Windows Credential Manager. Workspace names are optionally resolved from OpenAI's account metadata endpoint. Usage is queried from WHAM with that account's bearer token. It does not read browser cookies, Codex auth files, or launch Codex CLI/app-server."
+                    "Usage: usage-monitor-login codex [--database PATH] [--label LABEL]\n\nAdds a Codex account through OpenAI OAuth in the default browser and receives the authorization callback on localhost. OAuth credentials are stored per account in Windows Credential Manager, and the workspace name is read from OpenAI's account metadata. Usage is queried from WHAM with that account's bearer token. It does not read browser cookies, Codex auth files, or launch Codex CLI/app-server."
                 );
                 std::process::exit(0);
             }
@@ -523,15 +433,9 @@ mod tests {
             Some(std::path::Path::new("accounts.db"))
         );
         assert_eq!(arguments.label.as_deref(), Some("Codex Work"));
-
-        let resolve_arguments = parse_arguments_from(
-            ["--resolve-workspace-names", "--database", "accounts.db"].map(OsString::from),
-        )
-        .unwrap();
-        assert!(resolve_arguments.resolve_workspace_names);
-        assert_eq!(
-            resolve_arguments.database.as_deref(),
-            Some(std::path::Path::new("accounts.db"))
+        assert!(
+            parse_arguments_from(["--resolve-workspace-names"].map(OsString::from)).is_err(),
+            "maintenance modes are not part of the sign-in helper"
         );
     }
 

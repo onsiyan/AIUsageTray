@@ -293,7 +293,7 @@ async fn api_adapters_normalize_provider_specific_usage() {
     let result = opencode.probe(&opencode_account).await.unwrap();
     assert_eq!(result.snapshot.unwrap().primary.unwrap().used_percent, 20.0);
 
-    let openai = WhamUsageAdapter::new(transport.clone(), Arc::new(CodexOAuthAuth), false, false)
+    let openai = WhamUsageAdapter::new(transport.clone(), Arc::new(CodexOAuthAuth))
         .unwrap()
         .with_reset_credits(false);
     let openai_account = AccountRecord::create(

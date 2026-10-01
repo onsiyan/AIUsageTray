@@ -81,29 +81,6 @@ fn parses_numeric_reset_and_stable_spark_windows() {
 }
 
 #[test]
-fn spend_enrichment_does_not_merge_amounts_with_different_currencies() {
-    let current = SpendSnapshot {
-        monthly_usage: Some(10.0),
-        monthly_limit: Some(100.0),
-        used_percent: Some(10.0),
-        limit_enabled: Some(true),
-        currency_code: Some("USD".to_owned()),
-    };
-    let enrichment = SpendSnapshot {
-        monthly_usage: Some(20.0),
-        monthly_limit: None,
-        used_percent: None,
-        limit_enabled: None,
-        currency_code: Some("EUR".to_owned()),
-    };
-
-    let merged = merge_spend(Some(current), enrichment);
-    assert_eq!(merged.monthly_usage, Some(20.0));
-    assert_eq!(merged.monthly_limit, None);
-    assert_eq!(merged.currency_code.as_deref(), Some("EUR"));
-}
-
-#[test]
 fn non_spark_extra_prefers_primary_and_uses_a_stable_slug() {
     let account = AccountRecord::create("codex", "codex@example.com", None, OPENAI, None).unwrap();
     let body = r#"{
@@ -195,7 +172,7 @@ async fn account_oauth_bearer_queries_wham_without_cookies_or_session_preflight(
         }],
         ..AccountAuthMaterial::default()
     }));
-    let adapter = WhamUsageAdapter::new(transport.clone(), auth, false, false)
+    let adapter = WhamUsageAdapter::new(transport.clone(), auth)
         .unwrap()
         .with_reset_credits(false);
     let account = AccountRecord::create(
@@ -247,7 +224,7 @@ async fn codex_independent_usage_enrichment_requests_run_concurrently() {
         workspace_enrichment_barrier: tokio::sync::Barrier::new(2),
     });
     let auth = Arc::new(StaticOAuthAuth(oauth_material()));
-    let adapter = WhamUsageAdapter::new(transport, auth, true, true)
+    let adapter = WhamUsageAdapter::new(transport, auth)
         .unwrap()
         .with_reset_credits(true);
     let account = AccountRecord::create(
@@ -268,57 +245,6 @@ async fn codex_independent_usage_enrichment_requests_run_concurrently() {
 }
 
 #[tokio::test]
-async fn optional_endpoint_failures_are_reported_without_failing_codex_usage() {
-    let transport = Arc::new(OptionalEndpointFailureTransport {
-        requests: Mutex::new(Vec::new()),
-    });
-    let auth = Arc::new(StaticOAuthAuth(oauth_material()));
-    let adapter = WhamUsageAdapter::new(transport.clone(), auth, true, true).unwrap();
-    let account = AccountRecord::create(
-        "codex",
-        "codex@example.com",
-        Some("chatgpt-user-1".to_owned()),
-        OPENAI,
-        Some("acct-1".to_owned()),
-    )
-    .unwrap();
-
-    let result = adapter.probe(&account).await.unwrap();
-
-    assert!(result.succeeded());
-    let snapshot = result.snapshot.unwrap();
-    assert_eq!(snapshot.primary.as_ref().unwrap().used_percent, 40.0);
-    assert_eq!(
-        snapshot
-            .source_diagnostics
-            .iter()
-            .map(|diagnostic| diagnostic.source.as_str())
-            .collect::<Vec<_>>(),
-        [
-            "wham.reset-credits",
-            "workspace.monthly-usage",
-            "workspace.remaining-balance",
-        ]
-    );
-    for diagnostic in &snapshot.source_diagnostics {
-        assert_eq!(diagnostic.code, UsageAdapterErrorCode::Forbidden);
-        assert_eq!(diagnostic.http_status_code, Some(403));
-        assert_eq!(diagnostic.retry_after_seconds, Some(17));
-        assert!(!diagnostic.message.contains("private response body"));
-    }
-    let requests = transport.requests.lock().unwrap();
-    assert_eq!(requests.len(), 4);
-    let paths = requests
-        .iter()
-        .map(|request| request.url.path().to_owned())
-        .collect::<Vec<_>>();
-    assert!(paths.contains(
-        &"/backend-api/accounts/acct-1/spend-controls/current-user/monthly-usage".to_owned()
-    ));
-    assert!(paths.contains(&"/backend-api/accounts/acct-1/remaining_balance".to_owned()));
-}
-
-#[tokio::test]
 async fn cookie_only_material_is_rejected_without_a_browser_session_request() {
     let transport = Arc::new(CodexUsageTransport::default());
     let auth = Arc::new(StaticOAuthAuth(AccountAuthMaterial {
@@ -328,7 +254,7 @@ async fn cookie_only_material_is_rejected_without_a_browser_session_request() {
         }],
         ..AccountAuthMaterial::default()
     }));
-    let adapter = WhamUsageAdapter::new(transport.clone(), auth, false, false).unwrap();
+    let adapter = WhamUsageAdapter::new(transport.clone(), auth).unwrap();
     let account = AccountRecord::create("codex", "codex@example.com", None, OPENAI, None).unwrap();
 
     let result = adapter.probe(&account).await.unwrap();
@@ -391,6 +317,38 @@ impl AccountAuthMaterialProvider for StaticOAuthAuth {
 #[derive(Default)]
 struct CodexUsageTransport {
     requests: Mutex<Vec<UsageHttpRequest>>,
+}
+
+#[tokio::test]
+async fn reset_credit_failures_are_reported_without_failing_codex_usage() {
+    let transport = Arc::new(OptionalEndpointFailureTransport {
+        requests: Mutex::new(Vec::new()),
+    });
+    let auth = Arc::new(StaticOAuthAuth(oauth_material()));
+    let adapter = WhamUsageAdapter::new(transport.clone(), auth).unwrap();
+    let account = AccountRecord::create(
+        "codex",
+        "codex@example.com",
+        Some("chatgpt-user-1".to_owned()),
+        OPENAI,
+        Some("acct-1".to_owned()),
+    )
+    .unwrap();
+
+    let result = adapter.probe(&account).await.unwrap();
+
+    assert!(result.succeeded());
+    let snapshot = result.snapshot.unwrap();
+    assert_eq!(snapshot.primary.as_ref().unwrap().used_percent, 40.0);
+    let [diagnostic] = snapshot.source_diagnostics.as_slice() else {
+        panic!("expected one diagnostic: {:?}", snapshot.source_diagnostics);
+    };
+    assert_eq!(diagnostic.source, "wham.reset-credits");
+    assert_eq!(diagnostic.code, UsageAdapterErrorCode::Forbidden);
+    assert_eq!(diagnostic.http_status_code, Some(403));
+    assert_eq!(diagnostic.retry_after_seconds, Some(17));
+    assert!(!diagnostic.message.contains("private response body"));
+    assert_eq!(transport.requests.lock().unwrap().len(), 2);
 }
 
 struct OptionalEndpointFailureTransport {
@@ -488,7 +446,7 @@ impl UsageHttpTransport for HtmlUsageTransport {
 #[tokio::test]
 async fn non_json_usage_body_is_an_invalid_payload_not_a_network_failure() {
     let auth = Arc::new(StaticOAuthAuth(oauth_material()));
-    let adapter = WhamUsageAdapter::new(Arc::new(HtmlUsageTransport), auth, false, false)
+    let adapter = WhamUsageAdapter::new(Arc::new(HtmlUsageTransport), auth)
         .unwrap()
         .with_reset_credits(false);
     let account = AccountRecord::create("codex", "codex@example.com", None, OPENAI, None).unwrap();

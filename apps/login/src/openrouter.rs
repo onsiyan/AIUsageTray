@@ -1,11 +1,11 @@
-//! Exercise the real OpenRouter API-key flow without putting secrets in the
+//! Add an OpenRouter account from its API key without putting secrets in the
 //! SQLite database or on the command line.
 //!
 //! The primary key is read from `OPENROUTER_API_KEY` (or from stdin with
-//! `--api-key-stdin`) and the optional management key is read from
-//! `OPENROUTER_MANAGEMENT_API_KEY`. Both are written only to the Windows
-//! Credential Manager account namespace before the normal runtime refreshes
-//! the account.
+//! `--api-key-stdin`) and the optional management key from
+//! `OPENROUTER_MANAGEMENT_API_KEY` (or the second stdin line with
+//! `--credentials-stdin`). Both are written only to the account's Windows
+//! Credential Manager entry before the normal runtime refreshes it.
 
 use std::{
     env,
@@ -20,7 +20,6 @@ use usage_monitor_core::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
         StoredAuthMaterialProvider,
     },
-    auth_sources::EnvironmentAuthMaterialProvider,
     providers::registry::ProviderRegistryConfig,
     refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
     runtime::UsageRuntime,
@@ -37,9 +36,6 @@ struct Arguments {
     force_new: bool,
     api_key_stdin: bool,
     credentials_stdin: bool,
-    ephemeral: bool,
-    disable_credits: bool,
-    disable_activity: bool,
 }
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -79,70 +75,39 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     account_store.upsert(&account).await?;
 
     let transport = Arc::new(ReqwestUsageHttpTransport::new(Duration::from_secs(45))?);
-    let provider_config = ProviderRegistryConfig {
-        fetch_openrouter_credits: !arguments.disable_credits,
-        fetch_openrouter_activity: !arguments.disable_activity,
-        ..ProviderRegistryConfig::default()
+    let secure_material_store = Arc::new(WindowsCredentialManagerAuthMaterialStore);
+    let material = AccountAuthMaterial {
+        bearer_token: Some(primary_key),
+        secondary_bearer_token: management_key,
+        ..AccountAuthMaterial::default()
     };
-    let refresh_config = RefreshCoordinatorConfig {
-        cadence: RefreshCadence::Manual,
-        ..RefreshCoordinatorConfig::default()
-    };
-    let runtime = if arguments.ephemeral {
-        let mut environment = vec![("OPENROUTER_API_KEY".to_owned(), primary_key)];
-        if let Some(management_key) = management_key.clone() {
-            environment.push(("OPENROUTER_MANAGEMENT_API_KEY".to_owned(), management_key));
-        }
-        let auth = Arc::new(EnvironmentAuthMaterialProvider::with_environment(
-            account.id,
-            environment,
-        )) as Arc<dyn AccountAuthMaterialProvider>;
-        UsageRuntime::from_dependencies(
-            account_store,
-            snapshot_store,
-            transport,
-            auth,
-            provider_config,
-            refresh_config,
-        )?
-    } else {
-        let secure_material_store = Arc::new(WindowsCredentialManagerAuthMaterialStore);
-        let material = AccountAuthMaterial {
-            bearer_token: Some(primary_key),
-            secondary_bearer_token: management_key,
-            ..AccountAuthMaterial::default()
-        };
-        secure_material_store.save(account.id, &material).await?;
-        let auth = Arc::new(StoredAuthMaterialProvider::new(
-            secure_material_store.clone(),
-        )) as Arc<dyn AccountAuthMaterialProvider>;
-        println!("Credential storage: Windows Credential Manager");
-        UsageRuntime::from_dependencies_with_auth_store(
-            account_store,
-            snapshot_store,
-            transport,
-            auth,
-            secure_material_store as Arc<dyn AccountAuthMaterialStore>,
-            provider_config,
-            refresh_config,
-        )?
-    };
-
-    if !arguments.ephemeral {
-        let account = sqlite
-            .get(account.id)
-            .await?
-            .ok_or("OpenRouter account disappeared after its key was saved")?;
-        announce_cli_account_reference(&account);
-    }
+    secure_material_store.save(account.id, &material).await?;
+    let auth = Arc::new(StoredAuthMaterialProvider::new(
+        secure_material_store.clone(),
+    )) as Arc<dyn AccountAuthMaterialProvider>;
+    println!("Credential storage: Windows Credential Manager");
+    let runtime = UsageRuntime::from_dependencies_with_auth_store(
+        account_store,
+        snapshot_store,
+        transport,
+        auth,
+        secure_material_store as Arc<dyn AccountAuthMaterialStore>,
+        ProviderRegistryConfig::default(),
+        RefreshCoordinatorConfig {
+            cadence: RefreshCadence::Manual,
+            ..RefreshCoordinatorConfig::default()
+        },
+    )?;
+    let account = sqlite
+        .get(account.id)
+        .await?
+        .ok_or("OpenRouter account disappeared after its key was saved")?;
+    announce_cli_account_reference(&account);
 
     println!("Database: {}", database_path.display());
     println!("Account: {}", account.label);
     if has_management_key {
         println!("Management API key: provided for optional Activity only");
-    }
-    if arguments.ephemeral {
-        println!("Credential storage: memory-only for this run");
     }
 
     let outcome = runtime
@@ -194,7 +159,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             format_number(credits.balance),
             format_bool(credits.credits_available)
         );
-    } else if !arguments.disable_credits {
+    } else {
         println!("  credits: unavailable (the selected key may not have management access)");
     }
 
@@ -305,12 +270,9 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
             "--new" => arguments.force_new = true,
             "--api-key-stdin" => arguments.api_key_stdin = true,
             "--credentials-stdin" => arguments.credentials_stdin = true,
-            "--ephemeral" => arguments.ephemeral = true,
-            "--no-credits" => arguments.disable_credits = true,
-            "--no-activity" => arguments.disable_activity = true,
             "--help" | "-h" => {
                 println!(
-                    "Usage: usage-monitor-login openrouter [--database PATH] [--label LABEL] [--new] [--api-key-stdin | --credentials-stdin] [--ephemeral] [--no-credits] [--no-activity]\n\nReads OpenRouter credentials without printing them and runs the real account-scoped usage probe. By default the key is stored in Windows Credential Manager; --ephemeral keeps it memory-only for this run. Set OPENROUTER_MANAGEMENT_API_KEY optionally for Activity. With --credentials-stdin, line 1 is the primary key and line 2 is the optional management key."
+                    "Usage: usage-monitor-login openrouter [--database PATH] [--label LABEL] [--new] [--api-key-stdin | --credentials-stdin]\n\nReads OpenRouter credentials without printing them, stores them in Windows Credential Manager, and runs the account's usage probe. Set OPENROUTER_MANAGEMENT_API_KEY optionally for Activity. With --credentials-stdin, line 1 is the primary key and line 2 is the optional management key."
                 );
                 std::process::exit(0);
             }
