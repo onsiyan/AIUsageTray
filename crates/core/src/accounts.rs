@@ -78,20 +78,10 @@ pub struct AccountRecord {
     pub updated_at_utc: DateTime<Utc>,
     pub status: AccountStatus,
     pub provider_id: String,
-    /// Browser family paired with `browser_profile_id` for account-scoped,
-    /// non-interactive session re-import. Stored as a stable id so core does
-    /// not depend on a platform-specific browser crate.
-    #[serde(default)]
-    pub browser_kind: Option<String>,
-    pub browser_profile_id: Option<String>,
     pub workspace_id: Option<String>,
     /// Provider-supplied display name for the selected workspace, when available.
     #[serde(default)]
     pub workspace_name: Option<String>,
-    /// Legacy metadata retained for SQLite compatibility. The Codex adapter
-    /// does not read this path or use native Codex processes as a source.
-    #[serde(default)]
-    pub codex_home: Option<String>,
     /// Optional user-defined display name. Provider labels and identity remain
     /// unchanged when this is set or cleared.
     #[serde(default)]
@@ -124,11 +114,8 @@ impl AccountRecord {
             updated_at_utc: now,
             status: AccountStatus::Active,
             provider_id,
-            browser_kind: None,
-            browser_profile_id: None,
             workspace_id: normalize_optional(workspace_id),
             workspace_name: None,
-            codex_home: None,
             alias: None,
             account_ref: None,
         })
@@ -175,16 +162,6 @@ impl AccountRecord {
             || next.provider_account_id != self.provider_account_id
             || next.status != self.status;
         Ok(changed.then_some(next))
-    }
-
-    pub fn with_codex_home(&self, codex_home: Option<&str>) -> Self {
-        let mut next = self.clone();
-        next.codex_home = codex_home
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned);
-        next.updated_at_utc = Utc::now();
-        next
     }
 
     /// Pins a browser-backed account to the workspace that was selected by

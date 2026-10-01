@@ -94,7 +94,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("Claude login belongs to {}, not {}", email, expected_email).into());
     }
 
-    let mut account = if arguments.login {
+    let account = if arguments.login {
         find_or_create_account(
             account_store.as_ref(),
             &identity,
@@ -105,8 +105,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         find_existing_account(account_store.as_ref(), arguments.email.as_deref()).await?
     };
-    account.browser_kind = None;
-    account.browser_profile_id = None;
     account_store.upsert(&account).await?;
 
     secure_material_store.save(account.id, &material).await?;
