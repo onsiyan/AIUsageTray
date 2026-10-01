@@ -31,6 +31,17 @@ All notable changes to this project are documented here. The format follows
   tokens, concurrent Antigravity requests, and a cached Cloud Code project
   lookup.
 
+### Removed
+
+- Sources and options no flow could reach: the Claude web-session, Admin
+  API, and Claude Code CLI sources; the Antigravity local language-server
+  source; the OpenCode Go automatic mode and local history estimate; the
+  OpenAI workspace spend and balance requests; browser cookie import and
+  the browser bridge extension; environment and local-file credential
+  sources; and the sign-in helper's manual-only options.
+- Adaptive refresh signals no host sent; automatic refresh is now every
+  30 minutes plus right after each known reset.
+
 ### Fixed
 
 - One tray click always brings the popup forward.

@@ -18,8 +18,9 @@ credentials, so it treats credential handling as a security boundary.
   without the expected state. OpenRouter keys are read from stdin or the
   environment and are never accepted as command-line arguments.
 - **Account isolation.** A credential is only used for the account it
-  identifies. Ambient environment keys, provider files, and CLI sessions are
-  never applied to a different account.
+  identifies, read from that account's Credential Manager entry (or, while a
+  Codex account is linked, from Codex's own `auth.json`). Environment keys,
+  CLI sessions, and browser cookies are never used as usage credentials.
 - **Logs and output** never include tokens, keys, or cookies; errors returned by
   sign-in helpers are redacted before they are shown.
 

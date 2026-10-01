@@ -15,16 +15,13 @@ apps/
   login/                usage-monitor-login: per-provider sign-in flows run by the CLI
 crates/
   core/                 Provider-neutral accounts, OAuth, storage, refresh, and provider adapters
-  platform-windows/     Credential Manager, browser sessions, and desktop-app integration
-extensions/
-  browser-bridge/       Browser extension used by the OpenCode Go console sign-in
-docs/                   Research notes
+  platform-windows/     Credential Manager and desktop-app integration
 ```
 
 `usage-monitor-core` holds everything that is not Windows-specific:
 account/usage contracts, the HTTP transport, OAuth with PKCE and loopback
 callbacks, SQLite storage, the provider adapters, and the refresh coordinator
-(coalesced per-account flights, bounded concurrency, adaptive cadence,
+(coalesced per-account flights, bounded concurrency, a 30-minute cadence,
 reset-boundary refreshes, and last-good snapshot retention).
 
 ## Getting started
@@ -64,9 +61,10 @@ selects an account; `--provider` or `--workspace` disambiguates.
 to stderr. Exit codes: 2 invalid arguments, 3 no matching account, 4 ambiguous
 selector, 5 removal not confirmed, 6 failed or partial refresh, 1 other errors.
 `usage get` refreshes before returning; if the provider fails, the last good
-snapshot is returned marked stale. `usage watch` keeps refreshing on the adaptive
-cadence until stopped. `account remove` deletes local data and saved
-credentials but does not revoke provider access.
+snapshot is returned marked stale. `usage watch` refreshes every account every
+30 minutes, and again right after each known window reset, until stopped.
+`account remove` deletes local data and saved credentials but does not revoke
+provider access.
 
 ## Accounts and sign-in
 
@@ -74,14 +72,14 @@ credentials but does not revoke provider access.
 |---|---|---|
 | Codex | OpenAI OAuth + PKCE, localhost callback (port 1455, fallback 1457) | WHAM usage API with the account's workspace id |
 | Claude | Claude OAuth + PKCE, localhost callback | OAuth usage API, profile for identity and plan |
-| Antigravity | Google OAuth + PKCE | Local language server when it is signed in to the same account, otherwise Cloud Code APIs |
-| OpenCode Go | Console sign-in through `extensions/browser-bridge`, or API key | Console, local history estimate, or Zen Go API |
+| Antigravity | Google OAuth + PKCE | Cloud Code APIs (models, grouped quota summary, project and tier) |
+| OpenCode Go | OpenCode Console device authorization | Console (the Zen Go API for an OpenCode API key) |
 | OpenRouter | API key (optional management key) via environment or stdin | `/key`, `/credits`, `/activity` |
 
-Every credential is scoped to one local account. Environment keys, local
-provider files, and CLI sessions are never applied to a different account than
-the one they identify; a generic `OPENAI_API_KEY` or Claude API key is not used
-as a usage credential.
+Every credential is scoped to one local account and is only read from that
+account's Credential Manager entry (or Codex's `auth.json` while that account
+is linked to Codex, below); environment variables, CLI sessions, and browser
+cookies are never used as usage credentials.
 
 ### Switching the desktop apps
 
@@ -108,7 +106,7 @@ it is replaced.
 |---|---|
 | Accounts and usage history (no secrets) | `%LOCALAPPDATA%\UsageMonitor\accounts.db` |
 | OAuth refresh credentials | Credential Manager `UsageMonitor/OAuth/<account-id>` |
-| API keys and imported sessions | Credential Manager `UsageMonitor/Auth/<account-id>` |
+| API keys and console sessions | Credential Manager `UsageMonitor/Auth/<account-id>` |
 | Codex link and `auth.json` backups | `%LOCALAPPDATA%\UsageMonitor\` |
 | Desktop preferences | `%APPDATA%\UsageMonitor\` |
 
