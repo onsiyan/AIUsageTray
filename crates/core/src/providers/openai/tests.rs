@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::{accounts::AccountRecord, transport::UsageHttpRequest, usage::UsageAdapterErrorCode};
 use async_trait::async_trait;

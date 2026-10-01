@@ -1,4 +1,3 @@
-
 use super::*;
 use chrono::{Duration, TimeZone};
 use usage_monitor_core::usage::{RateLimitWindow, UsageWindowKind};

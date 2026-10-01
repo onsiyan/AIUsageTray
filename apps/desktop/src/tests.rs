@@ -1,4 +1,3 @@
-
 use super::*;
 use tray_icon::menu::dpi::{PhysicalPosition, PhysicalSize};
 

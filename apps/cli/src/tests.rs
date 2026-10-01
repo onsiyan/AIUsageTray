@@ -1,4 +1,3 @@
-
 use super::*;
 use usage_monitor_core::{
     accounts::{ANTIGRAVITY, InMemoryAccountStore},
