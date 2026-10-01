@@ -82,7 +82,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let provider_config = ProviderRegistryConfig {
         fetch_openrouter_credits: !arguments.disable_credits,
         fetch_openrouter_activity: !arguments.disable_activity,
-        enable_antigravity_local_probe: false,
         ..ProviderRegistryConfig::default()
     };
     let refresh_config = RefreshCoordinatorConfig {

@@ -35,7 +35,6 @@ pub struct ProviderRegistryConfig {
     /// Optional 30-day Activity enrichment. The key quota remains enabled
     /// even when this management-key-only request is disabled.
     pub fetch_openrouter_activity: bool,
-    pub enable_antigravity_local_probe: bool,
 }
 
 impl Default for ProviderRegistryConfig {
@@ -48,7 +47,6 @@ impl Default for ProviderRegistryConfig {
             opencode_go_source_mode: OpenCodeGoSourceMode::Web,
             fetch_openrouter_credits: true,
             fetch_openrouter_activity: true,
-            enable_antigravity_local_probe: true,
         }
     }
 }
@@ -58,10 +56,7 @@ impl ProviderRegistryConfig {
     /// credential that account actually has. Shared by every host (CLI and
     /// tray) so their source selection cannot drift apart.
     pub fn for_account(account: &AccountRecord, material: Option<&AccountAuthMaterial>) -> Self {
-        let mut config = Self {
-            enable_antigravity_local_probe: false,
-            ..Self::default()
-        };
+        let mut config = Self::default();
         if account.provider_id == OPENCODE_GO {
             // A console sign-in (device authorization) leaves a refresh token;
             // anything else is an OpenCode API key.
@@ -172,17 +167,10 @@ impl ProviderRegistry {
             )?
             .with_activity(config.fetch_openrouter_activity),
         ) as Arc<dyn UsageAdapter>;
-        let antigravity = if config.enable_antigravity_local_probe {
-            Arc::new(AntigravityUsageAdapter::new(
-                Arc::clone(&transport),
-                Arc::clone(&auth),
-            )?) as Arc<dyn UsageAdapter>
-        } else {
-            Arc::new(AntigravityUsageAdapter::new_without_local_probe(
-                Arc::clone(&transport),
-                Arc::clone(&auth),
-            )?) as Arc<dyn UsageAdapter>
-        };
+        let antigravity = Arc::new(AntigravityUsageAdapter::new(
+            Arc::clone(&transport),
+            Arc::clone(&auth),
+        )?) as Arc<dyn UsageAdapter>;
 
         Self::from_adapters([openai, claude, opencode_go, openrouter, antigravity])
     }
@@ -301,15 +289,9 @@ mod tests {
         ) as Arc<dyn UsageHttpTransport>;
         let auth = Arc::new(crate::auth::EmptyAuthMaterialProvider)
             as Arc<dyn AccountAuthMaterialProvider>;
-        let registry = ProviderRegistry::from_dependencies(
-            transport,
-            auth,
-            ProviderRegistryConfig {
-                enable_antigravity_local_probe: false,
-                ..ProviderRegistryConfig::default()
-            },
-        )
-        .unwrap();
+        let registry =
+            ProviderRegistry::from_dependencies(transport, auth, ProviderRegistryConfig::default())
+                .unwrap();
         assert_eq!(registry.len(), 5);
         assert!(registry.contains(ANTIGRAVITY));
         assert!(registry.contains(OPENCODE_GO));

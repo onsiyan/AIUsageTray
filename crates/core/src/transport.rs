@@ -50,25 +50,8 @@ pub struct ReqwestUsageHttpTransport {
 
 impl ReqwestUsageHttpTransport {
     pub fn new(timeout: std::time::Duration) -> Result<Self, reqwest::Error> {
-        Self::build(timeout, false)
-    }
-
-    /// Creates a transport for the provider's loopback HTTPS endpoint.
-    ///
-    /// The local language server uses a self-signed certificate. This client is
-    /// kept separate from the normal internet client and is only used for
-    /// requests pinned to 127.0.0.1 by the Antigravity local probe.
-    pub fn new_loopback(timeout: std::time::Duration) -> Result<Self, reqwest::Error> {
-        Self::build(timeout, true)
-    }
-
-    fn build(
-        timeout: std::time::Duration,
-        accept_invalid_certificates: bool,
-    ) -> Result<Self, reqwest::Error> {
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .danger_accept_invalid_certs(accept_invalid_certificates)
             .timeout(timeout)
             .build()?;
         Ok(Self { client })

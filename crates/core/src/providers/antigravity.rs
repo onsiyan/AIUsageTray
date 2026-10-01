@@ -1,14 +1,11 @@
 use crate::{
-    accounts::{ANTIGRAVITY, AccountId, AccountRecord, VerifiedIdentity},
+    accounts::{ANTIGRAVITY, AccountId, AccountRecord},
     auth::{AccountAuthMaterial, AccountAuthMaterialProvider, AuthError, OAuthProviderDefinition},
     providers::shared::{
         bearer_headers, invalid_payload, json_number, json_string, map_antigravity_http_error,
         missing_auth,
     },
-    transport::{
-        ReqwestUsageHttpTransport, TransportError, UsageHttpRequest, UsageHttpResponse,
-        UsageHttpTransport,
-    },
+    transport::{TransportError, UsageHttpRequest, UsageHttpResponse, UsageHttpTransport},
     usage::{
         AdditionalRateLimitWindow, RateLimitWindow, UsageAdapter, UsageMetric, UsageProbeResult,
         UsageSnapshot, UsageSourceDiagnostic, UsageWindowKind,
@@ -19,18 +16,13 @@ use chrono::{DateTime, Utc};
 use reqwest::Method;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
-use std::process::Command;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use url::Url;
-mod local;
 mod quotas;
 mod remote;
 mod summary;
 
-// Only the tests reach the local source's helpers through this module.
-#[cfg(test)]
-use local::*;
 use quotas::*;
 use remote::*;
 use summary::*;
@@ -79,7 +71,6 @@ pub fn oauth_definition() -> OAuthProviderDefinition {
 pub struct AntigravityUsageAdapter {
     transport: Arc<dyn UsageHttpTransport>,
     auth: Arc<dyn AccountAuthMaterialProvider>,
-    local_transport: Option<Arc<dyn UsageHttpTransport>>,
     base_urls: Vec<Url>,
     user_agent: String,
 }
@@ -89,42 +80,15 @@ impl AntigravityUsageAdapter {
         transport: Arc<dyn UsageHttpTransport>,
         auth: Arc<dyn AccountAuthMaterialProvider>,
     ) -> Result<Self, TransportError> {
-        Self::with_local_probe(transport, auth, true)
-    }
-
-    /// Constructs the adapter without touching a running local provider.
-    ///
-    /// This is useful for deterministic contract tests and for callers that
-    /// explicitly want the OAuth/API path only.
-    pub fn new_without_local_probe(
-        transport: Arc<dyn UsageHttpTransport>,
-        auth: Arc<dyn AccountAuthMaterialProvider>,
-    ) -> Result<Self, TransportError> {
-        Self::with_local_probe(transport, auth, false)
-    }
-
-    fn with_local_probe(
-        transport: Arc<dyn UsageHttpTransport>,
-        auth: Arc<dyn AccountAuthMaterialProvider>,
-        enable_local_probe: bool,
-    ) -> Result<Self, TransportError> {
         let base_urls = REMOTE_BASE_URLS
             .iter()
             .map(|value| {
                 Url::parse(value).map_err(|error| TransportError::InvalidUrl(error.to_string()))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let local_transport = if enable_local_probe {
-            Some(Arc::new(ReqwestUsageHttpTransport::new_loopback(
-                Duration::from_secs(12),
-            )?) as Arc<dyn UsageHttpTransport>)
-        } else {
-            None
-        };
         Ok(Self {
             transport,
             auth,
-            local_transport,
             base_urls,
             user_agent: "antigravity".to_owned(),
         })
@@ -138,10 +102,6 @@ impl UsageAdapter for AntigravityUsageAdapter {
     }
 
     async fn probe(&self, account: &AccountRecord) -> Result<UsageProbeResult, TransportError> {
-        if let Some(result) = self.probe_local(account).await {
-            return Ok(result);
-        }
-
         let material = match self.auth.get(account).await {
             Ok(Some(material)) => material,
             Ok(None) => return Ok(missing_auth("Antigravity")),
@@ -372,13 +332,6 @@ impl UsageAdapter for AntigravityUsageAdapter {
     }
 }
 
-const LOCAL_QUOTA_SUMMARY_PATH: &str =
-    "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary";
-const LOCAL_USER_STATUS_PATH: &str = "/exa.language_server_pb.LanguageServerService/GetUserStatus";
-const LOCAL_COMMAND_MODEL_CONFIGS_PATH: &str =
-    "/exa.language_server_pb.LanguageServerService/GetCommandModelConfigs";
-const ANTIGRAVITY_PROCESS_PATH_PATTERN: &str =
-    r"(?i)[\\/](?:antigravity|antigravity-ide)(?:[\\/]|$)";
 const REMOTE_BASE_URLS: [&str; 3] = [
     "https://daily-cloudcode-pa.sandbox.googleapis.com/",
     "https://daily-cloudcode-pa.googleapis.com/",

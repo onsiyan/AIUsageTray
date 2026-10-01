@@ -6,19 +6,6 @@ use crate::{
 use chrono::{DateTime, Duration, Utc};
 use std::collections::BTreeMap;
 
-/// Prevents a console window from flashing when a GUI (windows-subsystem)
-/// host runs a helper process during a background refresh.
-pub fn hide_console_window(command: &mut std::process::Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    #[cfg(not(windows))]
-    let _ = command;
-}
-
 pub fn bearer_headers(
     material: &AccountAuthMaterial,
     user_agent: &str,

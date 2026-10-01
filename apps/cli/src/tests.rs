@@ -499,7 +499,7 @@ fn refresh_mode_follows_each_accounts_saved_credential() {
         OpenCodeGoSourceMode::Api
     );
 
-    let antigravity = account(
+    let _antigravity = account(
         ANTIGRAVITY,
         "ag1",
         "Google",
@@ -507,7 +507,6 @@ fn refresh_mode_follows_each_accounts_saved_credential() {
         None,
         None,
     );
-    assert!(!provider_config_for(&antigravity, None).enable_antigravity_local_probe);
 }
 
 struct ModeMarker(&'static str, &'static str);

@@ -63,8 +63,7 @@ async fn loopback_callback_validates_state_and_returns_code() {
 async fn antigravity_adapter_keeps_rpc_colon_in_https_path() {
     let transport = Arc::new(FakeTransport::default());
     let auth = Arc::new(StaticAuth);
-    let adapter =
-        AntigravityUsageAdapter::new_without_local_probe(transport.clone(), auth).unwrap();
+    let adapter = AntigravityUsageAdapter::new(transport.clone(), auth).unwrap();
     let account =
         AccountRecord::create("test", "test@example.com", None, ANTIGRAVITY, None).unwrap();
 
@@ -85,7 +84,7 @@ async fn antigravity_adapter_keeps_rpc_colon_in_https_path() {
 async fn antigravity_remote_keeps_project_id_out_of_google_identity() {
     let transport = Arc::new(FakeTransport::default());
     let auth = Arc::new(StaticAuth);
-    let adapter = AntigravityUsageAdapter::new_without_local_probe(transport, auth).unwrap();
+    let adapter = AntigravityUsageAdapter::new(transport, auth).unwrap();
     let account = AccountRecord::create(
         "test",
         "test@example.com",
@@ -110,8 +109,7 @@ async fn antigravity_remote_keeps_project_id_out_of_google_identity() {
 async fn antigravity_remote_fallback_uses_authoritative_summary() {
     let transport = Arc::new(FallbackTransport::default());
     let auth = Arc::new(StaticAuth);
-    let adapter =
-        AntigravityUsageAdapter::new_without_local_probe(transport.clone(), auth).unwrap();
+    let adapter = AntigravityUsageAdapter::new(transport.clone(), auth).unwrap();
     let account =
         AccountRecord::create("test", "test@example.com", None, ANTIGRAVITY, None).unwrap();
 
@@ -160,8 +158,7 @@ async fn antigravity_remote_fallback_uses_authoritative_summary() {
 async fn antigravity_remote_verifies_an_all_full_model_catalog() {
     let transport = Arc::new(VerifiedQuotaTransport::default());
     let auth = Arc::new(StaticAuth);
-    let adapter =
-        AntigravityUsageAdapter::new_without_local_probe(transport.clone(), auth).unwrap();
+    let adapter = AntigravityUsageAdapter::new(transport.clone(), auth).unwrap();
     let account =
         AccountRecord::create("test", "test@example.com", None, ANTIGRAVITY, None).unwrap();
 

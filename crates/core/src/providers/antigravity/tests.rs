@@ -52,11 +52,8 @@ async fn quota_summary_tries_next_host_after_forbidden_response() {
         requested_hosts: Mutex::new(Vec::new()),
         requested_user_agents: Mutex::new(Vec::new()),
     });
-    let adapter = AntigravityUsageAdapter::new_without_local_probe(
-        transport.clone(),
-        Arc::new(StaticAntigravityAuth),
-    )
-    .unwrap();
+    let adapter =
+        AntigravityUsageAdapter::new(transport.clone(), Arc::new(StaticAntigravityAuth)).unwrap();
     let response = adapter
         .post_remote_best_effort(
             "v1internal:retrieveUserQuotaSummary",
@@ -406,41 +403,6 @@ fn subscription_name_falls_back_to_current_tier_and_allowed_free_tier() {
 }
 
 #[test]
-fn local_user_tier_name_beats_legacy_plan_name() {
-    let root = json!({
-        "userStatus": {
-            "userTier": {"id": "g1-pro-tier", "name": "Google AI Pro"},
-            "planStatus": {"planInfo": {"planName": "Pro"}}
-        }
-    });
-
-    assert_eq!(
-        find_local_plan_type(&root).as_deref(),
-        Some("Google AI Pro")
-    );
-}
-
-#[test]
-fn local_model_fallback_accepts_command_config_envelope() {
-    let root = json!({
-        "response": {
-            "clientModelConfigs": [{
-                "modelOrAlias": {"model": "gemini-pro"},
-                "label": "Gemini Pro",
-                "quotaInfo": {
-                    "remainingFraction": 0.62,
-                    "resetTime": "2030-01-01T05:00:00Z"
-                }
-            }]
-        }
-    });
-    let quotas = parse_local_model_quotas(&root);
-    assert_eq!(quotas.len(), 1);
-    assert_eq!(quotas[0].key, "gemini-pro");
-    assert_eq!(quotas[0].used_percent, 38.0);
-}
-
-#[test]
 fn model_quota_snapshot_uses_constrained_gemini_and_claude_gpt_representatives() {
     let account = AccountRecord::create("one", "one@example.com", None, ANTIGRAVITY, None).unwrap();
     let quotas = vec![
@@ -737,91 +699,6 @@ fn unknown_model_fallback_is_local_only() {
     );
     assert!(remote.primary.is_none());
     assert_eq!(remote.metrics.len(), 1);
-}
-
-#[test]
-fn local_identity_matching_is_required_for_account_scoped_usage() {
-    let account = AccountRecord::create("one", "one@example.com", None, ANTIGRAVITY, None).unwrap();
-    assert!(local_identity_matches(&account, Some("ONE@example.com")));
-    assert!(!local_identity_matches(&account, Some("two@example.com")));
-    assert!(!local_identity_matches(&account, None));
-}
-
-#[test]
-fn local_process_filter_requires_an_antigravity_path_segment() {
-    let pattern = regex::Regex::new(ANTIGRAVITY_PROCESS_PATH_PATTERN).unwrap();
-
-    assert!(pattern.is_match(
-        r"C:\Users\user\AppData\Local\Programs\antigravity\resources\bin\language_server.exe"
-    ));
-    assert!(pattern.is_match(r"--app_data_dir=C:\Users\user\AppData\Roaming\Antigravity-IDE"));
-    assert!(!pattern.is_match(
-            r"C:\Program Files\OtherEditor\resources\bin\language_server.exe --app_data_dir C:\Users\user\OtherEditor"
-        ));
-    assert!(
-        !pattern.is_match(r"C:\Program Files\notantigravity\resources\bin\language_server.exe")
-    );
-}
-
-#[test]
-fn local_snapshot_ranking_prefers_complete_quota_summaries() {
-    let complete = parse_quota_summary(&json!({
-        "groups": [
-            {
-                "displayName": "Gemini Models",
-                "buckets": [
-                    {"bucketId": "gemini-5h", "remainingFraction": 0.92},
-                    {"bucketId": "gemini-weekly", "remainingFraction": 0.71}
-                ]
-            },
-            {
-                "displayName": "Claude and GPT models",
-                "buckets": [
-                    {"bucketId": "3p-5h", "remainingFraction": 0.83},
-                    {"bucketId": "3p-weekly", "remainingFraction": 0.64}
-                ]
-            }
-        ]
-    }));
-    let sparse = parse_quota_summary(&json!({
-        "groups": [{
-            "displayName": "Gemini Models",
-            "buckets": [{"bucketId": "gemini-5h", "remainingFraction": 0.92}]
-        }]
-    }));
-    let model_fallback = vec![to_quota(
-        "gemini-pro",
-        "Gemini Pro".to_owned(),
-        Some(0.92),
-        None,
-    )];
-
-    let complete_score = local_snapshot_score(
-        Some(&complete),
-        &[],
-        Some("one@example.com"),
-        Some("Google AI Pro"),
-    );
-    let sparse_score = local_snapshot_score(Some(&sparse), &[], Some("one@example.com"), None);
-    let fallback_score = local_snapshot_score(
-        None,
-        &model_fallback,
-        Some("one@example.com"),
-        Some("Google AI Pro"),
-    );
-
-    assert!(complete_score > sparse_score);
-    assert!(sparse_score > fallback_score);
-}
-
-#[test]
-fn local_probe_candidate_selection_keeps_the_highest_score() {
-    let mut best = None;
-    keep_best_candidate(&mut best, 14, "model-fallback");
-    keep_best_candidate(&mut best, 1_107, "complete-summary");
-    keep_best_candidate(&mut best, 1_033, "sparse-summary");
-
-    assert_eq!(best, Some((1_107, "complete-summary")));
 }
 
 #[test]
