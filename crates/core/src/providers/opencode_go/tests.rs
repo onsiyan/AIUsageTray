@@ -154,7 +154,7 @@ async fn console_usage_accepts_an_account_scoped_oauth_bearer_without_cookies() 
         })),
     )
     .unwrap()
-    .with_source_mode(OpenCodeGoSourceMode::Automatic);
+    .with_source_mode(OpenCodeGoSourceMode::Web);
 
     let result = adapter.probe(&console_probe_account()).await.unwrap();
 

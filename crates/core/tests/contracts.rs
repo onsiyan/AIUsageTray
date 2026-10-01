@@ -18,7 +18,7 @@ use usage_monitor_core::{
     providers::antigravity::AntigravityUsageAdapter,
     providers::claude::ClaudeUsageAdapter,
     providers::openai::WhamUsageAdapter,
-    providers::opencode_go::OpenCodeGoUsageAdapter,
+    providers::opencode_go::{OpenCodeGoSourceMode, OpenCodeGoUsageAdapter},
     providers::openrouter::OpenRouterUsageAdapter,
     storage::SqliteStore,
     transport::{TransportError, UsageHttpRequest, UsageHttpResponse, UsageHttpTransport},
@@ -282,7 +282,9 @@ async fn api_adapters_normalize_provider_specific_usage() {
     );
     drop(requests);
 
-    let opencode = OpenCodeGoUsageAdapter::new(transport.clone(), auth.clone()).unwrap();
+    let opencode = OpenCodeGoUsageAdapter::new(transport.clone(), auth.clone())
+        .unwrap()
+        .with_source_mode(OpenCodeGoSourceMode::Api);
     let opencode_account = AccountRecord::create(
         "opencode",
         "opencode@example.com",

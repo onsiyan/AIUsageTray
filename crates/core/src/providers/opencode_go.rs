@@ -1,21 +1,14 @@
 //! OpenCode Go usage sources.
 //!
-//! The provider intentionally mirrors the source separation used by the
-//! reference implementation: the Zen API is authoritative for API keys, the
-//! signed-in console is authoritative for browser sessions, and the local
-//! SQLite history is a device-local estimate that can enrich (but never
-//! replace) account usage.
+//! An account signed in through the OpenCode console (device authorization)
+//! reads its usage from the console; an OpenCode API key reads it from the
+//! Zen Go API. Each source is strict: one never substitutes for the other.
 
 use crate::{
     accounts::{AccountRecord, OPENCODE_GO, VerifiedIdentity},
     auth::{AccountAuthMaterial, AccountAuthMaterialProvider, AuthError},
-    providers::{
-        opencode_go_local::{
-            OpenCodeGoLocalUsage, OpenCodeGoLocalUsageError, OpenCodeGoLocalUsageReader,
-        },
-        shared::{
-            bearer_headers, invalid_payload, json_number, json_string, map_http_error, missing_auth,
-        },
+    providers::shared::{
+        bearer_headers, invalid_payload, json_number, json_string, map_http_error, missing_auth,
     },
     transport::{TransportError, UsageHttpRequest, UsageHttpResponse, UsageHttpTransport},
     usage::{
@@ -44,7 +37,6 @@ const WORKSPACES_SERVER_ID: &str =
     "def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f";
 const BILLING_SERVER_ID: &str = "c83b78a614689c38ebee981f9b39a8b377716db85c1fd7dbab604adc02d3313d";
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
-const LOCAL_SOURCE: &str = "local-estimate";
 const MAX_OPEN_CODE_REDIRECTS: usize = 10;
 const CONSOLE_BILLING_OPTIONAL_JOIN_TIMEOUT: StdDuration = StdDuration::from_millis(250);
 const CONSOLE_BILLING_REQUIRED_TIMEOUT: StdDuration = StdDuration::from_secs(5);
@@ -60,14 +52,11 @@ use snapshot::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum OpenCodeGoSourceMode {
-    /// Local estimate + API for unscoped accounts; web first for cookie-scoped
-    /// accounts, then local history and API as fallbacks.
+    /// The signed-in OpenCode console (the account's console OAuth token).
     #[default]
-    Automatic,
-    /// Require the Zen Go API and a bearer key. No browser or local fallback.
-    Api,
-    /// Require a browser session and use console/web endpoints only.
     Web,
+    /// The Zen Go API with an OpenCode API key.
+    Api,
 }
 
 pub struct OpenCodeGoUsageAdapter {
@@ -75,7 +64,6 @@ pub struct OpenCodeGoUsageAdapter {
     auth: Arc<dyn AccountAuthMaterialProvider>,
     base_url: Url,
     source_mode: OpenCodeGoSourceMode,
-    local_reader: OpenCodeGoLocalUsageReader,
 }
 
 #[derive(Debug, Clone)]
@@ -95,18 +83,12 @@ impl OpenCodeGoUsageAdapter {
             auth,
             base_url: Url::parse("https://opencode.ai/")
                 .map_err(|error| TransportError::InvalidUrl(error.to_string()))?,
-            source_mode: OpenCodeGoSourceMode::Automatic,
-            local_reader: OpenCodeGoLocalUsageReader::from_process(),
+            source_mode: OpenCodeGoSourceMode::default(),
         })
     }
 
     pub fn with_source_mode(mut self, source_mode: OpenCodeGoSourceMode) -> Self {
         self.source_mode = source_mode;
-        self
-    }
-
-    pub fn with_local_reader(mut self, local_reader: OpenCodeGoLocalUsageReader) -> Self {
-        self.local_reader = local_reader;
         self
     }
 
@@ -168,53 +150,6 @@ impl OpenCodeGoUsageAdapter {
             .map_err(|error| TransportError::Serialization(error.to_string()))?;
         Ok(parse_api_snapshot(&root, account))
     }
-
-    fn local_snapshot(
-        &self,
-        account: &AccountRecord,
-        local: &OpenCodeGoLocalUsage,
-    ) -> UsageProbeResult {
-        let mut metrics = local.metrics.clone();
-        metrics.push(window_metric("local-5h", &local.primary, None, None));
-        metrics.push(window_metric("local-weekly", &local.secondary, None, None));
-        metrics.push(window_metric(
-            "local-monthly",
-            &local.monthly.window,
-            None,
-            None,
-        ));
-        let snapshot = UsageSnapshot {
-            account_id: account.id,
-            observed_at_utc: Utc::now(),
-            response_account_id: account.provider_account_id.clone(),
-            plan_type: None,
-            primary: Some(local.primary.clone()),
-            primary_window_kind: None,
-            primary_window_is_synthetic: false,
-            secondary: Some(local.secondary.clone()),
-            additional_windows: vec![local.monthly.clone()],
-            credits: None,
-            credit_inventory: None,
-            spend: Some(local.spend.clone()),
-            observed_email: (!account.email.trim().is_empty()).then(|| account.email.clone()),
-            is_stale: false,
-            stale_reason: None,
-            stale_at_utc: None,
-            metrics,
-            source_diagnostics: vec![],
-            provider_id: OPENCODE_GO.to_owned(),
-            source: Some(LOCAL_SOURCE.to_owned()),
-            data_confidence: "estimated".to_owned(),
-        };
-        UsageProbeResult::success(
-            snapshot,
-            Some(VerifiedIdentity {
-                email: Some(account.email.clone()),
-                provider_account_id: account.provider_account_id.clone(),
-                plan_type: None,
-            }),
-        )
-    }
 }
 
 #[async_trait]
@@ -232,157 +167,9 @@ impl UsageAdapter for OpenCodeGoUsageAdapter {
         };
 
         match self.source_mode {
-            OpenCodeGoSourceMode::Api => return self.probe_api(account, &material).await,
-            OpenCodeGoSourceMode::Web => return self.probe_web(account, &material).await,
-            OpenCodeGoSourceMode::Automatic
-                if material
-                    .oauth_refresh_token
-                    .as_deref()
-                    .is_some_and(|token| !token.trim().is_empty()) =>
-            {
-                return self.probe_web(account, &material).await;
-            }
-            OpenCodeGoSourceMode::Automatic => {}
+            OpenCodeGoSourceMode::Api => self.probe_api(account, &material).await,
+            OpenCodeGoSourceMode::Web => self.probe_web(account, &material).await,
         }
-
-        let scoped = !material.cookies.is_empty() || account.workspace_id.is_some();
-        // Reading the local history scans every stored message; keep that
-        // synchronous SQLite work off the async worker threads.
-        let reader = self.local_reader.clone();
-        let local = tokio::task::spawn_blocking(move || reader.read_from_process(Utc::now()))
-            .await
-            .unwrap_or_else(|error| {
-                Err(OpenCodeGoLocalUsageError::HistoryUnavailable(
-                    error.to_string(),
-                ))
-            });
-        let mut diagnostics = Vec::new();
-        let mut last_failure = None;
-
-        if scoped {
-            if !material.cookies.is_empty() {
-                match self.probe_web(account, &material).await {
-                    Ok(result) if result.succeeded() => return Ok(result),
-                    Ok(result) => {
-                        if let Some(error) = result.error.clone() {
-                            diagnostics.push(diagnostic_from_error("web", &error));
-                            last_failure = Some(result);
-                        }
-                    }
-                    Err(error) => diagnostics.push(transport_diagnostic("web", &error)),
-                }
-            }
-            if let Ok(local) = local.as_ref() {
-                let mut result = self.local_snapshot(account, local);
-                if let Some(snapshot) = result.snapshot.as_mut() {
-                    snapshot.source_diagnostics = diagnostics;
-                }
-                return Ok(result);
-            }
-            if let Err(error) = local {
-                diagnostics.push(diagnostic_from_local_error(&error));
-            }
-            if material.has_bearer_token() {
-                match self.probe_api(account, &material).await {
-                    Ok(mut result) if result.succeeded() => {
-                        if let Some(snapshot) = result.snapshot.as_mut() {
-                            snapshot.source_diagnostics.extend(diagnostics);
-                        }
-                        return Ok(result);
-                    }
-                    Ok(result) => last_failure = Some(result),
-                    Err(error) => diagnostics.push(transport_diagnostic("api", &error)),
-                }
-            }
-        } else {
-            if let Ok(local) = local.as_ref() {
-                if material.has_bearer_token() {
-                    match self.probe_api(account, &material).await {
-                        Ok(mut result) if result.succeeded() => {
-                            let local_result = self.local_snapshot(account, local);
-                            if let (Some(remote), Some(local_snapshot)) =
-                                (result.snapshot.as_mut(), local_result.snapshot)
-                            {
-                                merge_local_estimate(remote, &local_snapshot);
-                            }
-                            return Ok(result);
-                        }
-                        Ok(result) => {
-                            if let Some(error) = result.error.as_ref() {
-                                diagnostics.push(diagnostic_from_error("api", error));
-                            }
-                            let mut local_result = self.local_snapshot(account, local);
-                            if let Some(snapshot) = local_result.snapshot.as_mut() {
-                                snapshot.source_diagnostics = diagnostics;
-                            }
-                            return Ok(local_result);
-                        }
-                        Err(error) => {
-                            diagnostics.push(transport_diagnostic("api", &error));
-                            let mut local_result = self.local_snapshot(account, local);
-                            if let Some(snapshot) = local_result.snapshot.as_mut() {
-                                snapshot.source_diagnostics = diagnostics;
-                            }
-                            return Ok(local_result);
-                        }
-                    }
-                } else {
-                    return Ok(self.local_snapshot(account, local));
-                }
-            } else if let Err(error) = local {
-                diagnostics.push(diagnostic_from_local_error(&error));
-            }
-            if material.has_bearer_token() {
-                match self.probe_api(account, &material).await {
-                    Ok(mut result) if result.succeeded() => {
-                        if let Some(snapshot) = result.snapshot.as_mut() {
-                            snapshot.source_diagnostics.extend(diagnostics);
-                        }
-                        return Ok(result);
-                    }
-                    Ok(result) => last_failure = Some(result),
-                    Err(error) => diagnostics.push(transport_diagnostic("api", &error)),
-                }
-            }
-            if !material.cookies.is_empty() {
-                match self.probe_web(account, &material).await {
-                    Ok(mut result) if result.succeeded() => {
-                        if let Some(snapshot) = result.snapshot.as_mut() {
-                            snapshot.source_diagnostics.extend(diagnostics);
-                        }
-                        return Ok(result);
-                    }
-                    Ok(result) => last_failure = Some(result),
-                    Err(error) => diagnostics.push(transport_diagnostic("web", &error)),
-                }
-            }
-        }
-
-        if let Some(mut result) = last_failure {
-            if let Some(error) = result.error.as_ref() {
-                diagnostics.push(diagnostic_from_error("opencode-go", error));
-            }
-            if let Some(snapshot) = result.snapshot.as_mut() {
-                snapshot.source_diagnostics.extend(diagnostics);
-            }
-            return Ok(result);
-        }
-        if material.has_bearer_token() || !material.cookies.is_empty() {
-            let mut result = invalid_payload("OpenCode Go", "all configured sources failed");
-            if let Some(error) = result.error.as_mut() {
-                let details = diagnostics
-                    .iter()
-                    .map(|item| item.message.clone())
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                if !details.is_empty() {
-                    error.message.push_str(": ");
-                    error.message.push_str(&details);
-                }
-            }
-            return Ok(result);
-        }
-        Ok(missing_auth("OpenCode Go"))
     }
 }
 
@@ -450,27 +237,6 @@ fn transport_diagnostic(source: &str, error: &TransportError) -> UsageSourceDiag
     diagnostic(
         source,
         UsageAdapterErrorCode::TransientHttp,
-        error.to_string(),
-        None,
-    )
-}
-
-fn diagnostic_from_error(
-    source: &str,
-    error: &crate::usage::UsageAdapterError,
-) -> UsageSourceDiagnostic {
-    diagnostic(
-        source,
-        error.code,
-        error.message.clone(),
-        error.http_status_code,
-    )
-}
-
-fn diagnostic_from_local_error(error: &OpenCodeGoLocalUsageError) -> UsageSourceDiagnostic {
-    diagnostic(
-        LOCAL_SOURCE,
-        UsageAdapterErrorCode::UnsupportedProvider,
         error.to_string(),
         None,
     )

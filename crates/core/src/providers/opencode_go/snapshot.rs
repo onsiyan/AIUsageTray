@@ -186,32 +186,6 @@ pub(super) fn enrich_balance(result: &mut UsageProbeResult, balance: Option<f64>
     });
 }
 
-pub(super) fn merge_local_estimate(remote: &mut UsageSnapshot, local: &UsageSnapshot) {
-    let local_metrics = local
-        .metrics
-        .iter()
-        .filter(|metric| metric.metadata.get("scope").map(String::as_str) == Some("device-local"))
-        .cloned();
-    remote.metrics.extend(local_metrics);
-    if remote.spend.is_none() {
-        remote.spend = local.spend.clone();
-    }
-    if remote.primary.is_none() {
-        remote.primary = local.primary.clone();
-    }
-    if remote.secondary.is_none() {
-        remote.secondary = local.secondary.clone();
-    }
-    if remote.additional_windows.is_empty() {
-        remote.additional_windows = local.additional_windows.clone();
-    }
-    remote.source = Some(format!(
-        "{}+{}",
-        remote.source.as_deref().unwrap_or("api"),
-        LOCAL_SOURCE
-    ));
-}
-
 pub(super) fn parse_window(
     value: &Value,
     kind: UsageWindowKind,

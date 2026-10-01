@@ -45,7 +45,7 @@ impl Default for ProviderRegistryConfig {
             fetch_openai_workspace_balance: false,
             fetch_openai_reset_credits: true,
             fetch_claude_account_identity: true,
-            opencode_go_source_mode: OpenCodeGoSourceMode::Automatic,
+            opencode_go_source_mode: OpenCodeGoSourceMode::Web,
             fetch_openrouter_credits: true,
             fetch_openrouter_activity: true,
             enable_antigravity_local_probe: true,
