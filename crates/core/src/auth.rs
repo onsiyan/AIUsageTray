@@ -283,10 +283,6 @@ impl CompositeAuthMaterialProvider {
     pub fn push(&mut self, source: Arc<dyn AccountAuthMaterialProvider>) {
         self.sources.push(source);
     }
-
-    pub fn source_count(&self) -> usize {
-        self.sources.len()
-    }
 }
 
 #[async_trait]
@@ -359,14 +355,6 @@ impl OAuthProviderDefinition {
             user_info_endpoint: None,
             user_info_headers: BTreeMap::new(),
         })
-    }
-
-    pub fn callback_path(&self) -> &str {
-        self.redirect_uri.path().trim_end_matches('/')
-    }
-
-    pub fn callback_port(&self) -> Option<u16> {
-        self.redirect_uri.port_or_known_default()
     }
 }
 

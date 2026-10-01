@@ -205,15 +205,6 @@ pub fn reset_at(value: &serde_json::Value, now: DateTime<Utc>) -> Option<DateTim
     })
 }
 
-pub fn session_key(material: &AccountAuthMaterial) -> Option<String> {
-    material
-        .cookies
-        .iter()
-        .find(|cookie| cookie.name.eq_ignore_ascii_case("sessionKey"))
-        .map(|cookie| cookie.value.clone())
-        .or_else(|| material.bearer_token.clone())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

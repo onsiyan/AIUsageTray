@@ -17,49 +17,6 @@ fn now() -> DateTime<Utc> {
 }
 
 #[test]
-fn adaptive_policy_matches_reset_window_thresholds() {
-    let at = now();
-    let mut signals = AdaptiveRefreshSignals::default();
-    assert_eq!(
-        AdaptiveRefreshPolicy::decide(at, &signals),
-        AdaptiveRefreshDecision {
-            delay: Duration::from_secs(30 * 60),
-            reason: AdaptiveRefreshReason::LongIdle,
-        }
-    );
-    signals.last_interaction_at = Some(at - ChronoDuration::minutes(5));
-    assert_eq!(
-        AdaptiveRefreshPolicy::decide(at, &signals).delay,
-        Duration::from_secs(2 * 60)
-    );
-    signals.last_interaction_at = Some(at - ChronoDuration::minutes(6));
-    assert_eq!(
-        AdaptiveRefreshPolicy::decide(at, &signals).delay,
-        Duration::from_secs(5 * 60)
-    );
-    signals.last_interaction_at = Some(at - ChronoDuration::hours(2));
-    assert_eq!(
-        AdaptiveRefreshPolicy::decide(at, &signals).delay,
-        Duration::from_secs(15 * 60)
-    );
-    signals.last_interaction_at = Some(at - ChronoDuration::hours(4));
-    assert_eq!(
-        AdaptiveRefreshPolicy::decide(at, &signals).delay,
-        Duration::from_secs(30 * 60)
-    );
-    signals.last_coding_activity_at = Some(at - ChronoDuration::minutes(1));
-    assert_eq!(
-        AdaptiveRefreshPolicy::decide(at, &signals).reason,
-        AdaptiveRefreshReason::CodingActivity
-    );
-    signals.low_power_mode_enabled = true;
-    assert_eq!(
-        AdaptiveRefreshPolicy::decide(at, &signals).reason,
-        AdaptiveRefreshReason::Constrained
-    );
-}
-
-#[test]
 fn cloudflare_challenge_retains_usage_without_invalidating_auth() {
     assert!(should_retain_stale(
         &UsageAdapterErrorCode::CloudflareChallenge
@@ -138,7 +95,6 @@ fn reset_boundary_candidate_uses_grace_and_minimum_delay() {
         Duration::from_secs(5 * 60),
         RESET_BOUNDARY_GRACE,
         RESET_BOUNDARY_MINIMUM_DELAY,
-        None,
         &HashSet::new(),
         at,
     )
@@ -1000,7 +956,6 @@ async fn one_reset_pass_covers_every_past_boundary_of_a_stale_snapshot() {
         ),
         Duration::from_secs(30 * 60),
         RESET_BOUNDARY_MINIMUM_DELAY,
-        None,
         at,
     );
     assert!(

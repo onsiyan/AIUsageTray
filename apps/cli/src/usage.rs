@@ -129,7 +129,7 @@ pub(super) async fn run_usage_scheduler(
         snapshot_store,
         Arc::new(providers),
         RefreshCoordinatorConfig {
-            cadence: RefreshCadence::Adaptive,
+            cadence: RefreshCadence::Automatic,
             ..RefreshCoordinatorConfig::default()
         },
     );

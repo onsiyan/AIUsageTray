@@ -31,18 +31,23 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::sync::{Mutex, Notify, Semaphore, watch};
+use tokio::sync::{Mutex, Semaphore, watch};
 
-const LOW_POWER_MINIMUM_INTERVAL: Duration = Duration::from_secs(30 * 60);
+/// How often `RefreshCadence::Automatic` refreshes every account.
+const AUTOMATIC_REFRESH_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const RESET_BOUNDARY_GRACE: Duration = Duration::from_secs(30);
 const RESET_BOUNDARY_MINIMUM_DELAY: Duration = Duration::from_secs(5);
 
-/// Automatic refresh cadence. `Adaptive` is the default.
+/// Background refresh cadence. `Automatic` is the default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefreshCadence {
+    /// Only explicit refreshes.
     Manual,
+    /// Every account on a fixed interval.
     Fixed(Duration),
-    Adaptive,
+    /// Every account every 30 minutes, plus each account again right after
+    /// one of its known usage windows resets.
+    Automatic,
 }
 
 impl RefreshCadence {
@@ -63,90 +68,6 @@ pub enum RefreshReason {
     ResetBoundary,
 }
 
-/// Signals used by the pure adaptive policy. A UI can update these without
-/// knowing anything about timers or provider implementations.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AdaptiveRefreshSignals {
-    pub last_interaction_at: Option<DateTime<Utc>>,
-    pub last_coding_activity_at: Option<DateTime<Utc>>,
-    pub low_power_mode_enabled: bool,
-    pub thermal_constrained: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdaptiveRefreshReason {
-    RecentInteraction,
-    CodingActivity,
-    Warm,
-    Idle,
-    LongIdle,
-    Constrained,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AdaptiveRefreshDecision {
-    pub delay: Duration,
-    pub reason: AdaptiveRefreshReason,
-}
-
-/// Thresholds tuned for the provider reset windows.
-pub struct AdaptiveRefreshPolicy;
-
-impl AdaptiveRefreshPolicy {
-    pub fn decide(now: DateTime<Utc>, signals: &AdaptiveRefreshSignals) -> AdaptiveRefreshDecision {
-        if signals.low_power_mode_enabled || signals.thermal_constrained {
-            return AdaptiveRefreshDecision {
-                delay: Duration::from_secs(30 * 60),
-                reason: AdaptiveRefreshReason::Constrained,
-            };
-        }
-
-        let base = match signals.last_interaction_at {
-            None => AdaptiveRefreshDecision {
-                delay: Duration::from_secs(30 * 60),
-                reason: AdaptiveRefreshReason::LongIdle,
-            },
-            Some(last_interaction_at) => {
-                let age = now.signed_duration_since(last_interaction_at);
-                if age <= ChronoDuration::minutes(5) {
-                    AdaptiveRefreshDecision {
-                        delay: Duration::from_secs(2 * 60),
-                        reason: AdaptiveRefreshReason::RecentInteraction,
-                    }
-                } else if age <= ChronoDuration::hours(1) {
-                    AdaptiveRefreshDecision {
-                        delay: Duration::from_secs(5 * 60),
-                        reason: AdaptiveRefreshReason::Warm,
-                    }
-                } else if age < ChronoDuration::hours(4) {
-                    AdaptiveRefreshDecision {
-                        delay: Duration::from_secs(15 * 60),
-                        reason: AdaptiveRefreshReason::Idle,
-                    }
-                } else {
-                    AdaptiveRefreshDecision {
-                        delay: Duration::from_secs(30 * 60),
-                        reason: AdaptiveRefreshReason::LongIdle,
-                    }
-                }
-            }
-        };
-
-        if let Some(last_coding_activity_at) = signals.last_coding_activity_at {
-            let activity_age = now.signed_duration_since(last_coding_activity_at);
-            if activity_age < ChronoDuration::minutes(5) && base.delay > Duration::from_secs(5 * 60)
-            {
-                return AdaptiveRefreshDecision {
-                    delay: Duration::from_secs(5 * 60),
-                    reason: AdaptiveRefreshReason::CodingActivity,
-                };
-            }
-        }
-
-        base
-    }
-}
-
 /// Configuration for the coordinator and its optional background loop.
 #[derive(Debug, Clone)]
 pub struct RefreshCoordinatorConfig {
@@ -159,7 +80,7 @@ pub struct RefreshCoordinatorConfig {
 impl Default for RefreshCoordinatorConfig {
     fn default() -> Self {
         Self {
-            cadence: RefreshCadence::Adaptive,
+            cadence: RefreshCadence::Automatic,
             max_concurrency: 4,
             reset_boundary_grace: RESET_BOUNDARY_GRACE,
             reset_boundary_minimum_delay: RESET_BOUNDARY_MINIMUM_DELAY,
@@ -246,8 +167,6 @@ pub struct UsageRefreshCoordinator {
     concurrency: Arc<Semaphore>,
     flights: Mutex<HashMap<AccountId, Arc<RefreshFlight>>>,
     config: RefreshCoordinatorConfig,
-    signals: Mutex<AdaptiveRefreshSignals>,
-    wake: Notify,
     shutdown: watch::Sender<bool>,
     /// Per-account high-water mark of reset boundaries already refreshed.
     attempted_reset_boundaries: Mutex<HashMap<AccountId, DateTime<Utc>>>,
@@ -296,8 +215,6 @@ impl UsageRefreshCoordinator {
             concurrency: Arc::new(Semaphore::new(config.max_concurrency)),
             flights: Mutex::new(HashMap::new()),
             config,
-            signals: Mutex::new(AdaptiveRefreshSignals::default()),
-            wake: Notify::new(),
             shutdown,
             attempted_reset_boundaries: Mutex::new(HashMap::new()),
         })
@@ -443,40 +360,14 @@ impl UsageRefreshCoordinator {
         Ok(outcomes)
     }
 
-    // Signal changes use `notify_one` so a change made while the background
-    // loop is busy refreshing is kept as a permit instead of being lost.
-    pub async fn note_interaction(&self, at: DateTime<Utc>) {
-        self.signals.lock().await.last_interaction_at = Some(at);
-        self.wake.notify_one();
-    }
-
-    pub async fn note_coding_activity(&self, at: DateTime<Utc>) {
-        self.signals.lock().await.last_coding_activity_at = Some(at);
-        self.wake.notify_one();
-    }
-
-    pub async fn set_power_state(&self, low_power_mode_enabled: bool, thermal_constrained: bool) {
-        let mut signals = self.signals.lock().await;
-        signals.low_power_mode_enabled = low_power_mode_enabled;
-        signals.thermal_constrained = thermal_constrained;
-        drop(signals);
-        self.wake.notify_one();
-    }
-
-    pub async fn adaptive_decision(&self, now: DateTime<Utc>) -> AdaptiveRefreshDecision {
-        let signals = self.signals.lock().await;
-        AdaptiveRefreshPolicy::decide(now, &signals)
-    }
-
     /// Requests graceful shutdown of a running background loop.
     pub fn shutdown(&self) {
         let _ = self.shutdown.send(true);
-        self.wake.notify_waiters();
     }
 
-    /// Runs the backend timer loop: an immediate pass, then fixed or
-    /// adaptive ticks, with one-shot reset-boundary passes pulled into the
-    /// current normal interval.
+    /// Runs the backend timer loop: an immediate pass, then regular passes on
+    /// the configured cadence, with one-shot reset-boundary passes pulled into
+    /// the current interval.
     pub async fn run(self: Arc<Self>) -> Result<(), RefreshCoordinatorError> {
         let mut snapshots = self
             .full_refresh_pass(HashMap::new(), RefreshReason::Manual)
@@ -487,12 +378,11 @@ impl UsageRefreshCoordinator {
         }
 
         let mut scheduled_at = self
-            .normal_interval(Utc::now())
-            .await
+            .normal_interval()
             .map(|interval| Utc::now() + chrono_from_std(interval));
 
         loop {
-            let Some(interval) = self.normal_interval(Utc::now()).await else {
+            let Some(interval) = self.normal_interval() else {
                 tokio::select! {
                     result = shutdown.changed() => {
                         if result.is_err() || *shutdown.borrow() { return Ok(()); }
@@ -507,12 +397,6 @@ impl UsageRefreshCoordinator {
             }
             let normal_deadline = scheduled_at.expect("scheduled deadline is initialized");
             let attempted_through = self.attempted_reset_boundaries.lock().await.clone();
-            let minimum_automatic_interval = self
-                .signals
-                .lock()
-                .await
-                .low_power_mode_enabled
-                .then_some(LOW_POWER_MINIMUM_INTERVAL);
             let candidate = earliest_reset_boundary_candidate(
                 pending_reset_boundaries(
                     snapshots.values(),
@@ -523,7 +407,6 @@ impl UsageRefreshCoordinator {
                 ),
                 interval,
                 self.config.reset_boundary_minimum_delay,
-                minimum_automatic_interval,
                 now,
             );
             let target = candidate
@@ -534,16 +417,6 @@ impl UsageRefreshCoordinator {
             tokio::select! {
                 result = shutdown.changed() => {
                     if result.is_err() || *shutdown.borrow() { return Ok(()); }
-                    continue;
-                }
-                _ = self.wake.notified() => {
-                    if self.config.cadence == RefreshCadence::Adaptive
-                        && let Some(decision) = self.normal_interval(Utc::now()).await {
-                            let earlier = Utc::now() + chrono_from_std(decision);
-                            if scheduled_at.is_none_or(|scheduled| earlier < scheduled) {
-                                scheduled_at = Some(earlier);
-                            }
-                        }
                     continue;
                 }
                 _ = tokio::time::sleep(sleep_for) => {}
@@ -590,10 +463,7 @@ impl UsageRefreshCoordinator {
                         Utc::now(),
                         interval,
                     )),
-                    RefreshCadence::Adaptive => self
-                        .normal_interval(Utc::now())
-                        .await
-                        .map(|next| Utc::now() + chrono_from_std(next)),
+                    RefreshCadence::Automatic => Some(Utc::now() + chrono_from_std(interval)),
                     RefreshCadence::Manual => None,
                 };
             }
@@ -624,21 +494,12 @@ impl UsageRefreshCoordinator {
         update_snapshot_cache(snapshots, outcomes)
     }
 
-    async fn normal_interval(&self, now: DateTime<Utc>) -> Option<Duration> {
-        let requested = match self.config.cadence {
+    fn normal_interval(&self) -> Option<Duration> {
+        match self.config.cadence {
             RefreshCadence::Manual => None,
             RefreshCadence::Fixed(interval) => Some(interval),
-            RefreshCadence::Adaptive => {
-                let signals = self.signals.lock().await;
-                Some(AdaptiveRefreshPolicy::decide(now, &signals).delay)
-            }
-        }?;
-        let low_power = self.signals.lock().await.low_power_mode_enabled;
-        Some(if low_power {
-            requested.max(LOW_POWER_MINIMUM_INTERVAL)
-        } else {
-            requested
-        })
+            RefreshCadence::Automatic => Some(AUTOMATIC_REFRESH_INTERVAL),
+        }
     }
 
     /// Records every reset boundary that has passed by `at` and returns the
@@ -1139,7 +1000,7 @@ impl UsageRefreshCoordinator {
 }
 
 /// Candidate used by reset-boundary scheduling. `boundary_refresh_at` is the
-/// deduplication key; `refresh_at` includes minimum-delay and low-power rules.
+/// deduplication key; `refresh_at` applies the minimum delay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResetBoundaryRefreshCandidate {
     pub refresh_at: DateTime<Utc>,
@@ -1154,7 +1015,6 @@ pub fn next_reset_boundary_refresh_candidate(
     normal_refresh_interval: Duration,
     reset_boundary_grace: Duration,
     reset_boundary_minimum_delay: Duration,
-    minimum_automatic_refresh_interval: Option<Duration>,
     attempted_boundary_refreshes: &HashSet<DateTime<Utc>>,
     now: DateTime<Utc>,
 ) -> Option<ResetBoundaryRefreshCandidate> {
@@ -1164,7 +1024,6 @@ pub fn next_reset_boundary_refresh_candidate(
         }),
         normal_refresh_interval,
         reset_boundary_minimum_delay,
-        minimum_automatic_refresh_interval,
         now,
     )
 }
@@ -1196,15 +1055,10 @@ fn earliest_reset_boundary_candidate<'a>(
     boundaries: impl Iterator<Item = (&'a UsageSnapshot, DateTime<Utc>)>,
     normal_refresh_interval: Duration,
     reset_boundary_minimum_delay: Duration,
-    minimum_automatic_refresh_interval: Option<Duration>,
     now: DateTime<Utc>,
 ) -> Option<ResetBoundaryRefreshCandidate> {
     let normal_deadline = now + chrono_from_std(normal_refresh_interval);
-    let earliest_allowed = (now + chrono_from_std(reset_boundary_minimum_delay)).max(
-        minimum_automatic_refresh_interval
-            .map(|interval| now + chrono_from_std(interval))
-            .unwrap_or(now),
-    );
+    let earliest_allowed = now + chrono_from_std(reset_boundary_minimum_delay);
     boundaries
         .filter_map(|(_, boundary_refresh_at)| {
             if boundary_refresh_at > normal_deadline {

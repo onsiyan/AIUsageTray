@@ -9,7 +9,7 @@ use crate::{
     auth::{AccountAuthMaterial, AccountAuthMaterialProvider, AuthError},
 };
 use async_trait::async_trait;
-use std::{collections::HashMap, env};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct EnvironmentAuthMaterialProvider {
@@ -18,10 +18,6 @@ pub struct EnvironmentAuthMaterialProvider {
 }
 
 impl EnvironmentAuthMaterialProvider {
-    pub fn from_process(account_id: AccountId) -> Self {
-        Self::with_environment(account_id, env::vars())
-    }
-
     pub fn with_environment(
         account_id: AccountId,
         environment: impl IntoIterator<Item = (String, String)>,
