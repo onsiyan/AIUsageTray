@@ -239,11 +239,11 @@ impl BrowserBridgeSession {
         ) {
             return Err(BrowserBridgeError::Unauthorized);
         }
-        if let Some(origin) = request.headers.get("origin") {
-            if !origin.starts_with("chrome-extension://") && !origin.starts_with("moz-extension://")
-            {
-                return Err(BrowserBridgeError::Unauthorized);
-            }
+        if let Some(origin) = request.headers.get("origin")
+            && !origin.starts_with("chrome-extension://")
+            && !origin.starts_with("moz-extension://")
+        {
+            return Err(BrowserBridgeError::Unauthorized);
         }
         let incoming: BrowserBridgeRequest = serde_json::from_slice(&request.body)?;
         let payload = validate_payload(incoming, &self.provider_id)?;

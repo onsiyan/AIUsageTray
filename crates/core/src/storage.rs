@@ -637,10 +637,10 @@ impl UsageSnapshotStore for SqliteStore {
         else {
             return Ok(None);
         };
-        if let Some(payload) = payload.as_deref() {
-            if let Ok(snapshot) = serde_json::from_str::<UsageSnapshot>(payload) {
-                return Ok(Some(snapshot));
-            }
+        if let Some(payload) = payload.as_deref()
+            && let Ok(snapshot) = serde_json::from_str::<UsageSnapshot>(payload)
+        {
+            return Ok(Some(snapshot));
         }
         let observed_at_utc = parse_datetime(&observed_at)?;
         let metrics = payload

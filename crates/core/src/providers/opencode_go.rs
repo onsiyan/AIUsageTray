@@ -51,21 +51,16 @@ const CONSOLE_BILLING_REQUIRED_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 
 type ConsoleBillingTask = JoinHandle<Result<UsageHttpResponse, TransportError>>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum OpenCodeGoSourceMode {
     /// Local estimate + API for unscoped accounts; web first for cookie-scoped
     /// accounts, then local history and API as fallbacks.
+    #[default]
     Automatic,
     /// Require the Zen Go API and a bearer key. No browser or local fallback.
     Api,
     /// Require a browser session and use console/web endpoints only.
     Web,
-}
-
-impl Default for OpenCodeGoSourceMode {
-    fn default() -> Self {
-        Self::Automatic
-    }
 }
 
 pub struct OpenCodeGoUsageAdapter {
@@ -546,17 +541,16 @@ impl OpenCodeGoUsageAdapter {
                 .await
             {
                 Ok(response) if response.is_success() => {
-                    if let Ok(root) = parse_json_document(&response.body) {
-                        if let Some(balance) =
+                    if let Ok(root) = parse_json_document(&response.body)
+                        && let Some(balance) =
                             find_legacy_billing_balance(&root).or_else(|| find_balance(&root))
-                        {
-                            let mut result =
-                                balance_only_snapshot(account, workspace, balance, "web-legacy");
-                            if let Some(snapshot) = result.snapshot.as_mut() {
-                                snapshot.source_diagnostics = diagnostics;
-                            }
-                            return Ok(result);
+                    {
+                        let mut result =
+                            balance_only_snapshot(account, workspace, balance, "web-legacy");
+                        if let Some(snapshot) = result.snapshot.as_mut() {
+                            snapshot.source_diagnostics = diagnostics;
                         }
+                        return Ok(result);
                     }
                     diagnostics.push(diagnostic(
                         "web.legacy.billing",
@@ -621,30 +615,25 @@ impl OpenCodeGoUsageAdapter {
         material: &AccountAuthMaterial,
     ) -> Result<Option<String>, TransportError> {
         let response = self.request(CONSOLE_ORGS_PATH, material, []).await?;
-        if response.is_success() {
-            if let Ok(root) = parse_json_document(&response.body) {
-                let preferred = env::var("OPENCODE_GO_WORKSPACE_ID")
-                    .ok()
-                    .and_then(|value| normalize_workspace_id(&value));
-                if let Some(workspace) = select_console_workspace_id(&root, preferred.as_deref()) {
-                    return Ok(Some(workspace));
-                }
+        if response.is_success()
+            && let Ok(root) = parse_json_document(&response.body)
+        {
+            let preferred = env::var("OPENCODE_GO_WORKSPACE_ID")
+                .ok()
+                .and_then(|value| normalize_workspace_id(&value));
+            if let Some(workspace) = select_console_workspace_id(&root, preferred.as_deref()) {
+                return Ok(Some(workspace));
             }
         }
 
         let legacy = self
-            .request_server(
-                WORKSPACES_SERVER_ID,
-                None,
-                material,
-                &self.base_url.to_string(),
-            )
+            .request_server(WORKSPACES_SERVER_ID, None, material, self.base_url.as_ref())
             .await?;
         if legacy.is_success() {
-            if let Ok(root) = parse_json_document(&legacy.body) {
-                if let Some(workspace) = find_workspace_id(&root) {
-                    return Ok(Some(workspace));
-                }
+            if let Ok(root) = parse_json_document(&legacy.body)
+                && let Some(workspace) = find_workspace_id(&root)
+            {
+                return Ok(Some(workspace));
             }
             if let Some(workspace) = find_workspace_in_text(&legacy.body) {
                 return Ok(Some(workspace));
@@ -658,15 +647,15 @@ impl OpenCodeGoUsageAdapter {
                 WORKSPACES_SERVER_ID,
                 Some("[]"),
                 material,
-                &self.base_url.to_string(),
+                self.base_url.as_ref(),
                 Method::POST,
             )
             .await?;
         if legacy_post.is_success() {
-            if let Ok(root) = parse_json_document(&legacy_post.body) {
-                if let Some(workspace) = find_workspace_id(&root) {
-                    return Ok(Some(workspace));
-                }
+            if let Ok(root) = parse_json_document(&legacy_post.body)
+                && let Some(workspace) = find_workspace_id(&root)
+            {
+                return Ok(Some(workspace));
             }
             if let Some(workspace) = find_workspace_in_text(&legacy_post.body) {
                 return Ok(Some(workspace));
@@ -1443,7 +1432,7 @@ enum WindowRole {
     Monthly,
 }
 
-fn find_window<'a>(value: &'a Value, role: WindowRole) -> Option<&'a Value> {
+fn find_window(value: &Value, role: WindowRole) -> Option<&Value> {
     let names: &[&str] = match role {
         WindowRole::Rolling => &[
             "rolling",
@@ -1474,10 +1463,10 @@ fn find_window<'a>(value: &'a Value, role: WindowRole) -> Option<&'a Value> {
     };
     if let Value::Object(object) = value {
         for name in names {
-            if let Some(candidate) = object.get(*name) {
-                if candidate.is_object() {
-                    return Some(candidate);
-                }
+            if let Some(candidate) = object.get(*name)
+                && candidate.is_object()
+            {
+                return Some(candidate);
             }
         }
         for (key, child) in object {
@@ -1743,13 +1732,11 @@ fn find_balance(value: &Value) -> Option<f64> {
         if currency
             .as_deref()
             .is_some_and(|value| value.contains("usd") || value.contains('$'))
-        {
-            if let Some(number) = balance
+            && let Some(number) = balance
                 .as_f64()
                 .or_else(|| balance.as_str().and_then(|v| v.parse().ok()))
-            {
-                return Some(number);
-            }
+        {
+            return Some(number);
         }
         if let Some(found) = find_balance(balance) {
             return Some(found);
@@ -1845,13 +1832,12 @@ fn find_legacy_billing_balance(value: &Value) -> Option<f64> {
                 .or_else(|| object.get("customerId"))
                 .and_then(Value::as_str)
                 .is_some_and(|value| !value.trim().is_empty());
-            if has_customer {
-                if let Some(raw) = object
+            if has_customer
+                && let Some(raw) = object
                     .get("balance")
                     .and_then(|value| value.as_f64().or_else(|| value.as_str()?.parse().ok()))
-                {
-                    return Some(raw / 100_000_000.0);
-                }
+            {
+                return Some(raw / 100_000_000.0);
             }
             object.values().find_map(find_legacy_billing_balance)
         }

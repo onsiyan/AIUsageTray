@@ -385,7 +385,7 @@ impl App {
             }
             Message::PriorityUsageRefreshEvent(provider, event) => match event {
                 usage_refresh::RefreshEvent::AccountUpdated(entry) => {
-                    self.dashboard.update_account_usage(entry);
+                    self.dashboard.update_account_usage(*entry);
                     Task::none()
                 }
                 usage_refresh::RefreshEvent::Finished(refresh) => {
@@ -404,7 +404,7 @@ impl App {
             },
             Message::OtherProvidersUsageRefreshEvent(event) => match event {
                 usage_refresh::RefreshEvent::AccountUpdated(entry) => {
-                    self.dashboard.update_account_usage(entry);
+                    self.dashboard.update_account_usage(*entry);
                     Task::none()
                 }
                 usage_refresh::RefreshEvent::Finished(refresh) => {

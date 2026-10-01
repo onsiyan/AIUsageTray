@@ -529,7 +529,7 @@ impl UsageRefreshCoordinator {
             let target = candidate
                 .map(|candidate| candidate.refresh_at.min(normal_deadline))
                 .unwrap_or(normal_deadline);
-            let sleep_for = (target - now).to_std().unwrap_or_else(|_| Duration::ZERO);
+            let sleep_for = (target - now).to_std().unwrap_or(Duration::ZERO);
 
             tokio::select! {
                 result = shutdown.changed() => {
@@ -537,14 +537,13 @@ impl UsageRefreshCoordinator {
                     continue;
                 }
                 _ = self.wake.notified() => {
-                    if self.config.cadence == RefreshCadence::Adaptive {
-                        if let Some(decision) = self.normal_interval(Utc::now()).await {
+                    if self.config.cadence == RefreshCadence::Adaptive
+                        && let Some(decision) = self.normal_interval(Utc::now()).await {
                             let earlier = Utc::now() + chrono_from_std(decision);
                             if scheduled_at.is_none_or(|scheduled| earlier < scheduled) {
                                 scheduled_at = Some(earlier);
                             }
                         }
-                    }
                     continue;
                 }
                 _ = tokio::time::sleep(sleep_for) => {}
@@ -753,60 +752,62 @@ impl UsageRefreshCoordinator {
             }
         };
 
-        if probe.succeeded() {
-            if let Some(mut snapshot) = probe.snapshot.clone() {
-                if snapshot.account_id != account.id
-                    || !provider_ids_match(&account.provider_id, &snapshot.provider_id)
-                {
-                    return self
-                        .finish_failure(
-                            &account,
-                            reason,
-                            prior,
-                            UsageAdapterError {
-                                code: UsageAdapterErrorCode::AccountMismatch,
-                                message: "adapter returned a snapshot for a different account or provider".to_owned(),
-                                http_status_code: None,
-                                retry_after_seconds: None,
-                            },
-                        )
-                        .await;
-                }
-                let mut identity = probe.identity.clone();
-                // A stored snapshot from the future (for example after the
-                // system clock was corrected backwards) must not block every
-                // later refresh until wall-clock time catches up with it.
-                if prior.as_ref().is_some_and(|previous| {
-                    snapshot.observed_at_utc < previous.observed_at_utc
-                        && previous.observed_at_utc <= Utc::now()
-                }) {
-                    return self
-                        .finish_failure(
-                            &account,
-                            reason,
-                            prior,
-                            UsageAdapterError {
-                                code: UsageAdapterErrorCode::InvalidPayload,
-                                message:
-                                    "adapter returned a snapshot older than the stored snapshot"
-                                        .to_owned(),
-                                http_status_code: None,
-                                retry_after_seconds: None,
-                            },
-                        )
-                        .await;
-                }
+        if probe.succeeded()
+            && let Some(mut snapshot) = probe.snapshot.clone()
+        {
+            if snapshot.account_id != account.id
+                || !provider_ids_match(&account.provider_id, &snapshot.provider_id)
+            {
+                return self
+                    .finish_failure(
+                        &account,
+                        reason,
+                        prior,
+                        UsageAdapterError {
+                            code: UsageAdapterErrorCode::AccountMismatch,
+                            message:
+                                "adapter returned a snapshot for a different account or provider"
+                                    .to_owned(),
+                            http_status_code: None,
+                            retry_after_seconds: None,
+                        },
+                    )
+                    .await;
+            }
+            let mut identity = probe.identity.clone();
+            // A stored snapshot from the future (for example after the
+            // system clock was corrected backwards) must not block every
+            // later refresh until wall-clock time catches up with it.
+            if prior.as_ref().is_some_and(|previous| {
+                snapshot.observed_at_utc < previous.observed_at_utc
+                    && previous.observed_at_utc <= Utc::now()
+            }) {
+                return self
+                    .finish_failure(
+                        &account,
+                        reason,
+                        prior,
+                        UsageAdapterError {
+                            code: UsageAdapterErrorCode::InvalidPayload,
+                            message: "adapter returned a snapshot older than the stored snapshot"
+                                .to_owned(),
+                            http_status_code: None,
+                            retry_after_seconds: None,
+                        },
+                    )
+                    .await;
+            }
 
-                let mut delayed_reset_confirmed = false;
-                if is_codex_account(&account) {
-                    let pending_candidate = match self
-                        .snapshot_store
-                        .get_codex_weekly_reset_candidate(account.id)
-                        .await
-                    {
-                        Ok(candidate) => candidate,
-                        Err(error) => {
-                            return self
+            let mut delayed_reset_confirmed = false;
+            if is_codex_account(&account) {
+                let pending_candidate = match self
+                    .snapshot_store
+                    .get_codex_weekly_reset_candidate(account.id)
+                    .await
+                {
+                    Ok(candidate) => candidate,
+                    Err(error) => {
+                        return self
                                 .finish_failure(
                                     &account,
                                     reason,
@@ -821,21 +822,21 @@ impl UsageRefreshCoordinator {
                                     },
                                 )
                                 .await;
+                    }
+                };
+                if let (Some(previous), Some(candidate)) = (prior.as_ref(), pending_candidate) {
+                    match evaluate_delayed_reset_candidate(
+                        &account,
+                        previous,
+                        &candidate,
+                        &snapshot,
+                        Utc::now(),
+                    ) {
+                        DelayedResetDecision::PublishCurrent => {
+                            delayed_reset_confirmed = true;
                         }
-                    };
-                    if let (Some(previous), Some(candidate)) = (prior.as_ref(), pending_candidate) {
-                        match evaluate_delayed_reset_candidate(
-                            &account,
-                            previous,
-                            &candidate,
-                            &snapshot,
-                            Utc::now(),
-                        ) {
-                            DelayedResetDecision::PublishCurrent => {
-                                delayed_reset_confirmed = true;
-                            }
-                            DelayedResetDecision::RetainCandidate => {
-                                return self
+                        DelayedResetDecision::RetainCandidate => {
+                            return self
                                     .finish_failure(
                                         &account,
                                         reason,
@@ -848,14 +849,14 @@ impl UsageRefreshCoordinator {
                                         },
                                     )
                                     .await;
-                            }
-                            DelayedResetDecision::DiscardCandidate(_) => {
-                                if let Err(error) = self
-                                    .snapshot_store
-                                    .save_codex_weekly_reset_candidate(account.id, None)
-                                    .await
-                                {
-                                    return self
+                        }
+                        DelayedResetDecision::DiscardCandidate(_) => {
+                            if let Err(error) = self
+                                .snapshot_store
+                                .save_codex_weekly_reset_candidate(account.id, None)
+                                .await
+                            {
+                                return self
                                         .finish_failure(
                                             &account,
                                             reason,
@@ -870,89 +871,83 @@ impl UsageRefreshCoordinator {
                                             },
                                         )
                                         .await;
-                                }
                             }
                         }
                     }
                 }
+            }
 
-                if !delayed_reset_confirmed
-                    && needs_weekly_reset_confirmation(&account, prior.as_ref(), &snapshot)
-                {
-                    let confirmation = match adapter.probe(&account).await {
-                        Ok(confirmation) if confirmation.succeeded() => confirmation,
-                        Ok(confirmation) => {
-                            let error = confirmation.error.unwrap_or(UsageAdapterError {
-                                code: UsageAdapterErrorCode::InvalidPayload,
-                                message: "Codex weekly reset confirmation returned no snapshot"
-                                    .to_owned(),
-                                http_status_code: None,
-                                retry_after_seconds: None,
-                            });
-                            return self.finish_failure(&account, reason, prior, error).await;
-                        }
-                        Err(error) => {
-                            return self
-                                .finish_failure(
-                                    &account,
-                                    reason,
-                                    prior,
-                                    transport_as_adapter_error(error),
-                                )
-                                .await;
-                        }
-                    };
-                    let Some(confirmed_snapshot) = confirmation.snapshot else {
+            if !delayed_reset_confirmed
+                && needs_weekly_reset_confirmation(&account, prior.as_ref(), &snapshot)
+            {
+                let confirmation = match adapter.probe(&account).await {
+                    Ok(confirmation) if confirmation.succeeded() => confirmation,
+                    Ok(confirmation) => {
+                        let error = confirmation.error.unwrap_or(UsageAdapterError {
+                            code: UsageAdapterErrorCode::InvalidPayload,
+                            message: "Codex weekly reset confirmation returned no snapshot"
+                                .to_owned(),
+                            http_status_code: None,
+                            retry_after_seconds: None,
+                        });
+                        return self.finish_failure(&account, reason, prior, error).await;
+                    }
+                    Err(error) => {
                         return self
                             .finish_failure(
                                 &account,
                                 reason,
                                 prior,
-                                UsageAdapterError {
-                                    code: UsageAdapterErrorCode::InvalidPayload,
-                                    message: "Codex weekly reset confirmation returned no snapshot"
-                                        .to_owned(),
-                                    http_status_code: None,
-                                    retry_after_seconds: None,
-                                },
+                                transport_as_adapter_error(error),
                             )
                             .await;
-                    };
-                    let previous = prior
-                        .as_ref()
-                        .expect("confirmation requires a prior snapshot");
-                    let confirmation_rejection = if confirmed_snapshot.account_id != account.id
-                        || !provider_ids_match(
-                            &account.provider_id,
-                            &confirmed_snapshot.provider_id,
-                        ) {
-                        Some("account_or_provider_mismatch")
-                    } else if !confirms_weekly_reset(
+                    }
+                };
+                let Some(confirmed_snapshot) = confirmation.snapshot else {
+                    return self
+                        .finish_failure(
+                            &account,
+                            reason,
+                            prior,
+                            UsageAdapterError {
+                                code: UsageAdapterErrorCode::InvalidPayload,
+                                message: "Codex weekly reset confirmation returned no snapshot"
+                                    .to_owned(),
+                                http_status_code: None,
+                                retry_after_seconds: None,
+                            },
+                        )
+                        .await;
+                };
+                let previous = prior
+                    .as_ref()
+                    .expect("confirmation requires a prior snapshot");
+                let confirmation_rejection = if confirmed_snapshot.account_id != account.id
+                    || !provider_ids_match(&account.provider_id, &confirmed_snapshot.provider_id)
+                {
+                    Some("account_or_provider_mismatch")
+                } else if !confirms_weekly_reset(&account, previous, &snapshot, &confirmed_snapshot)
+                {
+                    Some("immediate_confirmation_rejected")
+                } else {
+                    None
+                };
+                if let Some(rejection) = confirmation_rejection {
+                    let delayed_candidate = create_delayed_reset_candidate(
                         &account,
                         previous,
                         &snapshot,
                         &confirmed_snapshot,
-                    ) {
-                        Some("immediate_confirmation_rejected")
-                    } else {
-                        None
-                    };
-                    if let Some(rejection) = confirmation_rejection {
-                        let delayed_candidate = create_delayed_reset_candidate(
-                            &account,
-                            previous,
-                            &snapshot,
-                            &confirmed_snapshot,
-                            Utc::now(),
-                        );
-                        match delayed_candidate {
-                            Ok(candidate) => {
-                                if let Err(error) = self
-                                    .snapshot_store
-                                    .save_codex_weekly_reset_candidate(account.id, Some(candidate))
-                                    .await
-                                {
-                                    return self
+                        Utc::now(),
+                    );
+                    match delayed_candidate {
+                        Ok(candidate) => {
+                            if let Err(error) = self
+                                .snapshot_store
+                                .save_codex_weekly_reset_candidate(account.id, Some(candidate))
+                                .await
+                            {
+                                return self
                                         .finish_failure(
                                             &account,
                                             reason,
@@ -967,8 +962,8 @@ impl UsageRefreshCoordinator {
                                             },
                                         )
                                         .await;
-                                }
-                                return self
+                            }
+                            return self
                                     .finish_failure(
                                         &account,
                                         reason,
@@ -981,9 +976,9 @@ impl UsageRefreshCoordinator {
                                         },
                                     )
                                     .await;
-                            }
-                            Err(delayed_rejection) => {
-                                return self
+                        }
+                        Err(delayed_rejection) => {
+                            return self
                                     .finish_failure(
                                         &account,
                                         reason,
@@ -998,76 +993,75 @@ impl UsageRefreshCoordinator {
                                         },
                                     )
                                     .await;
-                            }
                         }
                     }
-                    snapshot = confirmed_snapshot;
-                    identity = confirmation.identity.or(identity);
                 }
-                // Apply the identity to the *current* stored record. The
-                // `account` value was read before the provider call, so
-                // writing it back would resurrect an account removed during
-                // the refresh and undo concurrent alias/status changes.
-                let current = match identity.as_ref() {
-                    Some(identity) => {
-                        self.account_store
-                            .apply_verified_identity(
-                                account.id,
-                                identity.email.as_deref(),
-                                identity.provider_account_id.as_deref(),
-                            )
-                            .await
-                    }
-                    None => self.account_store.get(account.id).await,
-                };
-                let identity_storage_error = match current {
-                    Ok(Some(_)) => None,
-                    Ok(None) => {
-                        return RefreshOutcome::new(
-                            &account,
-                            reason,
-                            RefreshStatus::Skipped,
-                            None,
-                            None,
-                            None,
-                            None,
-                        );
-                    }
-                    Err(error) => Some(error.to_string()),
-                };
-                if let Err(error) = self.snapshot_store.save(snapshot.clone()).await {
+                snapshot = confirmed_snapshot;
+                identity = confirmation.identity.or(identity);
+            }
+            // Apply the identity to the *current* stored record. The
+            // `account` value was read before the provider call, so
+            // writing it back would resurrect an account removed during
+            // the refresh and undo concurrent alias/status changes.
+            let current = match identity.as_ref() {
+                Some(identity) => {
+                    self.account_store
+                        .apply_verified_identity(
+                            account.id,
+                            identity.email.as_deref(),
+                            identity.provider_account_id.as_deref(),
+                        )
+                        .await
+                }
+                None => self.account_store.get(account.id).await,
+            };
+            let identity_storage_error = match current {
+                Ok(Some(_)) => None,
+                Ok(None) => {
                     return RefreshOutcome::new(
                         &account,
                         reason,
-                        RefreshStatus::Failed,
-                        prior,
-                        identity,
+                        RefreshStatus::Skipped,
                         None,
-                        Some(combine_storage_errors(
-                            identity_storage_error,
-                            error.to_string(),
-                        )),
+                        None,
+                        None,
+                        None,
                     );
                 }
-                let candidate_clear_error = if is_codex_account(&account) {
-                    self.snapshot_store
-                        .save_codex_weekly_reset_candidate(account.id, None)
-                        .await
-                        .err()
-                        .map(|error| error.to_string())
-                } else {
-                    None
-                };
+                Err(error) => Some(error.to_string()),
+            };
+            if let Err(error) = self.snapshot_store.save(snapshot.clone()).await {
                 return RefreshOutcome::new(
                     &account,
                     reason,
-                    RefreshStatus::Updated,
-                    Some(snapshot),
+                    RefreshStatus::Failed,
+                    prior,
                     identity,
                     None,
-                    combine_optional_storage_errors(identity_storage_error, candidate_clear_error),
+                    Some(combine_storage_errors(
+                        identity_storage_error,
+                        error.to_string(),
+                    )),
                 );
             }
+            let candidate_clear_error = if is_codex_account(&account) {
+                self.snapshot_store
+                    .save_codex_weekly_reset_candidate(account.id, None)
+                    .await
+                    .err()
+                    .map(|error| error.to_string())
+            } else {
+                None
+            };
+            return RefreshOutcome::new(
+                &account,
+                reason,
+                RefreshStatus::Updated,
+                Some(snapshot),
+                identity,
+                None,
+                combine_optional_storage_errors(identity_storage_error, candidate_clear_error),
+            );
         }
 
         let error = probe.error.unwrap_or(UsageAdapterError {
@@ -1087,32 +1081,32 @@ impl UsageRefreshCoordinator {
         error: UsageAdapterError,
     ) -> RefreshOutcome {
         let stale_reason = format!("{}: {}", account.provider_id, error.message);
-        if should_retain_stale(&error.code) {
-            if let Some(prior) = prior {
-                // Mark the stored latest snapshot stale in place instead of
-                // appending a duplicate history row for every failure.
-                let (stale, storage_error) = match self
-                    .snapshot_store
-                    .mark_latest_stale(account.id, &stale_reason)
-                    .await
-                {
-                    Ok(Some(stale)) => (stale, None),
-                    Ok(None) => (prior.mark_stale(&stale_reason), None),
-                    Err(storage_error) => (
-                        prior.mark_stale(&stale_reason),
-                        Some(storage_error.to_string()),
-                    ),
-                };
-                return RefreshOutcome::new(
-                    account,
-                    reason,
-                    RefreshStatus::RetainedStale,
-                    Some(stale),
-                    None,
-                    Some(error),
-                    storage_error,
-                );
-            }
+        if should_retain_stale(&error.code)
+            && let Some(prior) = prior
+        {
+            // Mark the stored latest snapshot stale in place instead of
+            // appending a duplicate history row for every failure.
+            let (stale, storage_error) = match self
+                .snapshot_store
+                .mark_latest_stale(account.id, &stale_reason)
+                .await
+            {
+                Ok(Some(stale)) => (stale, None),
+                Ok(None) => (prior.mark_stale(&stale_reason), None),
+                Err(storage_error) => (
+                    prior.mark_stale(&stale_reason),
+                    Some(storage_error.to_string()),
+                ),
+            };
+            return RefreshOutcome::new(
+                account,
+                reason,
+                RefreshStatus::RetainedStale,
+                Some(stale),
+                None,
+                Some(error),
+                storage_error,
+            );
         }
 
         let status = if should_invalidate(&error.code) {

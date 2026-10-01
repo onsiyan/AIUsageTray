@@ -266,15 +266,14 @@ async fn find_or_create_account(
     label: &str,
     force_new: bool,
 ) -> Result<AccountRecord, Box<dyn std::error::Error>> {
-    if !force_new {
-        if let Some(account) = store
+    if !force_new
+        && let Some(account) = store
             .list()
             .await?
             .into_iter()
             .find(|account| account.provider_id == OPENROUTER && account.label == label)
-        {
-            return Ok(account);
-        }
+    {
+        return Ok(account);
     }
     Ok(AccountRecord::create(
         label,

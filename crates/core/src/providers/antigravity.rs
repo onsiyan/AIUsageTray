@@ -434,12 +434,11 @@ impl AntigravityUsageAdapter {
             .post_remote("v1internal:onboardUser", body, material)
             .await
             .ok()?;
-        if response.is_success() {
-            if let Ok(root) = serde_json::from_str::<Value>(&response.body)
-                && let Some(project) = find_project_id(&root)
-            {
-                return Some(project);
-            }
+        if response.is_success()
+            && let Ok(root) = serde_json::from_str::<Value>(&response.body)
+            && let Some(project) = find_project_id(&root)
+        {
+            return Some(project);
         }
 
         // Onboarding is eventually consistent. Keep the retry bounded and
@@ -601,8 +600,8 @@ impl UsageAdapter for AntigravityUsageAdapter {
                     remote_quota_verified = true;
                 }
             }
-        } else if models.status_code == 403 {
-            if let Ok(response) = self
+        } else if models.status_code == 403
+            && let Ok(response) = self
                 .post_remote(
                     "v1internal:retrieveUserQuota",
                     project_id
@@ -612,14 +611,13 @@ impl UsageAdapter for AntigravityUsageAdapter {
                     &material,
                 )
                 .await
-                && response.is_success()
-                && let Ok(root) = serde_json::from_str::<Value>(&response.body)
-            {
-                let verified = parse_remote_quota_buckets(&root);
-                if has_usable_remote_quotas(&verified) {
-                    quotas = verified;
-                    remote_quota_verified = true;
-                }
+            && response.is_success()
+            && let Ok(root) = serde_json::from_str::<Value>(&response.body)
+        {
+            let verified = parse_remote_quota_buckets(&root);
+            if has_usable_remote_quotas(&verified) {
+                quotas = verified;
+                remote_quota_verified = true;
             }
         }
         // Fetch grouped or model-shaped quota windows as a separate,
@@ -781,7 +779,7 @@ fn local_snapshot_score(
 fn keep_best_candidate<T>(best: &mut Option<(usize, T)>, score: usize, candidate: T) {
     if best
         .as_ref()
-        .map_or(true, |(best_score, _)| score > *best_score)
+        .is_none_or(|(best_score, _)| score > *best_score)
     {
         *best = Some((score, candidate));
     }
@@ -1415,7 +1413,7 @@ fn local_bucket_metric(bucket: &LocalQuotaSummaryBucket) -> UsageMetric {
     let bucket_title = local_bucket_title(bucket);
     let usage_known = !bucket.disabled && bucket.remaining_fraction.is_some();
     let used_percent = usage_known
-        .then(|| bucket.remaining_fraction)
+        .then_some(bucket.remaining_fraction)
         .flatten()
         .map(|remaining| ((1.0 - remaining) * 100.0).clamp(0.0, 100.0));
     let mut metadata = HashMap::from([
@@ -1446,7 +1444,7 @@ fn local_bucket_metric(bucket: &LocalQuotaSummaryBucket) -> UsageMetric {
         used_amount: used_percent,
         limit_amount: usage_known.then_some(100.0),
         remaining_amount: usage_known
-            .then(|| bucket.remaining_fraction)
+            .then_some(bucket.remaining_fraction)
             .flatten()
             .map(|value| value * 100.0),
         unit: usage_known.then(|| "percent".to_owned()),

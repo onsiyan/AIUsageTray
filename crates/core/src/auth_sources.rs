@@ -123,9 +123,10 @@ impl AccountAuthMaterialProvider for EnvironmentAuthMaterialProvider {
                     material.bearer_token = Some(admin_key);
                 }
             }
-            // OpenAI usage is intentionally not sourced from OPENAI_API_KEY.
-            // The WHAM endpoint requires the ChatGPT browser/OAuth session.
-            ANTIGRAVITY | _ => {}
+            // OpenAI usage is intentionally not sourced from OPENAI_API_KEY
+            // (the WHAM endpoint requires the ChatGPT OAuth session), and
+            // Antigravity has no environment credential.
+            _ => {}
         }
 
         Ok((!material.is_empty()).then_some(material))
@@ -248,7 +249,7 @@ impl LocalFileAuthMaterialProvider {
     }
 
     fn parse_claude_oauth_material(value: &Value) -> Option<AccountAuthMaterial> {
-        let oauth = value.get("claudeAiOauth").unwrap_or(&value);
+        let oauth = value.get("claudeAiOauth").unwrap_or(value);
         let access_token = find_string_by_key(oauth, &["accessToken", "access_token"])
             .and_then(|value| normalize_claude_oauth_token(&value))?;
         let refresh_token = find_string_by_key(oauth, &["refreshToken", "refresh_token"]);

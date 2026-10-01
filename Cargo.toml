@@ -11,7 +11,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.97"
 publish = false
 
 [workspace.dependencies]
@@ -45,3 +45,12 @@ tray-icon = { version = "0.25.1", default-features = false }
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 windows-sys = "0.61"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+# Iced view builders and provider snapshot builders take many related inputs;
+# grouping them into one-off structs would not make them clearer.
+too_many_arguments = "allow"
+

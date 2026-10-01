@@ -378,11 +378,14 @@ impl ClaudeUsageAdapter {
             ));
         }
         let mut metrics = Vec::new();
-        let primary_metric_key = primary
+        let primary_metric_key = if primary
             .as_ref()
             .is_some_and(|window| window.name == "Spend limit")
-            .then_some("spend_limit")
-            .unwrap_or("session");
+        {
+            "spend_limit"
+        } else {
+            "session"
+        };
         add_metric(&mut metrics, primary_metric_key, primary.as_ref());
         add_metric(&mut metrics, "weekly", secondary.as_ref());
         for item in &additional {
@@ -658,11 +661,14 @@ impl ClaudeUsageAdapter {
             .or_else(|| Some(account.email.clone()));
         let plan_type = account_info.and_then(|info| info.plan_type);
         let mut metrics = Vec::new();
-        let primary_metric_key = primary
+        let primary_metric_key = if primary
             .as_ref()
             .is_some_and(|window| window.name == "Spend limit")
-            .then_some("spend_limit")
-            .unwrap_or("session");
+        {
+            "spend_limit"
+        } else {
+            "session"
+        };
         add_metric(&mut metrics, primary_metric_key, primary.as_ref());
         add_metric(&mut metrics, "weekly", secondary.as_ref());
         for item in &additional {
@@ -678,18 +684,19 @@ impl ClaudeUsageAdapter {
         }
         let mut source_diagnostics = Vec::new();
         let mut session_token_was_refreshed = false;
-        if session_key != initial_session_key {
-            if let Some(store) = self.auth_material_store.as_ref() {
-                if !identity_verified_for_rotation {
-                    source_diagnostics.push(UsageSourceDiagnostic {
+        if session_key != initial_session_key
+            && let Some(store) = self.auth_material_store.as_ref()
+        {
+            if !identity_verified_for_rotation {
+                source_diagnostics.push(UsageSourceDiagnostic {
                         source: "auth.session-key".to_owned(),
                         code: UsageAdapterErrorCode::Unknown,
                         message: "Claude returned a renewed Web session, but its account identity could not be verified; the saved cookie was left unchanged".to_owned(),
                         http_status_code: None,
                         retry_after_seconds: None,
                     });
-                } else {
-                    match store
+            } else {
+                match store
                         .replace_cookie_if_matches(
                             account.id,
                             "sessionKey",
@@ -707,7 +714,6 @@ impl ClaudeUsageAdapter {
                             retry_after_seconds: None,
                         }),
                     }
-                }
             }
         }
         let primary_kind = primary_window_kind(primary.as_ref());
@@ -905,10 +911,10 @@ impl ClaudeUsageAdapter {
             use_web_extras: self.fetch_web_extras,
             include_prepaid_balance: self.fetch_prepaid_credits,
         };
-        if options.use_background_cache {
-            if let Some(cached) = self.cli_cached(&cache_key).await {
-                return cached;
-            }
+        if options.use_background_cache
+            && let Some(cached) = self.cli_cached(&cache_key).await
+        {
+            return cached;
         }
         if !options.user_initiated {
             if let Some(retry_after_seconds) = self
@@ -1698,7 +1704,8 @@ fn claude_plan_label(
             None => "Claude Max".to_owned(),
         });
     }
-    let label = if combined.contains("pro") {
+
+    if combined.contains("pro") {
         Some("Claude Pro".to_owned())
     } else if combined.contains("team") {
         match seat_tier.map(|value| value.to_ascii_lowercase()).as_deref() {
@@ -1712,8 +1719,7 @@ fn claude_plan_label(
         Some("Claude Ultra".to_owned())
     } else {
         None
-    };
-    label
+    }
 }
 
 fn max_usage_multiplier(rate_limit_tier: &str) -> Option<String> {

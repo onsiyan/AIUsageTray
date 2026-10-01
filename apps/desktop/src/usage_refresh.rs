@@ -9,7 +9,8 @@ pub struct RefreshSummary {
 
 #[derive(Debug, Clone)]
 pub enum RefreshEvent {
-    AccountUpdated(AccountUsageEntry),
+    /// Boxed: an account's usage snapshot is large, the other events are tiny.
+    AccountUpdated(Box<AccountUsageEntry>),
     Finished(RefreshSummary),
     Failed(String),
 }
@@ -191,7 +192,7 @@ mod windows {
                         updated += usize::from(account_updated);
                         not_updated += usize::from(account_not_updated);
                         if sender
-                            .send(RefreshEvent::AccountUpdated(entry))
+                            .send(RefreshEvent::AccountUpdated(Box::new(entry)))
                             .await
                             .is_err()
                         {

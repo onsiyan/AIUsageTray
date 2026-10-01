@@ -216,17 +216,17 @@ async fn find_or_create_account(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .ok_or("Claude OAuth profile did not return an email address")?;
-    if !force_new {
-        if let Some(account) = store.list().await?.into_iter().find(|account| {
+    if !force_new
+        && let Some(account) = store.list().await?.into_iter().find(|account| {
             account.provider_id == CLAUDE
                 && (account.email.eq_ignore_ascii_case(email)
                     || identity
                         .provider_account_id
                         .as_deref()
                         .is_some_and(|id| account.provider_account_id.as_deref() == Some(id)))
-        }) {
-            return Ok(account.with_identity(Some(email), identity.provider_account_id.as_deref())?);
-        }
+        })
+    {
+        return Ok(account.with_identity(Some(email), identity.provider_account_id.as_deref())?);
     }
     Ok(AccountRecord::create(
         label.unwrap_or("Claude account"),

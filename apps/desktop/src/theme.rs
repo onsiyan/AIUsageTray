@@ -272,7 +272,7 @@ mod tests {
             ThemeId::White,
         ] {
             assert_eq!(ThemeId::from_key(theme.as_key()), Some(theme));
-            assert!(theme.definition().label.len() > 0);
+            assert!(!theme.definition().label.is_empty());
         }
 
         assert_eq!(ThemeId::from_key("not-a-theme"), None);

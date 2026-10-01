@@ -209,85 +209,6 @@ fn create_authorization(
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::persist_oauth_login_account;
-    use std::{collections::BTreeMap, sync::Arc};
-    use usage_monitor_core::{
-        accounts::{ANTIGRAVITY, AccountRecord, AccountStore, InMemoryAccountStore},
-        auth::{InMemoryOAuthCredentialStore, OAuthCredentialStore, StoredOAuthCredential},
-    };
-
-    fn credential(refresh_token: &str, provider_account_id: &str) -> StoredOAuthCredential {
-        StoredOAuthCredential {
-            provider_id: ANTIGRAVITY.to_owned(),
-            refresh_token: refresh_token.to_owned(),
-            client_id: Some("antigravity-client".to_owned()),
-            client_secret: None,
-            id_token: None,
-            provider_account_id: Some(provider_account_id.to_owned()),
-            workspace_id: None,
-            metadata: BTreeMap::new(),
-        }
-    }
-
-    #[tokio::test]
-    async fn adding_the_same_provider_identity_reuses_account_and_moves_credential() {
-        let accounts = Arc::new(InMemoryAccountStore::default());
-        let credentials = Arc::new(InMemoryOAuthCredentialStore::default());
-        let identity = "google-subject-1";
-        let existing = AccountRecord::create(
-            "Antigravity main",
-            "user@example.com",
-            Some(identity.to_owned()),
-            ANTIGRAVITY,
-            None,
-        )
-        .unwrap();
-        accounts.upsert(&existing).await.unwrap();
-        credentials
-            .save(existing.id, &credential("old-refresh-token", identity))
-            .await
-            .unwrap();
-
-        let provisional = AccountRecord::create(
-            "Antigravity account",
-            "user@example.com",
-            Some(identity.to_owned()),
-            ANTIGRAVITY,
-            None,
-        )
-        .unwrap();
-        credentials
-            .save(provisional.id, &credential("new-refresh-token", identity))
-            .await
-            .unwrap();
-
-        let resolved = persist_oauth_login_account(
-            accounts.as_ref(),
-            credentials.as_ref(),
-            provisional.clone(),
-            provisional.id,
-            &credential("new-refresh-token", identity),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(resolved.id, existing.id);
-        assert_eq!(accounts.list().await.unwrap().len(), 1);
-        assert_eq!(
-            credentials
-                .get(existing.id)
-                .await
-                .unwrap()
-                .unwrap()
-                .refresh_token,
-            "new-refresh-token"
-        );
-        assert!(credentials.get(provisional.id).await.unwrap().is_none());
-    }
-}
-
 async fn probe_and_print(
     database_path: &std::path::Path,
     transport: Arc<Transport>,
@@ -365,4 +286,83 @@ async fn probe_and_print(
         println!("{}: {remaining}", metric.name);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::persist_oauth_login_account;
+    use std::{collections::BTreeMap, sync::Arc};
+    use usage_monitor_core::{
+        accounts::{ANTIGRAVITY, AccountRecord, AccountStore, InMemoryAccountStore},
+        auth::{InMemoryOAuthCredentialStore, OAuthCredentialStore, StoredOAuthCredential},
+    };
+
+    fn credential(refresh_token: &str, provider_account_id: &str) -> StoredOAuthCredential {
+        StoredOAuthCredential {
+            provider_id: ANTIGRAVITY.to_owned(),
+            refresh_token: refresh_token.to_owned(),
+            client_id: Some("antigravity-client".to_owned()),
+            client_secret: None,
+            id_token: None,
+            provider_account_id: Some(provider_account_id.to_owned()),
+            workspace_id: None,
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn adding_the_same_provider_identity_reuses_account_and_moves_credential() {
+        let accounts = Arc::new(InMemoryAccountStore::default());
+        let credentials = Arc::new(InMemoryOAuthCredentialStore::default());
+        let identity = "google-subject-1";
+        let existing = AccountRecord::create(
+            "Antigravity main",
+            "user@example.com",
+            Some(identity.to_owned()),
+            ANTIGRAVITY,
+            None,
+        )
+        .unwrap();
+        accounts.upsert(&existing).await.unwrap();
+        credentials
+            .save(existing.id, &credential("old-refresh-token", identity))
+            .await
+            .unwrap();
+
+        let provisional = AccountRecord::create(
+            "Antigravity account",
+            "user@example.com",
+            Some(identity.to_owned()),
+            ANTIGRAVITY,
+            None,
+        )
+        .unwrap();
+        credentials
+            .save(provisional.id, &credential("new-refresh-token", identity))
+            .await
+            .unwrap();
+
+        let resolved = persist_oauth_login_account(
+            accounts.as_ref(),
+            credentials.as_ref(),
+            provisional.clone(),
+            provisional.id,
+            &credential("new-refresh-token", identity),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resolved.id, existing.id);
+        assert_eq!(accounts.list().await.unwrap().len(), 1);
+        assert_eq!(
+            credentials
+                .get(existing.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .refresh_token,
+            "new-refresh-token"
+        );
+        assert!(credentials.get(provisional.id).await.unwrap().is_none());
+    }
 }

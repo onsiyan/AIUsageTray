@@ -429,8 +429,8 @@ impl WindowsBrowserCookieImporter {
             return Err(BrowserCookieError::NoMatchingSession);
         }
         let cookies = selected
-            .into_iter()
-            .map(|(_, value)| CookieValue {
+            .into_values()
+            .map(|value| CookieValue {
                 name: value.0,
                 value: value.1,
             })

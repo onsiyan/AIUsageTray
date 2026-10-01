@@ -2582,14 +2582,15 @@ fn append_snapshot_rows(
     if !windows.is_empty() || !metrics.is_empty() {
         for (index, window) in windows.into_iter().enumerate() {
             rows.push(rate_window_row(window, theme, language));
-            if !reset_inventory_rendered && reset_inventory_anchor == Some(index) {
-                if let Some(inventory) = &snapshot.credit_inventory {
-                    if inventory.available_count > 0 {
-                        rows.push(space().height(Length::Fixed(8.0)).into());
-                    }
-                    append_reset_credit_inventory(rows, inventory, theme, language);
-                    reset_inventory_rendered = true;
+            if !reset_inventory_rendered
+                && reset_inventory_anchor == Some(index)
+                && let Some(inventory) = &snapshot.credit_inventory
+            {
+                if inventory.available_count > 0 {
+                    rows.push(space().height(Length::Fixed(8.0)).into());
                 }
+                append_reset_credit_inventory(rows, inventory, theme, language);
+                reset_inventory_rendered = true;
             }
         }
         for metric in metrics {
@@ -2597,10 +2598,8 @@ fn append_snapshot_rows(
         }
     }
 
-    if !reset_inventory_rendered {
-        if let Some(inventory) = &snapshot.credit_inventory {
-            append_reset_credit_inventory(rows, inventory, theme, language);
-        }
+    if !reset_inventory_rendered && let Some(inventory) = &snapshot.credit_inventory {
+        append_reset_credit_inventory(rows, inventory, theme, language);
     }
 
     let visible_models =
@@ -3509,11 +3508,11 @@ fn countdown_label_parts(label: &str, language: Language) -> Option<(&str, &str)
         Language::Arabic => "بعد ",
     };
 
-    if let Some((_, countdown)) = label.split_once(" · ") {
-        if countdown.starts_with(countdown_word) {
-            let prefix_end = label.len() - countdown.len();
-            return Some((&label[..prefix_end], &label[prefix_end..]));
-        }
+    if let Some((_, countdown)) = label.split_once(" · ")
+        && countdown.starts_with(countdown_word)
+    {
+        let prefix_end = label.len() - countdown.len();
+        return Some((&label[..prefix_end], &label[prefix_end..]));
     }
 
     let immediate_reset_prefix = match language {

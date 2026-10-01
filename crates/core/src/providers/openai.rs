@@ -127,10 +127,10 @@ impl WhamUsageAdapter {
             material,
             material.user_agent.as_deref().unwrap_or("UsageMonitor/0.1"),
         );
-        if include_account_header {
-            if let Some(account_id) = account.and_then(|account| account.workspace_id.as_deref()) {
-                headers.insert("ChatGPT-Account-Id".to_owned(), account_id.to_owned());
-            }
+        if include_account_header
+            && let Some(account_id) = account.and_then(|account| account.workspace_id.as_deref())
+        {
+            headers.insert("ChatGPT-Account-Id".to_owned(), account_id.to_owned());
         }
         if path.ends_with("wham/rate-limit-reset-credits") {
             headers.insert("OpenAI-Beta".to_owned(), "codex-1".to_owned());
@@ -520,9 +520,7 @@ fn parse_strict_window(
         return None;
     }
     let reset_at_utc = parse_window_reset(&value);
-    if reset_at_utc.is_none() {
-        return None;
-    }
+    reset_at_utc?;
     let seconds = json_number(&value, &["limit_window_seconds"])?;
     if !seconds.is_finite() || seconds < 1.0 || seconds > i64::MAX as f64 {
         return None;

@@ -618,7 +618,7 @@ fn capture_panel(
         "--session-id".to_owned(),
         Uuid::new_v4().to_string().to_ascii_lowercase(),
     ];
-    let command = command_builder(binary, environment, &working_directory, &command_args);
+    let command = command_builder(binary, environment, working_directory, &command_args);
 
     let mut child = pair
         .slave
@@ -1385,14 +1385,12 @@ fn reset_at_near(lines: &[&str], now: DateTime<Utc>) -> Option<DateTime<Utc>> {
             .and_then(|delay| now.checked_add_signed(delay));
     }
 
-    let timestamp =
-        Regex::new(r"(?i)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))")
-            .expect("valid absolute reset expression")
-            .captures(line)
-            .and_then(|captures| captures.get(1))
-            .and_then(|value| DateTime::parse_from_rfc3339(value.as_str()).ok())
-            .map(|value| value.with_timezone(&Utc));
-    timestamp
+    Regex::new(r"(?i)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))")
+        .expect("valid absolute reset expression")
+        .captures(line)
+        .and_then(|captures| captures.get(1))
+        .and_then(|value| DateTime::parse_from_rfc3339(value.as_str()).ok())
+        .map(|value| value.with_timezone(&Utc))
 }
 
 fn duration_component(line: &str, pattern: &str) -> i64 {

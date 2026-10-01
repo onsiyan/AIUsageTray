@@ -233,7 +233,8 @@ async fn api_adapters_normalize_provider_specific_usage() {
     assert_eq!(free_requests.unit.as_deref(), Some("requests"));
     assert_eq!(free_requests.remaining_amount, Some(38.0));
 
-    let requests = transport.requests.lock().unwrap();
+    // Copy the recorded requests so no lock is held across the probes below.
+    let requests = transport.requests.lock().unwrap().clone();
     let authorization = |path: &str| {
         requests
             .iter()
@@ -477,7 +478,7 @@ async fn claude_oauth_adapter_uses_authoritative_oauth_usage_route() {
 
 #[tokio::test]
 async fn claude_web_missing_five_hour_keeps_weekly_secondary_and_marks_placeholder() {
-    let transport = Arc::new(NoFiveHourTransport::default());
+    let transport = Arc::new(NoFiveHourTransport);
     let auth = Arc::new(StaticAuth);
     let adapter = ClaudeUsageAdapter::new(transport, auth, false)
         .unwrap()
