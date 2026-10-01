@@ -184,7 +184,7 @@ impl ClaudeUsageAdapter {
                 headers: [
                     ("Accept".to_owned(), "application/json".to_owned()),
                     ("Cookie".to_owned(), format!("sessionKey={session_key}")),
-                    ("User-Agent".to_owned(), "CodexUsageMonitor/0.1".to_owned()),
+                    ("User-Agent".to_owned(), "UsageMonitor/0.1".to_owned()),
                 ]
                 .into_iter()
                 .collect(),
@@ -283,7 +283,7 @@ impl ClaudeUsageAdapter {
                     ("Accept".to_owned(), "application/json".to_owned()),
                     ("anthropic-version".to_owned(), "2023-06-01".to_owned()),
                     ("x-api-key".to_owned(), api_key.to_owned()),
-                    ("User-Agent".to_owned(), "CodexUsageMonitor/0.1".to_owned()),
+                    ("User-Agent".to_owned(), "UsageMonitor/0.1".to_owned()),
                 ]
                 .into_iter()
                 .collect(),
@@ -1501,7 +1501,7 @@ async fn fetch_web_identity_for_account(
         [
             ("Accept".to_owned(), "application/json".to_owned()),
             ("Cookie".to_owned(), format!("sessionKey={session_key}")),
-            ("User-Agent".to_owned(), "CodexUsageMonitor/0.1".to_owned()),
+            ("User-Agent".to_owned(), "UsageMonitor/0.1".to_owned()),
         ]
         .into_iter()
         .collect()

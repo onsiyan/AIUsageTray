@@ -1,5 +1,14 @@
 use async_trait::async_trait;
-use codex_usage_core::{
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration as StdDuration,
+};
+use tokio::{io::AsyncWriteExt, net::TcpStream};
+use url::Url;
+use usage_monitor_core::{
     accounts::{
         ANTIGRAVITY, AccountId, AccountRecord, AccountStore, CLAUDE, InMemoryAccountStore, OPENAI,
         OPENCODE_GO, OPENROUTER,
@@ -23,15 +32,6 @@ use codex_usage_core::{
         UsageWindowKind,
     },
 };
-use std::{
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Duration as StdDuration,
-};
-use tokio::{io::AsyncWriteExt, net::TcpStream};
-use url::Url;
 
 #[test]
 fn pkce_matches_rfc7636_vector() {
@@ -198,7 +198,7 @@ async fn api_adapters_normalize_provider_specific_usage() {
         "openrouter",
         "openrouter@example.com",
         None,
-        codex_usage_core::accounts::OPENROUTER,
+        usage_monitor_core::accounts::OPENROUTER,
         None,
     )
     .unwrap();
@@ -294,7 +294,7 @@ async fn api_adapters_normalize_provider_specific_usage() {
         "opencode",
         "opencode@example.com",
         None,
-        codex_usage_core::accounts::OPENCODE_GO,
+        usage_monitor_core::accounts::OPENCODE_GO,
         None,
     )
     .unwrap();
@@ -308,7 +308,7 @@ async fn api_adapters_normalize_provider_specific_usage() {
         "claude",
         "claude@example.com",
         None,
-        codex_usage_core::accounts::CLAUDE,
+        usage_monitor_core::accounts::CLAUDE,
         None,
     )
     .unwrap();
@@ -322,7 +322,7 @@ async fn api_adapters_normalize_provider_specific_usage() {
         "openai",
         "openai@example.com",
         Some("acct-1".to_owned()),
-        codex_usage_core::accounts::OPENAI,
+        usage_monitor_core::accounts::OPENAI,
         None,
     )
     .unwrap();
@@ -388,7 +388,7 @@ async fn openrouter_optional_failures_preserve_key_data_and_record_diagnostics()
             .source_diagnostics
             .iter()
             .any(|diagnostic| diagnostic.source == "credits"
-                && diagnostic.code == codex_usage_core::usage::UsageAdapterErrorCode::Forbidden)
+                && diagnostic.code == usage_monitor_core::usage::UsageAdapterErrorCode::Forbidden)
     );
     assert!(
         snapshot
@@ -396,7 +396,7 @@ async fn openrouter_optional_failures_preserve_key_data_and_record_diagnostics()
             .iter()
             .any(|diagnostic| diagnostic.source == "activity"
                 && diagnostic.code
-                    == codex_usage_core::usage::UsageAdapterErrorCode::InvalidPayload)
+                    == usage_monitor_core::usage::UsageAdapterErrorCode::InvalidPayload)
     );
 }
 
@@ -428,7 +428,7 @@ async fn openrouter_credits_survive_a_failed_key_quota_request() {
     );
     assert!(snapshot.source_diagnostics.iter().any(|diagnostic| {
         diagnostic.source == "key"
-            && diagnostic.code == codex_usage_core::usage::UsageAdapterErrorCode::TransientHttp
+            && diagnostic.code == usage_monitor_core::usage::UsageAdapterErrorCode::TransientHttp
             && diagnostic.http_status_code == Some(503)
     }));
 }
@@ -442,7 +442,7 @@ async fn claude_oauth_adapter_uses_authoritative_oauth_usage_route() {
         "claude-oauth",
         "claude-oauth@example.com",
         None,
-        codex_usage_core::accounts::CLAUDE,
+        usage_monitor_core::accounts::CLAUDE,
         None,
     )
     .unwrap();
@@ -628,7 +628,7 @@ async fn claude_rotated_session_cookie_is_not_saved_for_a_different_identity() {
     let result = adapter.probe(&account).await.unwrap();
     assert_eq!(
         result.error.as_ref().map(|error| error.code),
-        Some(codex_usage_core::usage::UsageAdapterErrorCode::AccountMismatch)
+        Some(usage_monitor_core::usage::UsageAdapterErrorCode::AccountMismatch)
     );
     let material = store.get(account.id).await.unwrap().unwrap();
     assert_eq!(claude_session_cookie(&material), Some("sk-ant-initial-a"));
@@ -675,7 +675,7 @@ async fn claude_rotated_session_cookie_is_not_saved_without_verified_email() {
             .source_diagnostics
             .iter()
             .any(|diagnostic| diagnostic.source == "auth.session-key"
-                && diagnostic.code == codex_usage_core::usage::UsageAdapterErrorCode::Unknown)
+                && diagnostic.code == usage_monitor_core::usage::UsageAdapterErrorCode::Unknown)
     );
     let material = store.get(account.id).await.unwrap().unwrap();
     assert_eq!(claude_session_cookie(&material), Some("sk-ant-initial-a"));
@@ -818,7 +818,7 @@ async fn claude_401_does_not_persist_a_reimported_session_for_another_account() 
     let result = adapter.probe(&account).await.unwrap();
     assert_eq!(
         result.error.as_ref().map(|error| error.code),
-        Some(codex_usage_core::usage::UsageAdapterErrorCode::AccountMismatch)
+        Some(usage_monitor_core::usage::UsageAdapterErrorCode::AccountMismatch)
     );
     assert_eq!(refresher.calls.load(Ordering::SeqCst), 1);
     assert_eq!(
@@ -862,7 +862,7 @@ async fn claude_401_retries_usage_only_once_with_the_reimported_session() {
     let result = adapter.probe(&account).await.unwrap();
     assert_eq!(
         result.error.as_ref().map(|error| error.code),
-        Some(codex_usage_core::usage::UsageAdapterErrorCode::Unauthorized)
+        Some(usage_monitor_core::usage::UsageAdapterErrorCode::Unauthorized)
     );
     assert_eq!(refresher.calls.load(Ordering::SeqCst), 1);
     assert_eq!(
@@ -911,7 +911,7 @@ async fn claude_cloudflare_challenge_does_not_trigger_browser_session_reimport()
     let result = adapter.probe(&account).await.unwrap();
     assert_eq!(
         result.error.as_ref().map(|error| error.code),
-        Some(codex_usage_core::usage::UsageAdapterErrorCode::CloudflareChallenge)
+        Some(usage_monitor_core::usage::UsageAdapterErrorCode::CloudflareChallenge)
     );
     assert_eq!(refresher.calls.load(Ordering::SeqCst), 0);
     assert_eq!(
@@ -1010,7 +1010,7 @@ async fn sqlite_account_identity_upsert_reuses_only_the_same_provider_and_worksp
     assert_eq!(store.list().await.unwrap().len(), 1);
     assert!(matches!(
         store.upsert(&duplicate).await,
-        Err(codex_usage_core::accounts::AccountStoreError::DuplicateProviderIdentity)
+        Err(usage_monitor_core::accounts::AccountStoreError::DuplicateProviderIdentity)
     ));
 
     let second_antigravity_identity = AccountRecord::create(

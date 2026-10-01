@@ -125,10 +125,7 @@ impl WhamUsageAdapter {
             .map_err(|error| TransportError::InvalidUrl(error.to_string()))?;
         let mut headers = bearer_headers(
             material,
-            material
-                .user_agent
-                .as_deref()
-                .unwrap_or("CodexUsageMonitor/0.1"),
+            material.user_agent.as_deref().unwrap_or("UsageMonitor/0.1"),
         );
         if include_account_header {
             if let Some(account_id) = account.and_then(|account| account.workspace_id.as_deref()) {

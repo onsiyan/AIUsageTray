@@ -11,7 +11,7 @@ use thiserror::Error;
 use url::Url;
 
 const ACCOUNTS_URL: &str = "https://chatgpt.com/backend-api/accounts";
-const USER_AGENT: &str = "CodexUsageMonitor/0.1";
+const USER_AGENT: &str = "UsageMonitor/0.1";
 const PERSONAL_WORKSPACE_LABEL: &str = "Personal";
 
 #[derive(Debug, Error)]
@@ -162,7 +162,7 @@ mod tests {
         );
         assert_eq!(
             request.headers.get("User-Agent").map(String::as_str),
-            Some("CodexUsageMonitor/0.1")
+            Some("UsageMonitor/0.1")
         );
         assert!(request.body.is_none());
     }

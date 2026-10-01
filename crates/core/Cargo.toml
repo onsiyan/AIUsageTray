@@ -1,25 +1,27 @@
 [package]
-name = "codex-usage-core"
-version = "0.1.0"
-edition = "2024"
-publish = false
+name = "usage-monitor-core"
+description = "Provider-neutral account, credential, and usage-refresh core for Usage Monitor."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
-async-trait = "0.1"
-base64 = "0.22"
-chrono = { version = "0.4", features = ["clock", "serde"] }
-rand = "0.9"
-reqwest = { version = "0.12", default-features = false, features = ["brotli", "deflate", "gzip", "json", "rustls-tls"] }
-regex = "1"
-portable-pty = "0.9"
-rusqlite = { version = "0.37", features = ["bundled"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
-thiserror = "2"
-tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
-url = { version = "2", features = ["serde"] }
-uuid = { version = "1", features = ["serde", "v4"] }
+async-trait.workspace = true
+base64.workspace = true
+chrono.workspace = true
+portable-pty.workspace = true
+rand.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true

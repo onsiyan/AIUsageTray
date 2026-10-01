@@ -223,7 +223,7 @@ fn state_file_path(environment: &HashMap<String, String>) -> Option<PathBuf> {
         .or_else(|| env::var("XDG_STATE_HOME").ok())?;
     Some(
         PathBuf::from(root)
-            .join("CodexUsageMonitor")
+            .join("UsageMonitor")
             .join(CLI_STATE_FILE_NAME),
     )
 }
@@ -1115,7 +1115,7 @@ fn write_pty(writer: &mut Box<dyn Write + Send>, value: &str) -> Result<(), Clau
 }
 
 fn probe_working_directory() -> PathBuf {
-    let path = env::temp_dir().join(format!("codex-usage-claude-{}", Uuid::new_v4()));
+    let path = env::temp_dir().join(format!("usage-monitor-claude-{}", Uuid::new_v4()));
     let _ = fs::create_dir_all(&path);
     path
 }

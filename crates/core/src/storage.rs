@@ -8,18 +8,57 @@ use crate::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
-use std::{collections::HashSet, env, path::Path, path::PathBuf, str::FromStr, sync::Mutex};
+use std::{
+    collections::HashSet,
+    env, fs,
+    path::Path,
+    path::PathBuf,
+    str::FromStr,
+    sync::{Mutex, Once},
+};
 
 /// Most recent observations retained per account.
 const SNAPSHOT_HISTORY_LIMIT: i64 = 200;
 
+const DATA_DIRECTORY: &str = "UsageMonitor";
+/// Data directory used before the project was renamed.
+const LEGACY_DATA_DIRECTORY: &str = "CodexUsageMonitor-Rust";
+
 /// The shared default account and usage database used by every host and CLI.
 pub fn default_accounts_database_path() -> PathBuf {
-    env::var_os("LOCALAPPDATA")
+    let root = env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
-        .unwrap_or_else(env::temp_dir)
-        .join("CodexUsageMonitor-Rust")
-        .join("accounts.db")
+        .unwrap_or_else(env::temp_dir);
+    let directory = root.join(DATA_DIRECTORY);
+    static MIGRATION: Once = Once::new();
+    MIGRATION.call_once(|| migrate_legacy_directory(&root.join(LEGACY_DATA_DIRECTORY), &directory));
+    directory.join("accounts.db")
+}
+
+/// Moves the pre-rename data directory (database, Codex link, backups) into
+/// place once, so saved accounts and usage history survive the rename. Falls
+/// back to copying when another process still holds the old files open.
+fn migrate_legacy_directory(legacy: &Path, current: &Path) {
+    if current.exists() || !legacy.is_dir() {
+        return;
+    }
+    if fs::rename(legacy, current).is_err() {
+        let _ = copy_directory(legacy, current);
+    }
+}
+
+fn copy_directory(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_directory(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 pub struct SqliteStore {
@@ -929,6 +968,39 @@ fn sqlite_account_error(error: rusqlite::Error) -> AccountStoreError {
         AccountStoreError::DuplicateProviderIdentity
     } else {
         AccountStoreError::Storage(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::migrate_legacy_directory;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn legacy_data_directory_moves_once_and_never_overwrites() {
+        let root = tempdir().unwrap();
+        let legacy = root.path().join("CodexUsageMonitor-Rust");
+        let current = root.path().join("UsageMonitor");
+        fs::create_dir_all(legacy.join("codex-auth-backups")).unwrap();
+        fs::write(legacy.join("accounts.db"), b"db").unwrap();
+        fs::write(legacy.join("codex-auth-backups").join("auth.json"), b"{}").unwrap();
+
+        migrate_legacy_directory(&legacy, &current);
+
+        assert_eq!(fs::read(current.join("accounts.db")).unwrap(), b"db");
+        assert!(
+            current
+                .join("codex-auth-backups")
+                .join("auth.json")
+                .is_file()
+        );
+
+        // An existing current directory always wins over a legacy one.
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("accounts.db"), b"stale").unwrap();
+        migrate_legacy_directory(&legacy, &current);
+        assert_eq!(fs::read(current.join("accounts.db")).unwrap(), b"db");
     }
 }
 

@@ -1,12 +1,12 @@
 use chrono::Utc;
-use codex_usage_core::{
+use tempfile::tempdir;
+use usage_monitor_core::{
     accounts::{AccountRecord, AccountStore, OPENAI},
     storage::SqliteStore,
     usage::{CodexWeeklyResetCandidate, UsagePrimaryWindowKind, UsageSnapshot, UsageSnapshotStore},
 };
-use tempfile::tempdir;
 
-fn candidate(account_id: codex_usage_core::accounts::AccountId) -> CodexWeeklyResetCandidate {
+fn candidate(account_id: usage_monitor_core::accounts::AccountId) -> CodexWeeklyResetCandidate {
     let observed_at_utc = Utc::now();
     CodexWeeklyResetCandidate {
         evidence_version: 1,
