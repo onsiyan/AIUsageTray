@@ -229,6 +229,40 @@ impl UsageSnapshot {
             .chain(self.additional_windows.iter().map(|window| &window.window))
     }
 
+    /// Shows every window and quota whose reset time passed after this reading
+    /// as unused: usage read before a reset is gone once the reset passes,
+    /// including when the provider resets early and the stored reading is
+    /// the last one available. Returns whether anything changed.
+    pub fn clear_elapsed_resets(&mut self, now: DateTime<Utc>) -> bool {
+        let observed_at = self.observed_at_utc;
+        let elapsed = |reset_at: Option<DateTime<Utc>>| {
+            reset_at.is_some_and(|reset_at| observed_at < reset_at && reset_at <= now)
+        };
+        let mut changed = false;
+        for window in self
+            .primary
+            .iter_mut()
+            .chain(self.secondary.iter_mut())
+            .chain(
+                self.additional_windows
+                    .iter_mut()
+                    .map(|window| &mut window.window),
+            )
+        {
+            if elapsed(window.reset_at_utc) && window.used_percent != 0.0 {
+                window.used_percent = 0.0;
+                changed = true;
+            }
+        }
+        for metric in &mut self.metrics {
+            if elapsed(metric.reset_at_utc) && metric.used_percent.is_some_and(|used| used != 0.0) {
+                metric.used_percent = Some(0.0);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Marks the snapshot stale. `stale_at_utc` records when the data first
     /// became stale, so repeated failures keep the original timestamp.
     pub fn mark_stale(&self, reason: impl Into<String>) -> Self {

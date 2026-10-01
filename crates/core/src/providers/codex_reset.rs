@@ -10,7 +10,6 @@ const WEEKLY_WINDOW_SECONDS: i64 = 7 * 24 * 60 * 60;
 const RESET_BOUNDARY_TOLERANCE_SECONDS: i64 = 2 * 60;
 const STABLE_RESET_BOUNDARY_TOLERANCE_SECONDS: i64 = 1;
 const RESET_THRESHOLD_PERCENT: f64 = 1.0;
-const DELAYED_CANDIDATE_MINIMUM_AGE: Duration = Duration::seconds(60);
 const DELAYED_CANDIDATE_MAXIMUM_AGE: Duration = Duration::minutes(30);
 const CODEX_RESET_EVIDENCE_VERSION: u16 = 1;
 
@@ -19,13 +18,6 @@ pub(crate) enum DelayedResetDecision {
     PublishCurrent,
     RetainCandidate,
     DiscardCandidate(&'static str),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct AvailableResetCredit {
-    id: String,
-    reset_type: String,
-    expires_at_utc: Option<DateTime<Utc>>,
 }
 
 /// A sudden weekly drop is ambiguous until a second request using the same
@@ -199,9 +191,6 @@ pub(crate) fn create_delayed_reset_candidate(
     {
         return Err("weekly_reset_boundary_not_supported");
     }
-    if !unchanged_positive_reset_credit_inventory(previous, initial, confirmation) {
-        return Err("reset_credit_inventory_missing_or_changed");
-    }
 
     Ok(CodexWeeklyResetCandidate {
         evidence_version: CODEX_RESET_EVIDENCE_VERSION,
@@ -212,14 +201,16 @@ pub(crate) fn create_delayed_reset_candidate(
 }
 
 /// Revalidates a persisted early-reset candidate against a later provider
-/// observation. Candidate age prevents two immediate retries from counting as
-/// independent confirmation.
+/// observation. `minimum_age` keeps two back-to-back reads from counting as
+/// independent confirmation. Reset credits are not required: a provider-wide
+/// early reset leaves them untouched, and an account may have none.
 pub(crate) fn evaluate_delayed_reset_candidate(
     account: &AccountRecord,
     previous: &UsageSnapshot,
     candidate: &CodexWeeklyResetCandidate,
     current: &UsageSnapshot,
     now: DateTime<Utc>,
+    minimum_age: Duration,
 ) -> DelayedResetDecision {
     if candidate.evidence_version != CODEX_RESET_EVIDENCE_VERSION {
         return DelayedResetDecision::DiscardCandidate("candidate_version_mismatch");
@@ -287,11 +278,7 @@ pub(crate) fn evaluate_delayed_reset_candidate(
     {
         return DelayedResetDecision::DiscardCandidate("weekly_reset_boundary_not_supported");
     }
-    if !unchanged_positive_reset_credit_inventory(previous, &candidate.snapshot, current) {
-        return DelayedResetDecision::DiscardCandidate("reset_credit_inventory_missing_or_changed");
-    }
-
-    if now - candidate.created_at_utc < DELAYED_CANDIDATE_MINIMUM_AGE {
+    if now - candidate.created_at_utc < minimum_age {
         DelayedResetDecision::RetainCandidate
     } else {
         DelayedResetDecision::PublishCurrent
@@ -368,61 +355,6 @@ fn is_unused_weekly_window_rolling_forward(
                 .abs()
                 < RESET_BOUNDARY_TOLERANCE_SECONDS
         })
-}
-
-fn unchanged_positive_reset_credit_inventory(
-    previous: &UsageSnapshot,
-    initial: &UsageSnapshot,
-    confirmation: &UsageSnapshot,
-) -> bool {
-    let Some(previous) = available_reset_credits(previous) else {
-        return false;
-    };
-    let Some(initial) = available_reset_credits(initial) else {
-        return false;
-    };
-    let Some(confirmation) = available_reset_credits(confirmation) else {
-        return false;
-    };
-    !previous.is_empty() && previous == initial && initial == confirmation
-}
-
-fn available_reset_credits(snapshot: &UsageSnapshot) -> Option<Vec<AvailableResetCredit>> {
-    let inventory = snapshot.credit_inventory.as_ref()?;
-    if inventory.available_count == 0 {
-        return None;
-    }
-    let credits = inventory
-        .credits
-        .iter()
-        .filter(|credit| {
-            credit
-                .status
-                .as_deref()
-                .is_some_and(|status| status.eq_ignore_ascii_case("available"))
-                && credit
-                    .expires_at_utc
-                    .is_none_or(|expires_at| expires_at > snapshot.observed_at_utc)
-        })
-        .map(|credit| {
-            Some(AvailableResetCredit {
-                id: credit.id.as_deref()?.trim().to_owned(),
-                reset_type: credit.reset_type.as_deref()?.trim().to_owned(),
-                expires_at_utc: credit.expires_at_utc,
-            })
-        })
-        .collect::<Option<Vec<_>>>()?;
-    if credits.is_empty()
-        || credits.len() != inventory.available_count as usize
-        || credits
-            .iter()
-            .any(|credit| credit.id.is_empty() || credit.reset_type.is_empty())
-    {
-        return None;
-    }
-    let mut credits = credits;
-    credits.sort();
-    Some(credits)
 }
 
 fn is_trusted_codex_snapshot(account: &AccountRecord, snapshot: &UsageSnapshot) -> bool {
@@ -749,15 +681,11 @@ mod tests {
     }
 
     #[test]
-    fn early_reset_candidate_requires_unchanged_positive_credit_inventory() {
+    fn early_reset_candidate_does_not_need_reset_credits() {
         let account = account();
-        let mut previous = snapshot(&account, instant(1), 70.0, instant(5));
-        let mut initial = snapshot(&account, instant(2), 0.0, instant(9));
-        let mut confirmation =
-            snapshot(&account, instant(2) + Duration::seconds(1), 0.0, instant(9));
-        previous.credit_inventory = Some(credit_inventory("available", 1));
-        initial.credit_inventory = Some(credit_inventory("available", 1));
-        confirmation.credit_inventory = Some(credit_inventory("available", 1));
+        let previous = snapshot(&account, instant(1), 70.0, instant(5));
+        let initial = snapshot(&account, instant(2), 0.0, instant(9));
+        let confirmation = snapshot(&account, instant(2) + Duration::seconds(1), 0.0, instant(9));
 
         let candidate = create_delayed_reset_candidate(
             &account,
@@ -770,19 +698,6 @@ mod tests {
         assert_eq!(
             candidate.snapshot.observed_at_utc,
             confirmation.observed_at_utc
-        );
-
-        confirmation.credit_inventory = Some(credit_inventory("redeemed", 0));
-        assert_eq!(
-            create_delayed_reset_candidate(
-                &account,
-                &previous,
-                &initial,
-                &confirmation,
-                instant(2) + Duration::seconds(2),
-            )
-            .unwrap_err(),
-            "reset_credit_inventory_missing_or_changed"
         );
     }
 
@@ -851,6 +766,7 @@ mod tests {
                 &candidate,
                 &current,
                 created_at + Duration::minutes(2),
+                Duration::seconds(60),
             ),
             DelayedResetDecision::PublishCurrent
         );
@@ -894,6 +810,7 @@ mod tests {
                 &candidate,
                 &current,
                 created_at + Duration::seconds(30),
+                Duration::seconds(60),
             ),
             DelayedResetDecision::RetainCandidate
         );
@@ -908,6 +825,7 @@ mod tests {
                 &candidate,
                 &current,
                 created_at + Duration::minutes(3),
+                Duration::seconds(60),
             ),
             DelayedResetDecision::PublishCurrent
         );

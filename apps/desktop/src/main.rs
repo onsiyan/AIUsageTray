@@ -75,6 +75,8 @@ static TRAY_EVENT_RECEIVER: OnceLock<Receiver<TrayIconEvent>> = OnceLock::new();
 static REFRESH_ICON_HANDLES: OnceLock<Vec<(ThemeId, image::Handle)>> = OnceLock::new();
 
 const REFRESH_ICON_TICK: Duration = Duration::from_millis(50);
+/// How often an open popup updates countdowns and checks for passed resets.
+const RESET_CLOCK_TICK: Duration = Duration::from_secs(30);
 
 fn main() -> iced::Result {
     let (tray_sender, tray_receiver) = async_channel::bounded::<TrayIconEvent>(32);
@@ -285,6 +287,9 @@ impl App {
         ) {
             subscriptions.push(Subscription::run(refresh_icon_tick_stream));
         }
+        if app.popup_visible {
+            subscriptions.push(Subscription::run(reset_clock_stream));
+        }
 
         Subscription::batch(subscriptions)
     }
@@ -475,6 +480,7 @@ enum Message {
     CloseButton,
     RefreshAllUsage,
     RefreshIconTick,
+    ResetClockTick,
     ToggleThemeMenu,
     DismissThemeMenu,
     ToggleAccountAddMenu,

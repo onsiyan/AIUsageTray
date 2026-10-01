@@ -285,120 +285,116 @@ fn with_available_codex_reset_credit(mut snapshot: UsageSnapshot) -> UsageSnapsh
     snapshot
 }
 
+fn immediate_codex_reset_recheck() -> RefreshCoordinatorConfig {
+    RefreshCoordinatorConfig {
+        codex_reset_recheck_delay: Duration::ZERO,
+        ..RefreshCoordinatorConfig::default()
+    }
+}
+
 #[tokio::test]
-async fn unconfirmed_weekly_reset_retains_prior_usage_for_the_same_account() {
+async fn weekly_drop_that_rebounds_on_recheck_publishes_the_rebound() {
     let account = AccountRecord::create("test", "codex@example.com", None, OPENAI, None).unwrap();
     let accounts = Arc::new(InMemoryAccountStore::default());
     accounts.upsert(&account).await.unwrap();
     let store = Arc::new(crate::usage::InMemoryUsageSnapshotStore::default());
     let prior = codex_weekly_snapshot(account.id, now(), 70.0, now() + ChronoDuration::days(3));
     store.save(prior.clone()).await.unwrap();
-    let initial = codex_weekly_snapshot(
+    let low = |seconds, used| {
+        codex_weekly_snapshot(
+            account.id,
+            now() + ChronoDuration::seconds(seconds),
+            used,
+            now() + ChronoDuration::days(10),
+        )
+    };
+    let rebound = codex_weekly_snapshot(
         account.id,
-        now() + ChronoDuration::seconds(1),
-        0.2,
-        now() + ChronoDuration::days(10),
-    );
-    let confirmation = codex_weekly_snapshot(
-        account.id,
-        now() + ChronoDuration::seconds(2),
-        0.8,
-        now() + ChronoDuration::days(10),
+        now() + ChronoDuration::seconds(30),
+        71.0,
+        now() + ChronoDuration::days(3),
     );
     let adapter = Arc::new(SequencedSnapshotAdapter {
-        snapshots: std::sync::Mutex::new(VecDeque::from([initial, confirmation])),
+        snapshots: std::sync::Mutex::new(VecDeque::from([low(1, 0.2), low(2, 0.8), rebound])),
         calls: AtomicUsize::new(0),
     });
     let coordinator = UsageRefreshCoordinator::new(
         accounts,
         store.clone(),
         vec![adapter.clone() as Arc<dyn UsageAdapter>],
-        RefreshCoordinatorConfig::default(),
+        immediate_codex_reset_recheck(),
     );
 
     let outcome = coordinator
         .refresh_account(account.clone(), RefreshReason::Manual)
         .await;
 
-    assert_eq!(adapter.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(outcome.status, RefreshStatus::RetainedStale);
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(outcome.status, RefreshStatus::Updated);
     assert_eq!(
-        outcome.error.as_ref().map(|error| error.code),
-        Some(UsageAdapterErrorCode::InvalidPayload)
-    );
-    let retained = outcome.snapshot.unwrap();
-    assert!(retained.is_stale);
-    assert_eq!(retained.secondary.unwrap().used_percent, 70.0);
-    let persisted = store.get_latest(account.id).await.unwrap().unwrap();
-    assert_eq!(persisted.observed_at_utc, prior.observed_at_utc);
-}
-
-#[tokio::test]
-async fn early_weekly_reset_is_retained_with_a_persisted_delayed_candidate() {
-    let account = AccountRecord::create("test", "codex@example.com", None, OPENAI, None).unwrap();
-    let accounts = Arc::new(InMemoryAccountStore::default());
-    accounts.upsert(&account).await.unwrap();
-    let store = Arc::new(crate::usage::InMemoryUsageSnapshotStore::default());
-    let observed_at = Utc::now();
-    let prior = with_available_codex_reset_credit(codex_weekly_snapshot(
-        account.id,
-        observed_at - ChronoDuration::minutes(1),
-        70.0,
-        observed_at + ChronoDuration::days(3),
-    ));
-    store.save(prior.clone()).await.unwrap();
-    let initial = with_available_codex_reset_credit(codex_weekly_snapshot(
-        account.id,
-        observed_at - ChronoDuration::seconds(2),
-        0.0,
-        observed_at + ChronoDuration::days(10),
-    ));
-    let confirmation = with_available_codex_reset_credit(codex_weekly_snapshot(
-        account.id,
-        observed_at - ChronoDuration::seconds(1),
-        0.0,
-        observed_at + ChronoDuration::days(10),
-    ));
-    let adapter = Arc::new(SequencedSnapshotAdapter {
-        snapshots: std::sync::Mutex::new(VecDeque::from([initial, confirmation])),
-        calls: AtomicUsize::new(0),
-    });
-    let coordinator = UsageRefreshCoordinator::new(
-        accounts,
-        store.clone(),
-        vec![adapter.clone() as Arc<dyn UsageAdapter>],
-        RefreshCoordinatorConfig::default(),
-    );
-
-    let outcome = coordinator
-        .refresh_account(account.clone(), RefreshReason::Manual)
-        .await;
-
-    assert_eq!(adapter.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(outcome.status, RefreshStatus::RetainedStale);
-    assert!(
-        outcome
-            .error
-            .as_ref()
-            .unwrap()
-            .message
-            .contains("awaiting an independent later OAuth observation")
+        outcome.snapshot.unwrap().secondary.unwrap().used_percent,
+        71.0
     );
     assert!(
         store
             .get_codex_weekly_reset_candidate(account.id)
             .await
             .unwrap()
-            .is_some()
+            .is_none()
     );
+}
+
+#[tokio::test]
+async fn early_weekly_reset_without_reset_credits_publishes_after_recheck() {
+    let account = AccountRecord::create("test", "codex@example.com", None, OPENAI, None).unwrap();
+    let accounts = Arc::new(InMemoryAccountStore::default());
+    accounts.upsert(&account).await.unwrap();
+    let store = Arc::new(crate::usage::InMemoryUsageSnapshotStore::default());
+    let observed_at = Utc::now();
+    let prior = codex_weekly_snapshot(
+        account.id,
+        observed_at - ChronoDuration::minutes(1),
+        70.0,
+        observed_at + ChronoDuration::days(3),
+    );
+    store.save(prior).await.unwrap();
+    let low = |seconds_ago| {
+        codex_weekly_snapshot(
+            account.id,
+            observed_at - ChronoDuration::seconds(seconds_ago),
+            0.0,
+            observed_at + ChronoDuration::days(10),
+        )
+    };
+    let adapter = Arc::new(SequencedSnapshotAdapter {
+        snapshots: std::sync::Mutex::new(VecDeque::from([low(3), low(2), low(1)])),
+        calls: AtomicUsize::new(0),
+    });
+    let coordinator = UsageRefreshCoordinator::new(
+        accounts,
+        store.clone(),
+        vec![adapter.clone() as Arc<dyn UsageAdapter>],
+        immediate_codex_reset_recheck(),
+    );
+
+    let outcome = coordinator
+        .refresh_account(account.clone(), RefreshReason::Manual)
+        .await;
+
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(outcome.status, RefreshStatus::Updated);
     assert_eq!(
+        outcome.snapshot.unwrap().secondary.unwrap().used_percent,
+        0.0
+    );
+    let persisted = store.get_latest(account.id).await.unwrap().unwrap();
+    assert_eq!(persisted.secondary.unwrap().used_percent, 0.0);
+    assert!(
         store
-            .get_latest(account.id)
+            .get_codex_weekly_reset_candidate(account.id)
             .await
             .unwrap()
-            .unwrap()
-            .observed_at_utc,
-        prior.observed_at_utc
+            .is_none()
     );
 }
 
@@ -970,4 +966,24 @@ fn huge_reset_delay_does_not_panic() {
     assert!(crate::providers::shared::reset_at(&value, now()).is_none());
     let value = serde_json::json!({ "resetInSec": "NaN" });
     assert!(crate::providers::shared::reset_at(&value, now()).is_none());
+}
+
+#[test]
+fn passed_reset_shows_the_window_as_unused_until_the_next_reading() {
+    let account_id = AccountId::new();
+    let reset_at = now() + ChronoDuration::hours(1);
+    let mut stored =
+        codex_weekly_snapshot(account_id, now(), 70.0, now() + ChronoDuration::days(3));
+    stored.primary.as_mut().unwrap().reset_at_utc = Some(reset_at);
+
+    assert!(
+        !stored
+            .clone()
+            .clear_elapsed_resets(reset_at - ChronoDuration::seconds(1))
+    );
+    assert!(stored.clear_elapsed_resets(reset_at));
+    assert_eq!(stored.primary.as_ref().unwrap().used_percent, 0.0);
+    assert_eq!(stored.secondary.as_ref().unwrap().used_percent, 70.0);
+    // Clearing is idempotent, so a host can call it on every clock tick.
+    assert!(!stored.clear_elapsed_resets(reset_at + ChronoDuration::minutes(1)));
 }

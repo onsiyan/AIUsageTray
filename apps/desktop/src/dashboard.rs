@@ -276,7 +276,13 @@ impl DashboardState {
         self.codex_desktop.antigravity_email = current_antigravity_app_email();
     }
 
-    pub fn set_accounts(&mut self, entries: Vec<AccountUsageEntry>) {
+    pub fn set_accounts(&mut self, mut entries: Vec<AccountUsageEntry>) {
+        let now_utc = Utc::now();
+        for entry in &mut entries {
+            if let Some(snapshot) = entry.snapshot.as_mut() {
+                snapshot.clear_elapsed_resets(now_utc);
+            }
+        }
         self.usage_animation
             .update(&self.entries, &entries, Instant::now());
         let account_ids = entries
@@ -306,7 +312,10 @@ impl DashboardState {
     /// Applies one refreshed account in place. Unlike `set_accounts`, this
     /// neither copies every account nor rereads desktop app state, since a
     /// refresh delivers accounts one by one.
-    pub fn update_account_usage(&mut self, entry: AccountUsageEntry) {
+    pub fn update_account_usage(&mut self, mut entry: AccountUsageEntry) {
+        if let Some(snapshot) = entry.snapshot.as_mut() {
+            snapshot.clear_elapsed_resets(Utc::now());
+        }
         let now = Instant::now();
         if let Some(existing) = self
             .entries
@@ -321,6 +330,30 @@ impl DashboardState {
         self.is_loading = false;
         self.has_loaded = true;
         self.failed = false;
+    }
+
+    /// Shows windows whose reset time has passed since they were read as
+    /// unused. Returns whether any did, so the caller can fetch new readings.
+    pub fn clear_elapsed_resets(&mut self) -> bool {
+        let now_utc = Utc::now();
+        let now = Instant::now();
+        let mut changed = false;
+        for existing in &mut self.entries {
+            let Some(mut snapshot) = existing.snapshot.clone() else {
+                continue;
+            };
+            if !snapshot.clear_elapsed_resets(now_utc) {
+                continue;
+            }
+            let next = AccountUsageEntry {
+                account: existing.account.clone(),
+                snapshot: Some(snapshot),
+            };
+            self.usage_animation.update_account(existing, &next, now);
+            *existing = next;
+            changed = true;
+        }
+        changed
     }
 
     /// Rereads which accounts the Codex and Antigravity apps are signed in

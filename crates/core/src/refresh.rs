@@ -21,8 +21,8 @@ use crate::{
     },
     transport::TransportError,
     usage::{
-        StorageError, UsageAdapter, UsageAdapterError, UsageAdapterErrorCode, UsageSnapshot,
-        UsageSnapshotStore,
+        CodexWeeklyResetCandidate, StorageError, UsageAdapter, UsageAdapterError,
+        UsageAdapterErrorCode, UsageSnapshot, UsageSnapshotStore,
     },
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -37,6 +37,10 @@ use tokio::sync::{Mutex, Semaphore, watch};
 const AUTOMATIC_REFRESH_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const RESET_BOUNDARY_GRACE: Duration = Duration::from_secs(30);
 const RESET_BOUNDARY_MINIMUM_DELAY: Duration = Duration::from_secs(5);
+/// How long to wait before re-reading an early Codex weekly reset.
+const CODEX_RESET_RECHECK_DELAY: Duration = Duration::from_secs(20);
+const CODEX_RESET_AWAITING: &str =
+    "Codex weekly reset is awaiting an independent later OAuth observation";
 
 /// Background refresh cadence. `Automatic` is the default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +79,8 @@ pub struct RefreshCoordinatorConfig {
     pub max_concurrency: usize,
     pub reset_boundary_grace: Duration,
     pub reset_boundary_minimum_delay: Duration,
+    /// Delay before the read that settles an early Codex weekly reset.
+    pub codex_reset_recheck_delay: Duration,
 }
 
 impl Default for RefreshCoordinatorConfig {
@@ -84,6 +90,7 @@ impl Default for RefreshCoordinatorConfig {
             max_concurrency: 4,
             reset_boundary_grace: RESET_BOUNDARY_GRACE,
             reset_boundary_minimum_delay: RESET_BOUNDARY_MINIMUM_DELAY,
+            codex_reset_recheck_delay: CODEX_RESET_RECHECK_DELAY,
         }
     }
 }
@@ -191,8 +198,7 @@ impl UsageRefreshCoordinator {
         let config = RefreshCoordinatorConfig {
             cadence: config.cadence.normalized(),
             max_concurrency: config.max_concurrency.max(1),
-            reset_boundary_grace: config.reset_boundary_grace,
-            reset_boundary_minimum_delay: config.reset_boundary_minimum_delay,
+            ..config
         };
         let mut adapter_registry = HashMap::new();
         for adapter in adapters {
@@ -692,24 +698,25 @@ impl UsageRefreshCoordinator {
                         &candidate,
                         &snapshot,
                         Utc::now(),
+                        chrono_from_std(self.config.codex_reset_recheck_delay / 2),
                     ) {
                         DelayedResetDecision::PublishCurrent => {
                             delayed_reset_confirmed = true;
                         }
                         DelayedResetDecision::RetainCandidate => {
                             return self
-                                    .finish_failure(
-                                        &account,
-                                        reason,
-                                        prior,
-                                        UsageAdapterError {
-                                            code: UsageAdapterErrorCode::InvalidPayload,
-                                            message: "Codex weekly reset is awaiting an independent later OAuth observation".to_owned(),
-                                            http_status_code: None,
-                                            retry_after_seconds: None,
-                                        },
-                                    )
-                                    .await;
+                                .finish_failure(
+                                    &account,
+                                    reason,
+                                    prior,
+                                    UsageAdapterError {
+                                        code: UsageAdapterErrorCode::InvalidPayload,
+                                        message: CODEX_RESET_AWAITING.to_owned(),
+                                        http_status_code: None,
+                                        retry_after_seconds: None,
+                                    },
+                                )
+                                .await;
                         }
                         DelayedResetDecision::DiscardCandidate(_) => {
                             if let Err(error) = self
@@ -794,50 +801,14 @@ impl UsageRefreshCoordinator {
                     None
                 };
                 if let Some(rejection) = confirmation_rejection {
-                    let delayed_candidate = create_delayed_reset_candidate(
+                    let candidate = match create_delayed_reset_candidate(
                         &account,
                         previous,
                         &snapshot,
                         &confirmed_snapshot,
                         Utc::now(),
-                    );
-                    match delayed_candidate {
-                        Ok(candidate) => {
-                            if let Err(error) = self
-                                .snapshot_store
-                                .save_codex_weekly_reset_candidate(account.id, Some(candidate))
-                                .await
-                            {
-                                return self
-                                        .finish_failure(
-                                            &account,
-                                            reason,
-                                            prior,
-                                            UsageAdapterError {
-                                                code: UsageAdapterErrorCode::InvalidPayload,
-                                                message: format!(
-                                                    "could not persist pending Codex weekly reset evidence: {error}"
-                                                ),
-                                                http_status_code: None,
-                                                retry_after_seconds: None,
-                                            },
-                                        )
-                                        .await;
-                            }
-                            return self
-                                    .finish_failure(
-                                        &account,
-                                        reason,
-                                        prior,
-                                        UsageAdapterError {
-                                            code: UsageAdapterErrorCode::InvalidPayload,
-                                            message: "Codex weekly reset is awaiting an independent later OAuth observation".to_owned(),
-                                            http_status_code: None,
-                                            retry_after_seconds: None,
-                                        },
-                                    )
-                                    .await;
-                        }
+                    ) {
+                        Ok(candidate) => candidate,
                         Err(delayed_rejection) => {
                             return self
                                     .finish_failure(
@@ -855,10 +826,23 @@ impl UsageRefreshCoordinator {
                                     )
                                     .await;
                         }
+                    };
+                    match self
+                        .recheck_early_reset(&account, adapter.as_ref(), previous, candidate)
+                        .await
+                    {
+                        Ok((later, later_identity)) => {
+                            snapshot = later;
+                            identity = later_identity.or(identity);
+                        }
+                        Err(error) => {
+                            return self.finish_failure(&account, reason, prior, error).await;
+                        }
                     }
+                } else {
+                    snapshot = confirmed_snapshot;
+                    identity = confirmation.identity.or(identity);
                 }
-                snapshot = confirmed_snapshot;
-                identity = confirmation.identity.or(identity);
             }
             // Apply the identity to the *current* stored record. The
             // `account` value was read before the provider call, so
@@ -932,6 +916,61 @@ impl UsageRefreshCoordinator {
             retry_after_seconds: None,
         });
         self.finish_failure(&account, reason, prior, error).await
+    }
+
+    /// Settles an early Codex weekly reset inside one refresh. Two back-to-back
+    /// low reads are kept as a candidate; a read taken a little later that
+    /// still agrees publishes the reset, and one that rebounded is published
+    /// as ordinary usage. Otherwise the candidate waits for the next refresh.
+    async fn recheck_early_reset(
+        &self,
+        account: &AccountRecord,
+        adapter: &dyn UsageAdapter,
+        previous: &UsageSnapshot,
+        candidate: CodexWeeklyResetCandidate,
+    ) -> Result<(UsageSnapshot, Option<VerifiedIdentity>), UsageAdapterError> {
+        let awaiting = || UsageAdapterError {
+            code: UsageAdapterErrorCode::InvalidPayload,
+            message: CODEX_RESET_AWAITING.to_owned(),
+            http_status_code: None,
+            retry_after_seconds: None,
+        };
+        self.snapshot_store
+            .save_codex_weekly_reset_candidate(account.id, Some(candidate.clone()))
+            .await
+            .map_err(|error| UsageAdapterError {
+                code: UsageAdapterErrorCode::InvalidPayload,
+                message: format!("could not persist pending Codex weekly reset evidence: {error}"),
+                http_status_code: None,
+                retry_after_seconds: None,
+            })?;
+        tokio::time::sleep(self.config.codex_reset_recheck_delay).await;
+        let Ok(later) = adapter.probe(account).await else {
+            return Err(awaiting());
+        };
+        let Some(snapshot) = later.snapshot.filter(|snapshot| {
+            later.error.is_none()
+                && snapshot.account_id == account.id
+                && provider_ids_match(&account.provider_id, &snapshot.provider_id)
+        }) else {
+            return Err(awaiting());
+        };
+        let decision = evaluate_delayed_reset_candidate(
+            account,
+            previous,
+            &candidate,
+            &snapshot,
+            Utc::now(),
+            chrono_from_std(self.config.codex_reset_recheck_delay / 2),
+        );
+        // Publishing clears the stored candidate.
+        if decision == DelayedResetDecision::PublishCurrent
+            || !needs_weekly_reset_confirmation(account, Some(previous), &snapshot)
+        {
+            Ok((snapshot, later.identity))
+        } else {
+            Err(awaiting())
+        }
     }
 
     async fn finish_failure(

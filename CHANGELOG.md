@@ -44,6 +44,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- An early Codex weekly reset is shown in the same refresh, after one
+  re-read about 20 seconds later; it no longer needs unused reset credits and
+  no longer leaves the old usage on screen until the original reset time.
+- A window whose reset time has passed shows as unused until the provider's
+  next reading, and an open popup refreshes when a shown reset passes.
 - One tray click always brings the popup forward.
 - Credentials larger than Credential Manager's 2,560-byte limit are split
   across entries instead of failing to save.

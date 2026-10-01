@@ -1,4 +1,4 @@
-//! Tray icon events, the refresh-icon animation clock, and popup placement.
+//! Tray icon events, the refresh-icon and reset clocks, and popup placement.
 
 use super::*;
 
@@ -61,22 +61,28 @@ pub(super) fn tray_event_stream() -> impl Stream<Item = Message> {
 }
 
 pub(super) fn refresh_icon_tick_stream() -> impl Stream<Item = Message> {
+    tick_stream(REFRESH_ICON_TICK, || Message::RefreshIconTick)
+}
+
+/// Re-renders reset countdowns and notices resets that pass while the popup
+/// is open.
+pub(super) fn reset_clock_stream() -> impl Stream<Item = Message> {
+    tick_stream(RESET_CLOCK_TICK, || Message::ResetClockTick)
+}
+
+fn tick_stream(period: Duration, message: fn() -> Message) -> impl Stream<Item = Message> {
     let (sender, receiver) = async_channel::bounded::<()>(1);
     thread::spawn(move || {
         loop {
-            thread::sleep(REFRESH_ICON_TICK);
+            thread::sleep(period);
             if sender.send_blocking(()).is_err() {
                 break;
             }
         }
     });
 
-    iced::futures::stream::unfold(receiver, |receiver| async move {
-        receiver
-            .recv()
-            .await
-            .ok()
-            .map(|()| (Message::RefreshIconTick, receiver))
+    iced::futures::stream::unfold(receiver, move |receiver| async move {
+        receiver.recv().await.ok().map(|()| (message(), receiver))
     })
 }
 

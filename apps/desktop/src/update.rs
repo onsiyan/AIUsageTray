@@ -284,6 +284,15 @@ impl App {
                 self.dashboard.advance_usage_animation(Instant::now());
                 Task::none()
             }
+            Message::ResetClockTick => {
+                // A window reset while the popup was open: show it as unused
+                // right away and fetch the provider's new reading.
+                if self.dashboard.clear_elapsed_resets() {
+                    self.start_usage_refresh()
+                } else {
+                    Task::none()
+                }
+            }
             Message::ToggleThemeMenu => {
                 self.theme_menu_open = !self.theme_menu_open;
                 self.account_add_menu_open = false;
