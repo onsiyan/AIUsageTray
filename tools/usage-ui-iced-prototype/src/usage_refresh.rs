@@ -39,83 +39,118 @@ mod windows {
         WindowsCredentialManagerAuthMaterialStore, WindowsCredentialManagerStore,
         WindowsDefaultBrowserLauncher, browser_cookies::WindowsBrowserCookieImporter,
     };
-    use std::{sync::Arc, time::Duration};
+    use std::{
+        sync::{Arc, OnceLock},
+        time::Duration,
+    };
 
     #[cfg(test)]
     use codex_usage_core::accounts::{CLAUDE, OPENAI};
 
     const MAX_CONCURRENT_ACCOUNT_REFRESHES: usize = 4;
 
+    /// Everything a refresh needs, built once and kept for the life of the
+    /// app. Reusing it keeps OAuth access tokens cached in memory (so a
+    /// refresh does not spend a token refresh per account), keeps HTTP
+    /// connections alive between refreshes, and avoids reopening the
+    /// database and starting a runtime every time.
+    struct RefreshContext {
+        runtime: tokio::runtime::Runtime,
+        account_store: Arc<dyn AccountStore>,
+        snapshot_store: Arc<dyn UsageSnapshotStore>,
+        transport: Arc<ReqwestUsageHttpTransport>,
+        auth: Arc<dyn AccountAuthMaterialProvider>,
+        auth_store: Arc<dyn AccountAuthMaterialStore>,
+        session_refresher: Arc<dyn AccountBrowserSessionRefresher>,
+    }
+
+    static REFRESH_CONTEXT: OnceLock<Result<RefreshContext, String>> = OnceLock::new();
+
+    fn refresh_context() -> Result<&'static RefreshContext, String> {
+        REFRESH_CONTEXT
+            .get_or_init(build_refresh_context)
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    fn build_refresh_context() -> Result<RefreshContext, String> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("usage-refresh")
+            .enable_all()
+            .build()
+            .map_err(|error| format!("could not start the usage refresh runtime: {error}"))?;
+        let store = Arc::new(
+            SqliteStore::open(default_accounts_database_path())
+                .map_err(|error| format!("could not open the accounts database: {error}"))?,
+        );
+        let transport = Arc::new(
+            ReqwestUsageHttpTransport::new(Duration::from_secs(45))
+                .map_err(|error| format!("could not create the provider transport: {error}"))?,
+        );
+        let oauth_store = Arc::new(WindowsCredentialManagerStore);
+        let auth_store = Arc::new(WindowsCredentialManagerAuthMaterialStore);
+        let auth = build_auth_provider(
+            Arc::clone(&transport),
+            Arc::clone(&oauth_store),
+            Arc::clone(&auth_store),
+        );
+        let session_refresher = Arc::new(
+            WindowsBrowserCookieImporter::from_process()
+                .map_err(|error| format!("could not initialize browser session access: {error}"))?,
+        ) as Arc<dyn AccountBrowserSessionRefresher>;
+        Ok(RefreshContext {
+            runtime,
+            account_store: store.clone(),
+            snapshot_store: store,
+            transport,
+            auth,
+            auth_store,
+            session_refresher,
+        })
+    }
+
     pub fn refresh_accounts_for_provider(
         provider: UsageProvider,
         selected_provider_phase: bool,
     ) -> async_channel::Receiver<RefreshEvent> {
         let (sender, receiver) = async_channel::bounded(8);
-        let worker_sender = sender.clone();
-        let spawn_result = std::thread::Builder::new()
-            .name("usage-dashboard-refresh".to_owned())
-            .spawn(move || {
-                let mut completion = WorkerCompletionGuard {
-                    sender: worker_sender.clone(),
-                    completed: false,
-                };
-                let result = match tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(2)
-                    .enable_all()
-                    .build()
-                {
-                    Ok(runtime) => runtime.block_on(refresh_accounts_for_provider_inner(
-                        provider,
-                        selected_provider_phase,
-                        worker_sender.clone(),
-                    )),
-                    Err(error) => Err(format!(
-                        "could not start the usage refresh runtime: {error}"
-                    )),
-                };
-                let event = match result {
-                    Ok(summary) => RefreshEvent::Finished(summary),
-                    Err(error) => RefreshEvent::Failed(error),
-                };
-                let _ = worker_sender.send_blocking(event);
-                completion.completed = true;
-            });
-
-        if let Err(error) = spawn_result {
-            let _ = sender.send_blocking(RefreshEvent::Failed(format!(
-                "could not start the usage refresh worker: {error}"
-            )));
-        }
-
-        drop(sender);
+        let context = match refresh_context() {
+            Ok(context) => context,
+            Err(error) => {
+                let _ = sender.try_send(RefreshEvent::Failed(error));
+                return receiver;
+            }
+        };
+        let worker = context.runtime.spawn(refresh_accounts_for_provider_inner(
+            context,
+            provider,
+            selected_provider_phase,
+            sender.clone(),
+        ));
+        // Report the outcome, including a panic, so the dashboard never
+        // waits forever for a refresh to finish.
+        context.runtime.spawn(async move {
+            let event = match worker.await {
+                Ok(Ok(summary)) => RefreshEvent::Finished(summary),
+                Ok(Err(error)) => RefreshEvent::Failed(error),
+                Err(_) => {
+                    RefreshEvent::Failed("usage refresh worker ended unexpectedly".to_owned())
+                }
+            };
+            let _ = sender.send(event).await;
+        });
         receiver
     }
 
-    struct WorkerCompletionGuard {
-        sender: async_channel::Sender<RefreshEvent>,
-        completed: bool,
-    }
-
-    impl Drop for WorkerCompletionGuard {
-        fn drop(&mut self) {
-            if !self.completed {
-                let _ = self.sender.send_blocking(RefreshEvent::Failed(
-                    "usage refresh worker ended unexpectedly".to_owned(),
-                ));
-            }
-        }
-    }
-
     async fn refresh_accounts_for_provider_inner(
+        context: &'static RefreshContext,
         provider: UsageProvider,
         selected_provider_phase: bool,
         sender: async_channel::Sender<RefreshEvent>,
     ) -> Result<RefreshSummary, String> {
-        let store = Arc::new(
-            SqliteStore::open(default_accounts_database_path())
-                .map_err(|error| format!("could not open the accounts database: {error}"))?,
-        );
-        let accounts = store
+        let accounts = context
+            .account_store
             .list()
             .await
             .map_err(|error| format!("could not load saved accounts: {error}"))?;
@@ -125,25 +160,12 @@ mod windows {
         let mut not_updated = 0;
 
         if !targets.is_empty() {
-            let transport = Arc::new(
-                ReqwestUsageHttpTransport::new(Duration::from_secs(45))
-                    .map_err(|error| format!("could not create the provider transport: {error}"))?,
-            );
-            let oauth_store = Arc::new(WindowsCredentialManagerStore);
-            let auth_store = Arc::new(WindowsCredentialManagerAuthMaterialStore);
-            let auth = build_auth_provider(
-                Arc::clone(&transport),
-                Arc::clone(&oauth_store),
-                Arc::clone(&auth_store),
-            );
-            let session_refresher = Arc::new(
-                WindowsBrowserCookieImporter::from_process().map_err(|error| {
-                    format!("could not initialize browser session access: {error}")
-                })?,
-            ) as Arc<dyn AccountBrowserSessionRefresher>;
-            let account_store: Arc<dyn AccountStore> = store.clone();
-            let snapshot_store: Arc<dyn UsageSnapshotStore> = store.clone();
-            let account_auth_store: Arc<dyn AccountAuthMaterialStore> = auth_store.clone();
+            let transport = Arc::clone(&context.transport);
+            let auth = Arc::clone(&context.auth);
+            let session_refresher = Arc::clone(&context.session_refresher);
+            let account_store = Arc::clone(&context.account_store);
+            let snapshot_store = Arc::clone(&context.snapshot_store);
+            let account_auth_store = Arc::clone(&context.auth_store);
 
             let mut targets = targets.into_iter();
             let mut tasks = tokio::task::JoinSet::new();

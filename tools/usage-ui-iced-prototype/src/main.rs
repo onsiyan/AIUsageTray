@@ -915,6 +915,7 @@ impl App {
 
     fn finish_dashboard_refresh(&mut self) -> Task<Message> {
         self.dashboard_refresh_running = false;
+        self.dashboard.refresh_desktop_apps();
         self.refresh_icon_rotation_radians = 0.0;
         if self.account_delete_queued {
             self.begin_pending_account_deletion()

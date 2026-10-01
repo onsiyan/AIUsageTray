@@ -137,6 +137,30 @@ impl UsageAnimationState {
         self.transitions = next_transitions;
     }
 
+    /// Same as `update`, for a single account, leaving every other account's
+    /// running transitions untouched.
+    fn update_account(
+        &mut self,
+        previous: &AccountUsageEntry,
+        next: &AccountUsageEntry,
+        now: Instant,
+    ) {
+        let account_id = next.account.id;
+        let mut others = std::mem::take(&mut self.transitions);
+        self.transitions = others
+            .iter()
+            .filter(|(key, _)| key.account_id == account_id)
+            .map(|(key, transition)| (key.clone(), *transition))
+            .collect();
+        others.retain(|key, _| key.account_id != account_id);
+        self.update(
+            std::slice::from_ref(previous),
+            std::slice::from_ref(next),
+            now,
+        );
+        self.transitions.extend(others);
+    }
+
     fn is_active(&self) -> bool {
         !self.transitions.is_empty()
     }
@@ -562,17 +586,31 @@ impl DashboardState {
         self.codex_desktop.antigravity_email = current_antigravity_app_email();
     }
 
+    /// Applies one refreshed account in place. Unlike `set_accounts`, this
+    /// neither copies every account nor rereads desktop app state, since a
+    /// refresh delivers accounts one by one.
     pub fn update_account_usage(&mut self, entry: AccountUsageEntry) {
-        let mut entries = self.entries.clone();
-        if let Some(existing) = entries
+        let now = Instant::now();
+        if let Some(existing) = self
+            .entries
             .iter_mut()
             .find(|existing| existing.account.id == entry.account.id)
         {
+            self.usage_animation.update_account(existing, &entry, now);
             *existing = entry;
         } else {
-            entries.push(entry);
+            self.entries.push(entry);
         }
-        self.set_accounts(entries);
+        self.is_loading = false;
+        self.has_loaded = true;
+        self.failed = false;
+    }
+
+    /// Rereads which accounts the Codex and Antigravity apps are signed in
+    /// with.
+    pub fn refresh_desktop_apps(&mut self) {
+        self.codex_desktop.active_account = current_codex_desktop_account();
+        self.codex_desktop.antigravity_email = current_antigravity_app_email();
     }
 
     pub fn account_entries(&self) -> &[AccountUsageEntry] {
@@ -3921,6 +3959,39 @@ mod tests {
         assert_eq!(transition.from_remaining, 80.0);
         assert_eq!(transition.to_remaining, 58.0);
         assert!(animation.is_active());
+    }
+
+    #[test]
+    fn single_account_update_keeps_other_accounts_running_transitions() {
+        let with_usage = |entry: &AccountUsageEntry, used: f64| {
+            let mut next = entry.clone();
+            next.snapshot
+                .as_mut()
+                .unwrap()
+                .primary
+                .as_mut()
+                .unwrap()
+                .used_percent = used;
+            next
+        };
+        let first = account_entry_with_usage(20.0);
+        let second = account_entry_with_usage(30.0);
+        let now = Instant::now();
+        let mut animation = UsageAnimationState::default();
+        animation.update(
+            &[first.clone(), second.clone()],
+            &[with_usage(&first, 40.0), second.clone()],
+            now,
+        );
+        assert!(animation.has_transitions_for(first.account.id));
+
+        animation.update_account(&second, &with_usage(&second, 50.0), now);
+
+        assert!(
+            animation.has_transitions_for(first.account.id),
+            "updating one account must not cancel another's animation"
+        );
+        assert!(animation.has_transitions_for(second.account.id));
     }
 
     #[test]
