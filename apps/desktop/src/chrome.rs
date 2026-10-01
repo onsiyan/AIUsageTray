@@ -1,0 +1,321 @@
+//! Title-bar controls, provider tabs, and the window frame.
+
+use super::*;
+
+pub(super) fn add_account_button(
+    adding: bool,
+    active_theme: &'static ThemeDefinition,
+    language: locale::Language,
+) -> Element<'static, Message> {
+    let button = button(container(icon_user_round_plus().size(17)).center(Fill))
+        .on_press_maybe((!adding).then_some(Message::ToggleAccountAddMenu))
+        .width(30)
+        .height(29)
+        .padding(0)
+        .style(move |theme: &Theme, status| {
+            let mut style = button::text(theme, status);
+            style.background =
+                if adding || matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                    Some(Background::Color(active_theme.colors.hover()))
+                } else {
+                    None
+                };
+            style.text_color = active_theme.colors.text();
+            style.border = Border {
+                radius: 8.0.into(),
+                ..Border::default()
+            };
+            style.shadow = Shadow::default();
+            style
+        });
+
+    hint::hint(
+        button,
+        locale::text(language, locale::Text::AddAccount),
+        active_theme,
+    )
+}
+
+pub(super) fn delete_account_button(
+    open: bool,
+    disabled: bool,
+    active_theme: &'static ThemeDefinition,
+    language: locale::Language,
+) -> Element<'static, Message> {
+    let delete_color = active_theme.colors.danger_hover();
+    let button = button(container(icon_trash_2().size(16)).center(Fill))
+        .on_press_maybe((!disabled).then_some(Message::ToggleAccountDeleteDialog))
+        .width(30)
+        .height(29)
+        .padding(0)
+        .style(move |theme: &Theme, status| {
+            let highlighted =
+                open || matches!(status, button::Status::Hovered | button::Status::Pressed);
+            let mut style = button::text(theme, status);
+            style.background = highlighted.then(|| {
+                Background::Color(delete_color.scale_alpha(if active_theme.colors.is_light {
+                    0.14
+                } else {
+                    0.24
+                }))
+            });
+            style.text_color = if highlighted {
+                delete_color
+            } else {
+                active_theme.colors.text()
+            };
+            style.border = Border {
+                radius: 8.0.into(),
+                ..Border::default()
+            };
+            style.shadow = Shadow::default();
+            style
+        });
+
+    hint::hint(
+        button,
+        locale::text(language, locale::Text::DeleteAccount),
+        active_theme,
+    )
+}
+
+pub(super) fn theme_button(active_theme: &'static ThemeDefinition) -> Element<'static, Message> {
+    button(container(icon_palette().size(16)).center(Fill))
+        .on_press(Message::ToggleThemeMenu)
+        .width(30)
+        .height(29)
+        .padding(0)
+        .style(move |theme: &Theme, status| {
+            let mut style = button::text(theme, status);
+            style.background =
+                if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                    Some(Background::Color(active_theme.colors.hover()))
+                } else {
+                    None
+                };
+            style.text_color = active_theme.colors.text();
+            style.border = Border {
+                radius: 8.0.into(),
+                ..Border::default()
+            };
+            style.shadow = Shadow::default();
+            style
+        })
+        .into()
+}
+
+pub(super) fn refresh_button(
+    refreshing: bool,
+    rotation_radians: f32,
+    active_theme: &'static ThemeDefinition,
+    language: locale::Language,
+) -> Element<'static, Message> {
+    let refresh_icon = image::Image::new(refresh_icon_handle(active_theme))
+        .width(16)
+        .height(16)
+        .rotation(rotation_radians);
+
+    let button = button(container(refresh_icon).center(Fill))
+        .on_press_maybe((!refreshing).then_some(Message::RefreshAllUsage))
+        .width(30)
+        .height(29)
+        .padding(0)
+        .style(move |theme: &Theme, status| {
+            let mut style = button::text(theme, status);
+            style.background = if refreshing
+                || matches!(status, button::Status::Hovered | button::Status::Pressed)
+            {
+                Some(Background::Color(active_theme.colors.hover()))
+            } else {
+                None
+            };
+            style.text_color = active_theme.colors.text();
+            style.border = Border {
+                radius: 8.0.into(),
+                ..Border::default()
+            };
+            style.shadow = Shadow::default();
+            style
+        });
+
+    hint::hint(
+        button,
+        locale::text(
+            language,
+            if refreshing {
+                locale::Text::RefreshingUsage
+            } else {
+                locale::Text::RefreshUsage
+            },
+        ),
+        active_theme,
+    )
+}
+
+pub(super) fn provider_tab_bar(
+    selected_provider: UsageProvider,
+    active_theme: &'static ThemeDefinition,
+) -> Element<'static, Message> {
+    let tabs = PROVIDER_TABS
+        .iter()
+        .copied()
+        .map(|tab| provider_tab(tab, selected_provider, active_theme));
+
+    container(row(tabs).spacing(2).width(Fill))
+        .width(Fill)
+        .height(37)
+        .padding([3, 8])
+        .style(move |_| container::Style {
+            background: Some(Background::Color(if active_theme.colors.is_light {
+                active_theme.colors.control_surface()
+            } else {
+                Color::from_rgba(0.0, 0.0, 0.0, PROVIDER_TAB_SHADE_OPACITY)
+            })),
+            ..Default::default()
+        })
+        .into()
+}
+
+pub(super) fn provider_tab(
+    tab: ProviderTab,
+    selected_provider: UsageProvider,
+    active_theme: &'static ThemeDefinition,
+) -> Element<'static, Message> {
+    let selected = tab.provider == selected_provider;
+
+    let tab_button = button(
+        container(
+            image(provider_logo_handle(
+                tab.provider,
+                active_theme.colors.is_light,
+            ))
+            .width(24)
+            .height(24)
+            .content_fit(ContentFit::Contain),
+        )
+        .center(Fill),
+    )
+    .on_press(Message::SelectProvider(tab.provider))
+    .width(Fill)
+    .height(31)
+    .padding(0)
+    .style(move |framework_theme: &Theme, status| {
+        let mut style = button::text(framework_theme, status);
+        let highlighted =
+            selected || matches!(status, button::Status::Hovered | button::Status::Pressed);
+        style.background = highlighted.then(|| Background::Color(active_theme.colors.hover()));
+        style.text_color = active_theme.colors.text();
+        style.border = Border {
+            radius: 7.0.into(),
+            ..Border::default()
+        };
+        style.shadow = Shadow::default();
+        style
+    });
+
+    hint::hint(tab_button, tab.label, active_theme)
+}
+
+pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -> image::Handle {
+    if light_theme {
+        let logo_index = match provider {
+            UsageProvider::Codex => Some(0),
+            UsageProvider::OpenRouter => Some(1),
+            _ => None,
+        };
+        if let Some(logo_index) = logo_index {
+            let logos = LIGHT_THEME_PROVIDER_LOGOS.get_or_init(|| {
+                [
+                    decode_provider_logo(include_bytes!("../assets/providers/chatgpt.png"), true),
+                    decode_provider_logo(
+                        include_bytes!("../assets/providers/openrouter.png"),
+                        true,
+                    ),
+                ]
+            });
+            return logos[logo_index].clone();
+        }
+    }
+
+    let logos = PROVIDER_LOGOS.get_or_init(|| {
+        [
+            decode_provider_logo(include_bytes!("../assets/providers/chatgpt.png"), false),
+            decode_provider_logo(include_bytes!("../assets/providers/claude.png"), false),
+            decode_provider_logo(include_bytes!("../assets/providers/antigravity.png"), false),
+            decode_provider_logo(include_bytes!("../assets/providers/opencode-go.png"), false),
+            decode_provider_logo(include_bytes!("../assets/providers/openrouter.png"), false),
+        ]
+    });
+
+    logos[match provider {
+        UsageProvider::Codex => 0,
+        UsageProvider::Claude => 1,
+        UsageProvider::Antigravity => 2,
+        UsageProvider::OpenCodeGo => 3,
+        UsageProvider::OpenRouter => 4,
+    }]
+    .clone()
+}
+
+pub(super) fn close_window_button(
+    active_theme: &'static ThemeDefinition,
+) -> Element<'static, Message> {
+    button(container(icon_x().size(16)).center(Fill))
+        .on_press(Message::CloseButton)
+        .width(30)
+        .height(29)
+        .padding(0)
+        .style(move |framework_theme: &Theme, status| {
+            let mut style = button::text(framework_theme, status);
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            style.background =
+                hovered.then(|| Background::Color(active_theme.colors.danger_hover()));
+            style.text_color = if hovered {
+                Color::WHITE
+            } else {
+                active_theme.colors.text()
+            };
+            style.border = Border {
+                radius: 8.0.into(),
+                ..Border::default()
+            };
+            style.shadow = Shadow::default();
+            style
+        })
+        .into()
+}
+
+pub(super) fn window_frame_style(theme: &'static ThemeDefinition) -> container::Style {
+    let surface = if theme.backdrop.is_some() {
+        Color::TRANSPARENT
+    } else {
+        theme.colors.window_surface()
+    };
+
+    container::Style {
+        background: Some(Background::Color(surface)),
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: WINDOW_FRAME_RADIUS.into(),
+        },
+        text_color: None,
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+pub(super) fn window_frame_outline_style(theme: &'static ThemeDefinition) -> container::Style {
+    container::Style {
+        border: Border {
+            color: if theme.colors.is_light {
+                theme.colors.border(0.58)
+            } else {
+                Color::WHITE
+            },
+            width: WINDOW_FRAME_BORDER_WIDTH,
+            radius: WINDOW_FRAME_RADIUS.into(),
+        },
+        ..Default::default()
+    }
+}
