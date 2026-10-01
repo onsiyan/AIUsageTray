@@ -161,7 +161,7 @@ fn parse_auth_status_value(value: &str) -> Option<ClaudeCliAuthStatus> {
     })
 }
 
-const CLI_STATE_FILE_ENV: &str = "CODEX_USAGE_CLAUDE_STATE_FILE";
+const CLI_STATE_FILE_ENV: &str = "USAGE_MONITOR_CLAUDE_STATE_FILE";
 const CLI_STATE_FILE_NAME: &str = "claude-cli-state.json";
 
 /// Returns the process-independent cooldown remaining for the CLI usage

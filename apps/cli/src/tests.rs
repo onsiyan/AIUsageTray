@@ -364,7 +364,7 @@ async fn provider_reference_marker_is_captured_from_child_stdout() {
 
     let (mut writer, reader) = tokio::io::duplex(128);
     writer
-        .write_all(b"CODEX_USAGE_ACCOUNT_REF=ch4\r\n")
+        .write_all(b"USAGE_MONITOR_ACCOUNT_REF=ch4\r\n")
         .await
         .unwrap();
     drop(writer);

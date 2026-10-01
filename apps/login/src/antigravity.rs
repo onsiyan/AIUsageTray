@@ -156,10 +156,10 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
 }
 
 fn announce_cli_account_reference(account: &AccountRecord) {
-    if std::env::var_os("CODEX_USAGE_CLI_CHILD").is_some()
+    if std::env::var_os("USAGE_MONITOR_CLI_CHILD").is_some()
         && let Some(account_ref) = account.account_ref.as_deref()
     {
-        println!("CODEX_USAGE_ACCOUNT_REF={account_ref}");
+        println!("USAGE_MONITOR_ACCOUNT_REF={account_ref}");
     }
 }
 
