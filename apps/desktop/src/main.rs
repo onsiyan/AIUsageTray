@@ -79,6 +79,9 @@ const REFRESH_ICON_TICK: Duration = Duration::from_millis(50);
 const RESET_CLOCK_TICK: Duration = Duration::from_secs(30);
 
 fn main() -> iced::Result {
+    if another_instance_is_running() {
+        return Ok(());
+    }
     let (tray_sender, tray_receiver) = async_channel::bounded::<TrayIconEvent>(32);
     let _ = TRAY_EVENT_RECEIVER.set(tray_receiver.clone());
     let boot_sender = tray_sender.clone();
@@ -543,3 +546,26 @@ fn preview_log(message: impl std::fmt::Display) {
 
 #[cfg(test)]
 mod tests;
+
+/// Keeps a second launch from adding another tray icon. The named mutex is
+/// held, and released by Windows, with this process.
+#[cfg(windows)]
+fn another_instance_is_running() -> bool {
+    use windows_sys::Win32::{
+        Foundation::{ERROR_ALREADY_EXISTS, GetLastError},
+        System::Threading::CreateMutexW,
+    };
+    let name = concat!(r"Local\UsageMonitor.Desktop", "\0")
+        .encode_utf16()
+        .collect::<Vec<u16>>();
+    // SAFETY: `name` is NUL-terminated and outlives the call. The handle is
+    // deliberately never closed so the mutex lives as long as the process.
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    // SAFETY: reads the calling thread's last error right after the call.
+    !handle.is_null() && unsafe { GetLastError() } == ERROR_ALREADY_EXISTS
+}
+
+#[cfg(not(windows))]
+fn another_instance_is_running() -> bool {
+    false
+}
