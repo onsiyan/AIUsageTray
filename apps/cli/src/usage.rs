@@ -255,32 +255,39 @@ pub(super) async fn collect_refresh_results(
         Arc::clone(&auth_store),
     );
 
-    let mut results = Vec::with_capacity(accounts.len());
-    for account in accounts {
-        let saved_material = auth_store
-            .get(account.id)
-            .await
-            .map_err(|error| CliFailure::runtime(error.to_string()))?;
-        let provider_config = provider_config_for(account, saved_material.as_ref());
-        let runtime = UsageRuntime::from_dependencies_with_auth_store(
-            Arc::clone(account_store),
-            Arc::clone(snapshot_store),
-            Arc::clone(&transport) as Arc<dyn UsageHttpTransport>,
-            Arc::clone(&auth),
-            Arc::clone(&auth_store) as Arc<dyn AccountAuthMaterialStore>,
-            provider_config,
-            RefreshCoordinatorConfig {
-                cadence: RefreshCadence::Manual,
-                ..RefreshCoordinatorConfig::default()
-            },
-        )
+    let providers = per_account_source_registry(transport, auth, auth_store)
         .map_err(|error| CliFailure::runtime(error.to_string()))?;
-        let outcome = runtime
-            .refresh_account(account.clone(), RefreshReason::Manual)
-            .await;
-        results.push((account.clone(), outcome));
+    // One coordinator shares the concurrency limit and account-token locks
+    // across the batch, just as the long-running scheduler does.
+    let runtime = Arc::new(UsageRuntime::new(
+        Arc::clone(account_store),
+        Arc::clone(snapshot_store),
+        Arc::new(providers),
+        RefreshCoordinatorConfig {
+            cadence: RefreshCadence::Manual,
+            ..RefreshCoordinatorConfig::default()
+        },
+    ));
+    let mut tasks = tokio::task::JoinSet::new();
+    for (index, account) in accounts.iter().cloned().enumerate() {
+        let runtime = Arc::clone(&runtime);
+        tasks.spawn(async move {
+            let outcome = runtime
+                .refresh_account(account.clone(), RefreshReason::Manual)
+                .await;
+            (index, account, outcome)
+        });
     }
-    Ok(results)
+    let mut results = Vec::with_capacity(accounts.len());
+    while let Some(result) = tasks.join_next().await {
+        results.push(result.map_err(|error| CliFailure::runtime(error.to_string()))?);
+    }
+    // Preserve the existing CLI output order even if requests finish out of order.
+    results.sort_by_key(|(index, _, _)| *index);
+    Ok(results
+        .into_iter()
+        .map(|(_, account, outcome)| (account, outcome))
+        .collect())
 }
 
 pub(super) fn build_auth_provider(
@@ -330,9 +337,8 @@ pub(super) fn build_auth_provider(
 pub(super) const OPENCODE_GO_SOURCE_VARIANTS: [OpenCodeGoSourceMode; 2] =
     [OpenCodeGoSourceMode::Web, OpenCodeGoSourceMode::Api];
 
-/// Builds the long-running scheduler's providers so each OpenCode Go account
-/// is probed with the same per-account source selection as `usage refresh`,
-/// instead of one global mode for every account.
+/// Builds providers shared by manual batches and the long-running scheduler,
+/// keeping OpenCode Go source selection scoped to each saved account.
 pub(super) fn per_account_source_registry(
     transport: Arc<ReqwestUsageHttpTransport>,
     auth: Arc<dyn AccountAuthMaterialProvider>,

@@ -120,13 +120,39 @@ impl ClaudeUsageAdapter {
                 retry_after_seconds: Some(retry_after_seconds as u64),
             }));
         }
-        let response = self.get_oauth(access_token).await?;
-        if !response.is_success() {
-            if response.status_code == 429 {
-                self.record_oauth_rate_limit(access_token, &response).await;
+        let usage_request = async {
+            let response = self
+                .get_oauth(access_token)
+                .await
+                .map_err(transport_failure)?;
+            if !response.is_success() {
+                if response.status_code == 429 {
+                    self.record_oauth_rate_limit(access_token, &response).await;
+                }
+                return Err(map_claude_http_error(&response, "Claude OAuth"));
             }
-            return Ok(map_claude_http_error(&response, "Claude OAuth"));
-        }
+            Ok(response)
+        };
+        let profile_request = async {
+            let profile = if self.fetch_account_identity {
+                self.get_oauth_profile(access_token)
+                    .await
+                    .ok()
+                    .filter(|response| response.is_success())
+                    .and_then(|response| parse_claude_profile(&response.body))
+            } else {
+                None
+            };
+            Ok::<_, UsageProbeResult>(profile)
+        };
+        // Both endpoints use the same account token and are independent. Keep
+        // identity verification, but overlap its round trip with usage.
+        // A rejected usage request cancels profile work immediately instead
+        // of delaying the authentication/rate-limit error behind that request.
+        let (response, profile) = match tokio::try_join!(usage_request, profile_request) {
+            Ok(results) => results,
+            Err(failure) => return Ok(failure),
+        };
         self.clear_oauth_rate_limit(access_token).await;
         let root: Value = serde_json::from_str(&response.body)
             .map_err(|error| TransportError::Serialization(error.to_string()))?;
@@ -206,15 +232,6 @@ impl ClaudeUsageAdapter {
         for item in &additional {
             add_metric(&mut metrics, &item.key, Some(&item.window));
         }
-        let profile = if self.fetch_account_identity {
-            self.get_oauth_profile(access_token)
-                .await
-                .ok()
-                .filter(|response| response.is_success())
-                .and_then(|response| parse_claude_profile(&response.body))
-        } else {
-            None
-        };
         if let Some(profile) = profile.as_ref()
             && !identity_matches(
                 account,

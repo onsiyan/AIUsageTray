@@ -381,15 +381,8 @@ impl App {
         self.refresh_icon_rotation_radians = 0.0;
         let provider = self.selected_provider;
         Task::run(
-            usage_refresh::refresh_accounts_for_provider(provider, true),
-            move |event| Message::PriorityUsageRefreshEvent(provider, event),
-        )
-    }
-
-    fn start_remaining_provider_refresh(&self, provider: UsageProvider) -> Task<Message> {
-        Task::run(
-            usage_refresh::refresh_accounts_for_provider(provider, false),
-            Message::OtherProvidersUsageRefreshEvent,
+            usage_refresh::refresh_accounts_for_provider(provider),
+            Message::UsageRefreshEvent,
         )
     }
 
@@ -508,8 +501,7 @@ enum Message {
     CodexDesktopSwitchFinished(usage_monitor_core::accounts::AccountId, Result<(), String>),
     SelectProvider(UsageProvider),
     DashboardLoaded(Result<Vec<dashboard::AccountUsageEntry>, String>),
-    PriorityUsageRefreshEvent(UsageProvider, usage_refresh::RefreshEvent),
-    OtherProvidersUsageRefreshEvent(usage_refresh::RefreshEvent),
+    UsageRefreshEvent(usage_refresh::RefreshEvent),
     BeginAliasEdit(usage_monitor_core::accounts::AccountId),
     AccountNameHovered(usage_monitor_core::accounts::AccountId),
     AccountNameHoverEnded(usage_monitor_core::accounts::AccountId),

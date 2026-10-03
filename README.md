@@ -127,3 +127,13 @@ cargo test --workspace
 Continuous integration runs the same checks on Windows for every push and pull
 request (`.github/workflows/ci.yml`). See `SECURITY.md` for how credentials are
 handled and how to report a vulnerability, and `CHANGELOG.md` for changes.
+
+To measure delivery of desktop refresh results on Windows, explicitly run:
+
+```powershell
+cargo test --workspace --release live_refresh_latency -- --ignored --nocapture
+```
+
+This diagnostic contacts the providers for the locally saved accounts and
+updates their stored snapshots. It reports cold and warm delivery times using
+account references, without printing credentials, and is excluded from normal tests.

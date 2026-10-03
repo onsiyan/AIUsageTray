@@ -148,7 +148,7 @@ fn account_deletion_waits_for_usage_refresh_then_starts() {
     assert!(app.account_delete_queued);
     assert!(app.pending_account_deletion.is_some());
 
-    let _ = app.update(Message::OtherProvidersUsageRefreshEvent(
+    let _ = app.update(Message::UsageRefreshEvent(
         usage_refresh::RefreshEvent::Failed("refresh failed".to_owned()),
     ));
 

@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) const USAGE_CHANGE_ANIMATION_DURATION: Duration = Duration::from_millis(420);
+pub(super) const USAGE_CHANGE_ANIMATION_DURATION: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(super) struct UsagePercentKey {

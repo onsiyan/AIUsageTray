@@ -112,39 +112,20 @@ impl App {
                 self.dashboard.finish_alias_save(account_id, true);
                 Task::none()
             }
-            Message::PriorityUsageRefreshEvent(provider, event) => match event {
+            Message::UsageRefreshEvent(event) => match event {
                 usage_refresh::RefreshEvent::AccountUpdated(entry) => {
                     self.dashboard.update_account_usage(*entry);
                     Task::none()
                 }
                 usage_refresh::RefreshEvent::Finished(refresh) => {
                     preview_log(format!(
-                        "priority usage refresh for {provider:?}: attempted={}, updated={}, not_updated={}",
-                        refresh.attempted, refresh.updated, refresh.not_updated
-                    ));
-                    self.start_remaining_provider_refresh(provider)
-                }
-                usage_refresh::RefreshEvent::Failed(error) => {
-                    preview_log(format!(
-                        "priority usage refresh for {provider:?} failed: {error}"
-                    ));
-                    self.start_remaining_provider_refresh(provider)
-                }
-            },
-            Message::OtherProvidersUsageRefreshEvent(event) => match event {
-                usage_refresh::RefreshEvent::AccountUpdated(entry) => {
-                    self.dashboard.update_account_usage(*entry);
-                    Task::none()
-                }
-                usage_refresh::RefreshEvent::Finished(refresh) => {
-                    preview_log(format!(
-                        "other providers usage refresh: attempted={}, updated={}, not_updated={}",
+                        "usage refresh: attempted={}, updated={}, not_updated={}",
                         refresh.attempted, refresh.updated, refresh.not_updated
                     ));
                     self.finish_dashboard_refresh()
                 }
                 usage_refresh::RefreshEvent::Failed(error) => {
-                    preview_log(format!("other providers usage refresh failed: {error}"));
+                    preview_log(format!("usage refresh failed: {error}"));
                     self.finish_dashboard_refresh()
                 }
             },

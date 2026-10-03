@@ -30,6 +30,11 @@ All notable changes to this project are documented here. The format follows
 - Faster refreshes: one long-lived refresh context with cached OAuth access
   tokens, concurrent Antigravity requests, and a cached Cloud Code project
   lookup.
+- Desktop refreshes use one bounded queue across providers, prioritize the
+  visible provider, and share remaining slots between the others. Usage
+  transitions finish in 150ms instead of 420ms.
+- CLI batch refreshes run concurrently with a shared limit of four accounts;
+  Claude usage and profile requests overlap while retaining identity checks.
 
 ### Removed
 

@@ -1,5 +1,132 @@
 use super::*;
 
+struct ParallelOAuthTransport {
+    barrier: tokio::sync::Barrier,
+    profile_status: u16,
+    profile_email: &'static str,
+}
+
+#[async_trait]
+impl UsageHttpTransport for ParallelOAuthTransport {
+    async fn send(
+        &self,
+        request: UsageHttpRequest,
+    ) -> Result<crate::transport::UsageHttpResponse, TransportError> {
+        assert_eq!(
+            request.headers.get("Authorization").map(String::as_str),
+            Some("Bearer sk-ant-oat-test")
+        );
+        self.barrier.wait().await;
+        let (status_code, body) = match request.url.path() {
+            "/api/oauth/usage" => (
+                200,
+                serde_json::json!({
+                    "five_hour": { "utilization": 40, "resets_at": "2030-01-01T00:00:00Z" }
+                })
+                .to_string(),
+            ),
+            "/api/oauth/profile" => (
+                self.profile_status,
+                serde_json::json!({
+                    "account": { "email": self.profile_email, "has_claude_pro": true }
+                })
+                .to_string(),
+            ),
+            path => panic!("unexpected request path: {path}"),
+        };
+        Ok(crate::transport::UsageHttpResponse {
+            status_code,
+            body,
+            headers: Default::default(),
+        })
+    }
+}
+
+struct OAuthTestAuth;
+
+#[async_trait]
+impl AccountAuthMaterialProvider for OAuthTestAuth {
+    async fn get(
+        &self,
+        _: &AccountRecord,
+    ) -> Result<Option<crate::auth::AccountAuthMaterial>, AuthError> {
+        Ok(Some(crate::auth::AccountAuthMaterial {
+            bearer_token: Some("sk-ant-oat-test".to_owned()),
+            ..Default::default()
+        }))
+    }
+}
+
+#[tokio::test]
+async fn oauth_usage_and_identity_overlap_and_preserve_identity_validation() {
+    let account = AccountRecord::create("Claude", "user@example.com", None, CLAUDE, None).unwrap();
+    for (profile_status, profile_email) in [
+        (200, "user@example.com"),
+        (200, "other@example.com"),
+        (503, "user@example.com"),
+    ] {
+        let adapter = ClaudeUsageAdapter::new(
+            Arc::new(ParallelOAuthTransport {
+                barrier: tokio::sync::Barrier::new(2),
+                profile_status,
+                profile_email,
+            }),
+            Arc::new(OAuthTestAuth),
+        )
+        .unwrap()
+        .with_account_identity(true);
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(1), adapter.probe(&account))
+                .await
+                .expect("usage and profile must start together")
+                .unwrap();
+        if profile_email != account.email {
+            assert_eq!(
+                result.error.unwrap().code,
+                UsageAdapterErrorCode::AccountMismatch
+            );
+        } else {
+            assert_eq!(result.snapshot.unwrap().primary.unwrap().used_percent, 40.0);
+            assert!(result.error.is_none());
+        }
+    }
+}
+
+#[tokio::test]
+async fn rejected_usage_cancels_a_stalled_profile_request() {
+    struct RejectedUsage(u16);
+    #[async_trait]
+    impl UsageHttpTransport for RejectedUsage {
+        async fn send(
+            &self,
+            request: UsageHttpRequest,
+        ) -> Result<crate::transport::UsageHttpResponse, TransportError> {
+            if request.url.path() == "/api/oauth/profile" {
+                return std::future::pending().await;
+            }
+            Ok(crate::transport::UsageHttpResponse {
+                status_code: self.0,
+                body: String::new(),
+                headers: Default::default(),
+            })
+        }
+    }
+    let account = AccountRecord::create("Claude", "user@example.com", None, CLAUDE, None).unwrap();
+    for status in [401, 429] {
+        let adapter =
+            ClaudeUsageAdapter::new(Arc::new(RejectedUsage(status)), Arc::new(OAuthTestAuth))
+                .unwrap()
+                .with_account_identity(true);
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(1), adapter.probe(&account))
+                .await
+                .expect("failed usage must not wait for the profile")
+                .unwrap();
+        assert_eq!(result.error.unwrap().http_status_code, Some(status));
+        assert!(result.snapshot.is_none());
+    }
+}
+
 #[test]
 fn oauth_weekly_lane_is_selected_when_five_hour_is_missing() {
     let root: Value = serde_json::json!({
