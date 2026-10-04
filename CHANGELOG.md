@@ -22,6 +22,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Smooth mouse-wheel scrolling in account lists, account management, and model
+  menus, with immediate direction reversal and direct precision-touchpad input.
 - Repository restructured into `apps/` and `crates/`; the five provider login
   helpers are merged into `usage-monitor-login`.
 - Data, preferences, and credentials moved to the `UsageMonitor` names; data

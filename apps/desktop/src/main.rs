@@ -39,6 +39,7 @@ mod graphics;
 mod hint;
 mod locale;
 mod percent_display;
+mod smooth_scroll;
 mod theme;
 mod theme_menu;
 mod tray;

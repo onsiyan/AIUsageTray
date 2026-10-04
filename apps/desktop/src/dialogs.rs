@@ -176,12 +176,14 @@ pub(super) fn account_deletion_picker_dialog(
         .center(Fill)
         .into()
     } else {
-        scrollable(column(provider_groups).spacing(10).width(Fill))
-            .direction(iced::widget::scrollable::Direction::Vertical(
-                iced::widget::scrollable::Scrollbar::hidden(),
-            ))
-            .height(Length::Fixed(list_height))
-            .into()
+        crate::smooth_scroll::smooth_scroll(
+            "manage-accounts",
+            scrollable(column(provider_groups).spacing(10).width(Fill))
+                .direction(iced::widget::scrollable::Direction::Vertical(
+                    iced::widget::scrollable::Scrollbar::hidden(),
+                ))
+                .height(Length::Fixed(list_height)),
+        )
     };
 
     container(

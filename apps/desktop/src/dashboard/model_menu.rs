@@ -394,7 +394,10 @@ pub(super) fn model_visibility_menu(
             .direction(scrollable::Direction::Vertical(
                 scrollable::Scrollbar::hidden(),
             ));
-        menu_content = menu_content.push(model_list);
+        menu_content = menu_content.push(crate::smooth_scroll::smooth_scroll(
+            "model-menu",
+            model_list,
+        ));
     }
 
     container(menu_content)

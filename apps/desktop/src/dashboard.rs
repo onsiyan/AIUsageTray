@@ -550,13 +550,15 @@ pub fn view(
             ));
         }
 
-        scrollable(column(account_sections).spacing(0).width(Fill))
-            .direction(scrollable::Direction::Vertical(
-                scrollable::Scrollbar::hidden(),
-            ))
-            .width(Fill)
-            .height(Fill)
-            .into()
+        crate::smooth_scroll::smooth_scroll(
+            provider.cli_name(),
+            scrollable(column(account_sections).spacing(0).width(Fill))
+                .direction(scrollable::Direction::Vertical(
+                    scrollable::Scrollbar::hidden(),
+                ))
+                .width(Fill)
+                .height(Fill),
+        )
     };
 
     container(body)
