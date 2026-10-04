@@ -51,6 +51,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Two Codex accounts in the same ChatGPT Team could show the same usage after
+  "Use in Codex": the link to Codex's `auth.json` matched only the shared
+  workspace id, so a teammate's sign-in was adopted as the linked account's.
+  The link now also records the user, and a token issued to another user is
+  reported as an account mismatch instead of being shown.
 - An early Codex weekly reset is shown in the same refresh, after one
   re-read about 20 seconds later; it no longer needs unused reset credits and
   no longer leaves the old usage on screen until the original reset time.

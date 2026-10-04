@@ -457,3 +457,47 @@ async fn non_json_usage_body_is_an_invalid_payload_not_a_network_failure() {
         UsageAdapterErrorCode::InvalidPayload
     );
 }
+
+#[tokio::test]
+async fn a_token_issued_to_another_user_is_an_account_mismatch() {
+    let claims = serde_json::json!({
+        "https://api.openai.com/profile": {"email": "teammate@example.com"},
+        "https://api.openai.com/auth": {"chatgpt_user_id": "user-teammate"},
+    });
+    let token = format!(
+        "e30.{}.sig",
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+    );
+    let transport = Arc::new(CodexUsageTransport::default());
+    let auth = Arc::new(StaticOAuthAuth(AccountAuthMaterial {
+        bearer_token: Some(token),
+        ..AccountAuthMaterial::default()
+    }));
+    let adapter = WhamUsageAdapter::new(transport.clone(), auth).unwrap();
+    let account = AccountRecord::create("codex", "codex@example.com", None, OPENAI, None).unwrap();
+
+    let result = adapter.probe(&account).await.unwrap();
+
+    assert_eq!(
+        result.error.unwrap().code,
+        UsageAdapterErrorCode::AccountMismatch
+    );
+    assert!(transport.requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn token_users_match_by_user_id_before_email() {
+    let user = |id: Option<&str>, email: Option<&str>| OpenAiTokenUser {
+        user_id: id.map(str::to_owned),
+        email: email.map(str::to_owned),
+    };
+    assert!(user(Some("u1"), None).is_same_user(&user(Some("u1"), Some("x@example.com"))));
+    assert!(
+        !user(Some("u1"), Some("a@example.com"))
+            .is_same_user(&user(Some("u2"), Some("a@example.com")))
+    );
+    assert!(
+        user(None, Some("A@example.com")).is_same_user(&user(Some("u1"), Some("a@example.com")))
+    );
+    assert!(!user(None, None).is_same_user(&user(None, None)));
+}

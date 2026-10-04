@@ -11,6 +11,7 @@
 use crate::{
     accounts::AccountId,
     auth::{AuthError, OAuthTokenSet, StoredOAuthCredential},
+    providers::openai::{OpenAiTokenUser, openai_token_user},
     storage::default_accounts_database_path,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -68,11 +69,15 @@ impl CodexDesktopPaths {
     }
 }
 
-/// Which saved account currently lives in Codex's `auth.json`.
+/// Which saved account currently lives in Codex's `auth.json`. Members of a
+/// ChatGPT Team share `chatgpt_account_id`, so the user is recorded too; a
+/// link written before that is treated as ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodexDesktopLink {
     pub account_id: AccountId,
     pub chatgpt_account_id: String,
+    #[serde(default)]
+    pub chatgpt_user_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -114,14 +119,37 @@ fn read_auth_tokens(paths: &CodexDesktopPaths) -> Option<CodexAuthTokens> {
     })
 }
 
+impl CodexAuthTokens {
+    fn user(&self) -> Option<OpenAiTokenUser> {
+        self.id_token
+            .as_deref()
+            .and_then(openai_token_user)
+            .or_else(|| self.access_token.as_deref().and_then(openai_token_user))
+    }
+}
+
+fn tokens_user(id_token: Option<&str>, access_token: &str) -> Option<OpenAiTokenUser> {
+    id_token
+        .and_then(openai_token_user)
+        .or_else(|| openai_token_user(access_token))
+}
+
 /// The link and Codex's tokens, only while `auth.json` still belongs to the
-/// linked account. Signing in to another account inside Codex silently ends
-/// the link, and the monitor falls back to its own stored credential.
+/// linked account: the same workspace *and* the same user. Signing in to
+/// another account inside Codex, including a teammate in the same workspace,
+/// silently ends the link, and the monitor falls back to its own credential.
 fn valid_link(paths: &CodexDesktopPaths) -> Option<(CodexDesktopLink, CodexAuthTokens)> {
     let link = load_link(paths)?;
     let tokens = read_auth_tokens(paths)?;
+    let linked_user = OpenAiTokenUser {
+        user_id: Some(link.chatgpt_user_id.clone()?),
+        email: None,
+    };
     (tokens.account_id.as_deref() == Some(link.chatgpt_account_id.as_str())
-        && tokens.refresh_token.is_some())
+        && tokens.refresh_token.is_some()
+        && tokens
+            .user()
+            .is_some_and(|user| user.is_same_user(&linked_user)))
     .then_some((link, tokens))
 }
 
@@ -142,6 +170,15 @@ pub fn overlay_linked_credential(
         return false;
     };
     if link.account_id != account_id {
+        return false;
+    }
+    // Never adopt tokens of a different user than the stored credential's,
+    // whatever the link says.
+    if let Some(stored_user) = credential.id_token.as_deref().and_then(openai_token_user)
+        && !tokens
+            .user()
+            .is_some_and(|user| user.is_same_user(&stored_user))
+    {
         return false;
     }
     let mut changed = false;
@@ -245,6 +282,11 @@ pub fn install_account(
         .ok_or_else(|| {
             AuthError::CredentialStore("the account's ChatGPT workspace is unknown".into())
         })?;
+    let chatgpt_user_id = tokens_user(tokens.id_token.as_deref(), &tokens.access_token)
+        .and_then(|user| user.user_id)
+        .ok_or_else(|| {
+            AuthError::CredentialStore("the account's ChatGPT user is unknown".into())
+        })?;
 
     let existing = read_auth_value(paths);
     if existing.is_some() && valid_link(paths).is_none() {
@@ -274,6 +316,7 @@ pub fn install_account(
     let link = CodexDesktopLink {
         account_id,
         chatgpt_account_id,
+        chatgpt_user_id: Some(chatgpt_user_id),
     };
     fs::create_dir_all(&paths.state_directory).map_err(store_error)?;
     let bytes = serde_json::to_vec_pretty(&link).map_err(|error| store_error(error.into()))?;
@@ -384,9 +427,13 @@ mod tests {
             access_token: jwt(json!({"exp": 4_000_000_000_i64})),
             expires_at_utc: Utc::now(),
             refresh_token: Some(refresh.to_owned()),
-            id_token: Some(jwt(
-                json!({"https://api.openai.com/auth": {"chatgpt_account_id": "ws-1"}}),
-            )),
+            id_token: Some(jwt(json!({
+                "email": "me@example.com",
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "ws-1",
+                    "chatgpt_user_id": "user-me",
+                },
+            }))),
             token_type: "Bearer".to_owned(),
             scope: None,
         }
@@ -495,5 +542,50 @@ mod tests {
         );
         assert_eq!(active_account(&paths), None);
         assert!(linked_access_token(&paths, account).is_none());
+    }
+
+    #[test]
+    fn a_teammate_in_the_same_workspace_ends_the_link() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(directory.path());
+        let account = AccountId(Uuid::new_v4());
+        install_account(&paths, account, Some("ws-1"), &tokens("mine")).unwrap();
+        let mut stored = credential("mine");
+        stored.id_token = tokens("mine").id_token;
+
+        // A teammate signs in to Codex: same workspace, different user.
+        let mut root = read_auth_value(&paths).unwrap();
+        root["tokens"]["refresh_token"] = json!("teammate");
+        root["tokens"]["id_token"] = json!(jwt(json!({
+            "email": "teammate@example.com",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "ws-1",
+                "chatgpt_user_id": "user-teammate",
+            },
+        })));
+        write_atomically(&paths.auth_file(), &root).unwrap();
+
+        assert_eq!(active_account(&paths), None);
+        assert!(!overlay_linked_credential(&paths, account, &mut stored));
+        assert_eq!(stored.refresh_token, "mine");
+        assert!(linked_access_token(&paths, account).is_none());
+    }
+
+    #[test]
+    fn a_link_without_a_recorded_user_is_ended() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(directory.path());
+        let account = AccountId(Uuid::new_v4());
+        install_account(&paths, account, Some("ws-1"), &tokens("mine")).unwrap();
+        fs::write(
+            paths.link_file(),
+            format!(
+                r#"{{"account_id":"{}","chatgpt_account_id":"ws-1"}}"#,
+                account.0
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(active_account(&paths), None);
     }
 }

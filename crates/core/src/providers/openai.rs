@@ -14,6 +14,7 @@ use crate::{
     },
 };
 use async_trait::async_trait;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use reqwest::Method;
 use serde_json::Value;
@@ -25,6 +26,58 @@ use std::{
 use url::Url;
 
 const ADAPTER_ID: &str = "openai-wham";
+const AUTH_CLAIM: &str = "https://api.openai.com/auth";
+const PROFILE_CLAIM: &str = "https://api.openai.com/profile";
+
+/// The ChatGPT user an OpenAI access or ID token was issued to. The token is
+/// not verified here (the provider does that); this only keeps one user's
+/// tokens from being shown or stored as another account's. Team members share
+/// a workspace id, so the workspace alone does not identify a user.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OpenAiTokenUser {
+    pub user_id: Option<String>,
+    pub email: Option<String>,
+}
+
+impl OpenAiTokenUser {
+    /// Whether both name the same user. Unknown fields never match, so a
+    /// token without identity is not treated as belonging to anyone.
+    pub fn is_same_user(&self, other: &Self) -> bool {
+        match (&self.user_id, &other.user_id) {
+            (Some(left), Some(right)) => left == right,
+            _ => matches!(
+                (&self.email, &other.email),
+                (Some(left), Some(right)) if left.eq_ignore_ascii_case(right)
+            ),
+        }
+    }
+}
+
+pub fn openai_token_user(token: &str) -> Option<OpenAiTokenUser> {
+    let payload = token.split('.').nth(1)?;
+    let bytes = URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
+    let claims = serde_json::from_slice::<Value>(&bytes).ok()?;
+    let text = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let auth = claims.get(AUTH_CLAIM);
+    let user = OpenAiTokenUser {
+        user_id: text(auth.and_then(|auth| auth.get("chatgpt_user_id")))
+            .or_else(|| text(auth.and_then(|auth| auth.get("user_id")))),
+        email: text(claims.get("email")).or_else(|| {
+            text(
+                claims
+                    .get(PROFILE_CLAIM)
+                    .and_then(|profile| profile.get("email")),
+            )
+        }),
+    };
+    (user.user_id.is_some() || user.email.is_some()).then_some(user)
+}
 const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api/";
 const CODEX_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 
@@ -162,6 +215,18 @@ impl UsageAdapter for WhamUsageAdapter {
         else {
             return Ok(missing_auth("Codex OAuth"));
         };
+        if let Some(email) = openai_token_user(access_token).and_then(|user| user.email)
+            && !email.eq_ignore_ascii_case(account.email.trim())
+        {
+            return Ok(UsageProbeResult::failure(crate::usage::UsageAdapterError {
+                code: UsageAdapterErrorCode::AccountMismatch,
+                message: "this account's saved sign-in belongs to a different ChatGPT user; \
+                          sign in to it again"
+                    .to_owned(),
+                http_status_code: None,
+                retry_after_seconds: None,
+            }));
+        }
         // Only the account-scoped OAuth bearer credential is valid for Codex
         // usage. Ignore any legacy cookie, secondary token, or unrelated
         // material that may coexist in a host's composite auth source.
