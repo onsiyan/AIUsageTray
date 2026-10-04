@@ -40,6 +40,7 @@ mod hint;
 mod locale;
 mod percent_display;
 mod smooth_scroll;
+mod spinner;
 mod theme;
 mod theme_menu;
 mod tray;
@@ -75,7 +76,7 @@ thread_local! {
 static TRAY_EVENT_RECEIVER: OnceLock<Receiver<TrayIconEvent>> = OnceLock::new();
 static REFRESH_ICON_HANDLES: OnceLock<Vec<(ThemeId, image::Handle)>> = OnceLock::new();
 
-const REFRESH_ICON_TICK: Duration = Duration::from_millis(50);
+const USAGE_ANIMATION_TICK: Duration = Duration::from_millis(50);
 /// How often an open popup updates countdowns and checks for passed resets.
 const RESET_CLOCK_TICK: Duration = Duration::from_secs(30);
 
@@ -237,7 +238,6 @@ struct App {
     popup_visible: bool,
     window_focused: bool,
     last_focus_lost: Option<Instant>,
-    refresh_icon_rotation_radians: f32,
     dashboard: dashboard::DashboardState,
     language: locale::Language,
 }
@@ -269,7 +269,6 @@ impl App {
             popup_visible: false,
             window_focused: false,
             last_focus_lost: None,
-            refresh_icon_rotation_radians: 0.0,
             dashboard: dashboard::DashboardState::loading(),
             language: locale::default_language(),
         }
@@ -286,10 +285,9 @@ impl App {
         if should_run_popup_animation_ticks(
             app.popup_visible,
             blocking_dialog_open,
-            app.dashboard_refresh_running,
             app.dashboard.has_active_usage_animation(),
         ) {
-            subscriptions.push(Subscription::run(refresh_icon_tick_stream));
+            subscriptions.push(Subscription::run(usage_animation_tick_stream));
         }
         if app.popup_visible {
             subscriptions.push(Subscription::run(reset_clock_stream));
@@ -379,7 +377,6 @@ impl App {
         }
 
         self.dashboard_refresh_running = true;
-        self.refresh_icon_rotation_radians = 0.0;
         let provider = self.selected_provider;
         Task::run(
             usage_refresh::refresh_accounts_for_provider(provider),
@@ -390,7 +387,6 @@ impl App {
     fn finish_dashboard_refresh(&mut self) -> Task<Message> {
         self.dashboard_refresh_running = false;
         self.dashboard.refresh_desktop_apps();
-        self.refresh_icon_rotation_radians = 0.0;
         if self.account_delete_queued {
             self.begin_pending_account_deletion()
         } else {
@@ -476,7 +472,7 @@ enum Message {
     DragWindow,
     CloseButton,
     RefreshAllUsage,
-    RefreshIconTick,
+    UsageAnimationTick,
     ResetClockTick,
     ToggleThemeMenu,
     DismissThemeMenu,

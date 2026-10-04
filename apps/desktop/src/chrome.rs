@@ -106,14 +106,11 @@ pub(super) fn theme_button(active_theme: &'static ThemeDefinition) -> Element<'s
 
 pub(super) fn refresh_button(
     refreshing: bool,
-    rotation_radians: f32,
     active_theme: &'static ThemeDefinition,
     language: locale::Language,
 ) -> Element<'static, Message> {
-    let refresh_icon = image::Image::new(refresh_icon_handle(active_theme))
-        .width(16)
-        .height(16)
-        .rotation(rotation_radians);
+    let refresh_icon =
+        crate::spinner::spinning_icon(refresh_icon_handle(active_theme), 16.0, refreshing);
 
     let button = button(container(refresh_icon).center(Fill))
         .on_press_maybe((!refreshing).then_some(Message::RefreshAllUsage))

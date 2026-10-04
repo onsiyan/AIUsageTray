@@ -51,6 +51,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Scrolling stuttered while a refresh ran: the spinning refresh icon rebuilt
+  the whole window 20 times a second. The icon now spins by redrawing only
+  itself.
 - Two Codex accounts in the same ChatGPT Team could show the same usage after
   "Use in Codex": the link to Codex's `auth.json` matched only the shared
   workspace id, so a teammate's sign-in was adopted as the linked account's.

@@ -257,11 +257,7 @@ impl App {
                 Task::none()
             }
             Message::RefreshAllUsage => self.start_usage_refresh(),
-            Message::RefreshIconTick => {
-                self.refresh_icon_rotation_radians = advance_refresh_icon_rotation(
-                    self.refresh_icon_rotation_radians,
-                    self.dashboard_refresh_running,
-                );
+            Message::UsageAnimationTick => {
                 self.dashboard.advance_usage_animation(Instant::now());
                 Task::none()
             }

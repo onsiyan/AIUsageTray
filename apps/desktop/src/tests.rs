@@ -40,25 +40,11 @@ fn rounded_backdrop_mask_clears_corners_and_antialiases_the_edge() {
 }
 
 #[test]
-fn refresh_icon_rotates_only_while_refreshing() {
-    assert_eq!(advance_refresh_icon_rotation(0.7, false), 0.0);
-
-    let first_tick = advance_refresh_icon_rotation(0.0, true);
-    let second_tick = advance_refresh_icon_rotation(first_tick, true);
-    assert!(first_tick > 0.0);
-    assert!(second_tick > first_tick);
-    assert!(
-        advance_refresh_icon_rotation(std::f32::consts::TAU - 0.01, true) < std::f32::consts::TAU
-    );
-}
-
-#[test]
-fn popup_animation_ticks_pause_while_a_full_dialog_covers_the_content() {
-    assert!(should_run_popup_animation_ticks(true, false, true, false));
-    assert!(should_run_popup_animation_ticks(true, false, false, true));
-    assert!(!should_run_popup_animation_ticks(true, true, true, false));
-    assert!(!should_run_popup_animation_ticks(true, true, false, true));
-    assert!(!should_run_popup_animation_ticks(false, false, true, false));
+fn popup_animation_ticks_run_only_for_visible_usage_animations() {
+    assert!(should_run_popup_animation_ticks(true, false, true));
+    assert!(!should_run_popup_animation_ticks(true, false, false));
+    assert!(!should_run_popup_animation_ticks(true, true, true));
+    assert!(!should_run_popup_animation_ticks(false, false, true));
 }
 
 #[test]

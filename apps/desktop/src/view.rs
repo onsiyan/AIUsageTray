@@ -21,12 +21,7 @@ impl App {
                     active_theme,
                     self.language,
                 ),
-                refresh_button(
-                    self.dashboard_refresh_running,
-                    self.refresh_icon_rotation_radians,
-                    active_theme,
-                    self.language,
-                ),
+                refresh_button(self.dashboard_refresh_running, active_theme, self.language,),
                 theme_button(active_theme),
                 close_window_button(active_theme),
             ]

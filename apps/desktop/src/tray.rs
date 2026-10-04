@@ -1,4 +1,4 @@
-//! Tray icon events, the refresh-icon and reset clocks, and popup placement.
+//! Tray icon events, the usage-animation and reset clocks, and popup placement.
 
 use super::*;
 
@@ -60,8 +60,10 @@ pub(super) fn tray_event_stream() -> impl Stream<Item = Message> {
     })
 }
 
-pub(super) fn refresh_icon_tick_stream() -> impl Stream<Item = Message> {
-    tick_stream(REFRESH_ICON_TICK, || Message::RefreshIconTick)
+/// Frames for usage bars easing to new values. The refresh icon spins by
+/// itself (see `spinner`) and needs no ticks.
+pub(super) fn usage_animation_tick_stream() -> impl Stream<Item = Message> {
+    tick_stream(USAGE_ANIMATION_TICK, || Message::UsageAnimationTick)
 }
 
 /// Re-renders reset countdowns and notices resets that pass while the popup
@@ -86,21 +88,12 @@ fn tick_stream(period: Duration, message: fn() -> Message) -> impl Stream<Item =
     })
 }
 
-pub(super) fn advance_refresh_icon_rotation(rotation: f32, refreshing: bool) -> f32 {
-    if !refreshing {
-        return 0.0;
-    }
-
-    (rotation + 15.0_f32.to_radians()).rem_euclid(std::f32::consts::TAU)
-}
-
 pub(super) fn should_run_popup_animation_ticks(
     popup_visible: bool,
     blocking_dialog_open: bool,
-    refreshing: bool,
     usage_animation_active: bool,
 ) -> bool {
-    popup_visible && !blocking_dialog_open && (refreshing || usage_animation_active)
+    popup_visible && !blocking_dialog_open && usage_animation_active
 }
 
 #[derive(Clone, Copy, Debug)]
