@@ -276,7 +276,7 @@ impl App {
 
     fn subscription(app: &Self) -> Subscription<Message> {
         let mut subscriptions = vec![
-            event::listen().map(Message::RuntimeEvent),
+            event::listen_with(runtime_event).map(Message::RuntimeEvent),
             Subscription::run(tray_event_stream),
         ];
 
@@ -520,6 +520,24 @@ enum Message {
         usage_monitor_core::accounts::AccountId,
         Result<Vec<dashboard::AccountUsageEntry>, String>,
     ),
+}
+
+/// The only global events the app acts on. Forwarding every event (each
+/// mouse move included) rebuilt the whole view for nothing.
+fn runtime_event(event: Event, status: event::Status, _: window::Id) -> Option<Event> {
+    if status == event::Status::Captured {
+        return None;
+    }
+    match &event {
+        Event::Window(
+            window::Event::CloseRequested | window::Event::Focused | window::Event::Unfocused,
+        )
+        | Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            ..
+        }) => Some(event),
+        _ => None,
+    }
 }
 
 fn preview_log(message: impl std::fmt::Display) {

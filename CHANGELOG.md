@@ -22,6 +22,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The desktop app draws with the GPU, falling back to CPU drawing when no
+  suitable graphics adapter is available. Scrolling is much smoother.
+- Continuous wheel input (precision touchpads, free-spinning wheels) scrolls
+  directly instead of restarting the smooth-scroll animation on every event,
+  and mouse moves no longer rebuild the whole window.
 - Smooth mouse-wheel scrolling in account lists, account management, and model
   menus, with immediate direction reversal and direct precision-touchpad input.
 - Repository restructured into `apps/` and `crates/`; the five provider login

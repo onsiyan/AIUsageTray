@@ -16,6 +16,9 @@ use crate::Message;
 const WHEEL_LINE_PIXELS: f32 = 60.0;
 const TRANSITION_DURATION: Duration = Duration::from_millis(140);
 const FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 120);
+/// Wheel events closer together than this are one continuous gesture
+/// (a precision touchpad or a free-spinning wheel), not separate notches.
+const CONTINUOUS_INPUT_GAP: Duration = Duration::from_millis(40);
 
 pub fn smooth_scroll(
     key: impl Into<String>,
@@ -36,6 +39,15 @@ struct State {
     key: String,
     motion: Option<Motion>,
     modifiers: keyboard::Modifiers,
+    last_wheel_at: Option<Instant>,
+}
+
+/// Only separate whole notches of a classic wheel are animated. Fractional
+/// or rapid deltas already describe a continuous motion; easing each of them
+/// restarted the animation every few milliseconds and made scrolling drag.
+fn is_discrete_notch(lines: f32, since_previous: Option<Duration>) -> bool {
+    (lines - lines.round()).abs() < 0.01
+        && since_previous.is_none_or(|gap| gap >= CONTINUOUS_INPUT_GAP)
 }
 
 #[derive(Clone, Copy)]
@@ -113,6 +125,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for SmoothScroll<'_> {
             key: self.key.clone(),
             motion: None,
             modifiers: keyboard::Modifiers::default(),
+            last_wheel_at: None,
         })
     }
 
@@ -169,6 +182,14 @@ impl Widget<Message, iced::Theme, iced::Renderer> for SmoothScroll<'_> {
                 && *y != 0.0
                 && y.is_finite()
                 && !state.modifiers.shift()
+                && {
+                    let now = Instant::now();
+                    let since_previous = state
+                        .last_wheel_at
+                        .replace(now)
+                        .map(|previous| now.saturating_duration_since(previous));
+                    is_discrete_notch(*y, since_previous)
+                }
                 && layout
                     .bounds()
                     .intersection(viewport)
@@ -318,10 +339,32 @@ impl Widget<Message, iced::Theme, iced::Renderer> for SmoothScroll<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iced::advanced::renderer::Headless;
+
+    #[test]
+    fn only_separate_whole_notches_are_animated() {
+        let slow = Some(Duration::from_millis(120));
+        let fast = Some(Duration::from_millis(7));
+        assert!(is_discrete_notch(-1.0, None));
+        assert!(is_discrete_notch(3.0, slow));
+        assert!(
+            !is_discrete_notch(-1.2916666, slow),
+            "fractional deltas are continuous"
+        );
+        assert!(
+            !is_discrete_notch(-1.0, fast),
+            "rapid deltas are continuous"
+        );
+    }
 
     #[test]
     fn widget_animates_real_scroll_state_and_keeps_pixel_input_direct() {
-        let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(16.0));
+        let renderer = iced::futures::executor::block_on(<iced::Renderer as Headless>::new(
+            iced::Font::DEFAULT,
+            iced::Pixels(16.0),
+            Some("tiny-skia"),
+        ))
+        .expect("software renderer");
         let mut content = smooth_scroll(
             "accounts",
             iced::widget::scrollable(iced::widget::Space::new().width(200).height(1200))
@@ -415,9 +458,11 @@ mod tests {
         probe
             .as_widget_mut()
             .operate(&mut tree.children[0], layout, &renderer, &mut position);
+        // The second notch arrived right after the first, so it is part of a
+        // continuous gesture and moves directly (60 px), like the pixel input.
         assert_eq!(
-            position.current, 72.0,
-            "pixel input should move directly by its exact distance"
+            position.current, 132.0,
+            "rapid and pixel input should move directly by their exact distance"
         );
         assert!(
             messages.is_empty(),
