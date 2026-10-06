@@ -218,7 +218,10 @@ impl App {
             | Message::TabEditorNameChanged(_)
             | Message::TabEditorToggleProvider(_)
             | Message::SaveTabEditor
-            | Message::CancelTabEditor) => self.update_tabs(message),
+            | Message::CancelTabEditor
+            | Message::ChooseTabIcon
+            | Message::TabIconChosen(_)
+            | Message::RemoveTabIcon) => self.update_tabs(message),
             Message::SelectTab(tab) => {
                 self.selected_tab = tab;
                 self.theme_menu_open = false;
@@ -315,8 +318,12 @@ impl App {
                 self.pending_account_deletion = Some(PendingAccountDeletion {
                     account_id,
                     provider,
-                    display_name: entry.account.display_name().to_owned(),
-                    email: dashboard::shown_email(&entry.account.email).to_owned(),
+                    display_name: dashboard::account_name(&entry.account),
+                    email: if dashboard::name_is_email(&entry.account) {
+                        String::new()
+                    } else {
+                        dashboard::shown_email(&entry.account.email).to_owned()
+                    },
                 });
                 self.account_delete_error = None;
                 Task::none()

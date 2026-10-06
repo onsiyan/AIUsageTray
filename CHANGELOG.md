@@ -37,11 +37,15 @@ All notable changes to this project are documented here. The format follows
   create named tabs that gather several providers (for example a "Prepaid"
   tab for OpenRouter and DeepSeek). The layout is saved in `tabs.txt`; a
   hidden provider's tab comes back when an account is added for it.
+- Optional PNG or JPEG image for a custom tab, shown in the tab bar in place
+  of its name.
 - `usage-monitor-cli` for people and agents, with stable account references
   and JSON output.
 
 ### Changed
 
+- Codex, Claude, and Antigravity account cards are named by their email
+  (unless renamed), and the email is not repeated under the name.
 - The Favorites tab sits in the middle of the tab bar.
 - Accounts added from an API key (DeepSeek, OpenRouter) no longer show their
   placeholder email address.

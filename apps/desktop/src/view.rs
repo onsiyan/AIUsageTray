@@ -9,6 +9,7 @@ impl App {
         let active_theme = self.theme_id.definition();
         let provider_tab_bar = provider_tab_bar(
             &self.tab_layout,
+            &self.tab_icons,
             self.selected_tab,
             active_theme,
             self.language,
@@ -134,6 +135,7 @@ impl App {
                 .on_press(Message::DismissTabManager);
             let dialog = container(tab_manager_dialog(
                 &self.tab_layout,
+                &self.tab_icons,
                 self.tab_editor.as_ref(),
                 self.language,
                 active_theme,

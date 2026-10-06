@@ -102,7 +102,7 @@ pub(super) fn account_card(
             space().width(HOVER_CONTROLS_WIDTH).height(24).into()
         };
         let name_and_edit = row![
-            text(account.display_name().to_owned())
+            text(account_name(account))
                 .size(typography::ACCOUNT_NAME_SIZE)
                 .font(typography::EMPHASIS)
                 .color(theme.colors.text())
@@ -237,11 +237,17 @@ pub(super) fn account_card(
     let plan_type = snapshot.and_then(|snapshot| snapshot.plan_type.clone());
     if crate::display_options::show_account_details()
         && (account.workspace_name.is_some()
-            || !shown_email(&account.email).is_empty()
+            || (!shown_email(&account.email).is_empty() && !name_is_email(account))
             || plan_type.is_some())
     {
+        // The email is not repeated when it is already the card's name.
+        let email = if name_is_email(account) {
+            ""
+        } else {
+            shown_email(&account.email)
+        };
         let mut metadata = row![
-            text(shown_email(&account.email).to_owned())
+            text(email.to_owned())
                 .size(typography::METADATA_SIZE)
                 .font(typography::MEDIUM)
                 .color(muted_text(theme)),

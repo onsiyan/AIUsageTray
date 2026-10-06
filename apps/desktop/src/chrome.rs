@@ -151,6 +151,7 @@ pub(super) fn refresh_button(
 
 pub(super) fn provider_tab_bar(
     layout: &tabs::TabLayout,
+    icons: &std::collections::HashMap<u32, image::Handle>,
     selected_tab: DashboardTab,
     active_theme: &'static ThemeDefinition,
     language: locale::Language,
@@ -167,9 +168,13 @@ pub(super) fn provider_tab_bar(
                 provider_tab(tab, selected_tab, active_theme)
             }
             tabs::TabKind::Favorites => favorites_tab(selected_tab, active_theme, language),
-            tabs::TabKind::Custom(custom) => {
-                custom_tab(custom, entry.dashboard_tab(), selected_tab, active_theme)
-            }
+            tabs::TabKind::Custom(custom) => custom_tab(
+                custom,
+                icons.get(&custom.id),
+                entry.dashboard_tab(),
+                selected_tab,
+                active_theme,
+            ),
         })
         .collect::<Vec<_>>();
 
@@ -229,32 +234,43 @@ fn favorites_tab(
     )
 }
 
-/// A custom tab shows its name, so it gets more room than an icon tab.
+/// A custom tab shows its image like a provider tab, or else its name,
+/// which needs more room.
 fn custom_tab(
     custom: &tabs::CustomTab,
+    icon: Option<&image::Handle>,
     tab: DashboardTab,
     selected_tab: DashboardTab,
     active_theme: &'static ThemeDefinition,
 ) -> Element<'static, Message> {
-    let name = text(custom.name.clone())
-        .size(typography::LABEL_SIZE)
-        .font(typography::EMPHASIS)
-        .color(active_theme.colors.text())
-        .wrapping(text::Wrapping::None);
     let providers = custom
         .providers
         .providers()
         .map(UsageProvider::display_name)
         .collect::<Vec<_>>()
         .join(", ");
-    tab_button(
-        name.into(),
-        tab,
-        selected_tab,
-        providers,
-        Length::FillPortion(4),
-        active_theme,
-    )
+    let (content, label, width): (Element<'static, Message>, String, Length) = match icon {
+        Some(handle) => (
+            image(handle.clone())
+                .width(24)
+                .height(24)
+                .content_fit(ContentFit::Contain)
+                .into(),
+            format!("{}: {providers}", custom.name),
+            Length::FillPortion(2),
+        ),
+        None => (
+            text(custom.name.clone())
+                .size(typography::LABEL_SIZE)
+                .font(typography::EMPHASIS)
+                .color(active_theme.colors.text())
+                .wrapping(text::Wrapping::None)
+                .into(),
+            providers,
+            Length::FillPortion(4),
+        ),
+    };
+    tab_button(content, tab, selected_tab, label, width, active_theme)
 }
 
 fn tab_button(

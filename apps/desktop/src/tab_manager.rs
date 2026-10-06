@@ -5,8 +5,8 @@ use super::*;
 // Explicit, so it is not confused with the built-in column! macro.
 use iced::widget::column;
 use lucide_icons::iced::{
-    icon_chevron_down, icon_chevron_up, icon_eye, icon_eye_off, icon_layers, icon_panels_top_left,
-    icon_pencil, icon_plus, icon_square, icon_square_check,
+    icon_chevron_down, icon_chevron_up, icon_eye, icon_eye_off, icon_image_plus, icon_layers,
+    icon_panels_top_left, icon_pencil, icon_plus, icon_square, icon_square_check, icon_x,
 };
 use tabs::{ProviderSet, TabEntry, TabKind};
 
@@ -16,6 +16,11 @@ pub(super) struct TabEditor {
     pub id: Option<u32>,
     pub name: String,
     pub providers: ProviderSet,
+    /// The image shown in the editor.
+    pub icon: Option<image::Handle>,
+    /// `None` keeps the saved image; `Some(None)` removes it.
+    pub icon_change: Option<Option<tab_icons::TabIcon>>,
+    pub icon_error: bool,
 }
 
 impl TabEditor {
@@ -28,6 +33,23 @@ impl App {
     pub(super) fn save_tab_layout(&self) {
         if let Err(error) = tabs::save(&self.tab_layout) {
             preview_log(format!("tab layout save failed: {error}"));
+        }
+    }
+
+    /// Stores or removes a custom tab's image.
+    fn apply_tab_icon(&mut self, id: u32, icon: Option<tab_icons::TabIcon>) {
+        let result = match icon {
+            Some(icon) => {
+                self.tab_icons.insert(id, icon.handle.clone());
+                tab_icons::save(id, &icon)
+            }
+            None => {
+                self.tab_icons.remove(&id);
+                tab_icons::remove(id)
+            }
+        };
+        if let Err(error) = result {
+            preview_log(format!("tab image save failed: {error}"));
         }
     }
 
@@ -67,10 +89,16 @@ impl App {
                     id: Some(id),
                     name: custom.name.clone(),
                     providers: custom.providers,
+                    icon: self.tab_icons.get(&id).cloned(),
+                    ..TabEditor::default()
                 });
             }
             Message::DeleteCustomTab(id) => {
                 self.tab_layout.remove_custom(id);
+                self.tab_icons.remove(&id);
+                if let Err(error) = tab_icons::remove(id) {
+                    preview_log(format!("tab image removal failed: {error}"));
+                }
                 self.selected_tab = self.tab_layout.resolve(self.selected_tab);
                 self.save_tab_layout();
             }
@@ -100,11 +128,44 @@ impl App {
                     None => self.tab_layout.add_custom(&editor.name, editor.providers),
                 };
                 self.save_tab_layout();
+                if let (DashboardTab::Custom { id, .. }, Some(change)) = (tab, editor.icon_change) {
+                    self.apply_tab_icon(id, change);
+                }
                 // Open the saved tab, so its accounts show right away.
                 self.selected_tab = self.tab_layout.resolve(tab);
                 return self.start_usage_refresh(usage_refresh::RefreshTrigger::Automatic);
             }
             Message::CancelTabEditor => self.tab_editor = None,
+            Message::ChooseTabIcon => {
+                if self.tab_editor.is_some() && !self.tab_icon_picking {
+                    self.tab_icon_picking = true;
+                    return Task::perform(async { tab_icons::choose() }, Message::TabIconChosen);
+                }
+            }
+            Message::TabIconChosen(result) => {
+                self.tab_icon_picking = false;
+                if let Some(editor) = &mut self.tab_editor {
+                    match result {
+                        Ok(Some(icon)) => {
+                            editor.icon = Some(icon.handle.clone());
+                            editor.icon_change = Some(Some(icon));
+                            editor.icon_error = false;
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            preview_log(format!("tab image failed: {error}"));
+                            editor.icon_error = true;
+                        }
+                    }
+                }
+            }
+            Message::RemoveTabIcon => {
+                if let Some(editor) = &mut self.tab_editor {
+                    editor.icon = None;
+                    editor.icon_change = Some(None);
+                    editor.icon_error = false;
+                }
+            }
             _ => {}
         }
         Task::none()
@@ -147,13 +208,14 @@ pub(super) fn tab_manager_button(
 
 pub(super) fn tab_manager_dialog(
     layout: &tabs::TabLayout,
+    icons: &std::collections::HashMap<u32, image::Handle>,
     editor: Option<&TabEditor>,
     language: locale::Language,
     active_theme: &'static ThemeDefinition,
 ) -> Element<'static, Message> {
     let content = match editor {
         Some(editor) => tab_editor_content(editor, language, active_theme),
-        None => tab_list_content(layout, language, active_theme),
+        None => tab_list_content(layout, icons, language, active_theme),
     };
     container(content)
         .width(380)
@@ -164,6 +226,7 @@ pub(super) fn tab_manager_dialog(
 
 fn tab_list_content(
     layout: &tabs::TabLayout,
+    icons: &std::collections::HashMap<u32, image::Handle>,
     language: locale::Language,
     active_theme: &'static ThemeDefinition,
 ) -> Element<'static, Message> {
@@ -176,6 +239,7 @@ fn tab_list_content(
             tab_row(
                 index,
                 entry,
+                icons,
                 (index > 0, index + 1 < entries.len()),
                 entry.visible && visible_count == 1,
                 language,
@@ -224,6 +288,7 @@ fn tab_list_content(
 fn tab_row(
     index: usize,
     entry: &TabEntry,
+    icons: &std::collections::HashMap<u32, image::Handle>,
     (can_move_up, can_move_down): (bool, bool),
     is_last_shown: bool,
     language: locale::Language,
@@ -249,10 +314,7 @@ fn tab_row(
             locale::text(language, locale::Text::Favorites).to_owned(),
         ),
         TabKind::Custom(custom) => (
-            icon_layers::<Theme>()
-                .size(17)
-                .color(active_theme.colors.text())
-                .into(),
+            custom_tab_icon(icons.get(&custom.id), 20.0, active_theme),
             custom.name.clone(),
         ),
     };
@@ -405,9 +467,55 @@ fn tab_editor_content(
         })
         .collect::<Vec<_>>();
 
+    let mut image_row = row![
+        container(custom_tab_icon(editor.icon.as_ref(), 22.0, active_theme))
+            .width(32)
+            .height(32)
+            .center(32)
+            .style(move |_| container::Style {
+                background: Some(Background::Color(active_theme.colors.control_surface())),
+                border: Border {
+                    color: active_theme.colors.border(0.24),
+                    width: 1.0,
+                    radius: 7.0.into(),
+                },
+                ..Default::default()
+            }),
+        icon_text_button(
+            icon_image_plus().size(14).into(),
+            locale::text(language, locale::Text::ChooseImage),
+            Message::ChooseTabIcon,
+            active_theme,
+        ),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    if editor.icon.is_some() {
+        image_row = image_row.push(icon_text_button(
+            icon_x().size(14).into(),
+            locale::text(language, locale::Text::RemoveImage),
+            Message::RemoveTabIcon,
+            active_theme,
+        ));
+    }
+    let mut image_section = column![
+        dialog_note(locale::text(language, locale::Text::TabImage), active_theme),
+        image_row,
+    ]
+    .spacing(6);
+    if editor.icon_error {
+        image_section = image_section.push(
+            text(locale::text(language, locale::Text::ImageUnreadable))
+                .size(typography::METADATA_SIZE)
+                .font(typography::MEDIUM)
+                .color(active_theme.colors.danger_hover()),
+        );
+    }
+
     column![
         dialog_title(title, active_theme),
         name_input,
+        image_section,
         dialog_note(
             locale::text(language, locale::Text::TabProviders),
             active_theme
@@ -437,6 +545,25 @@ fn tab_editor_content(
     .spacing(10)
     .width(Fill)
     .into()
+}
+
+/// A custom tab's picked image, or the layers icon when it has none.
+pub(super) fn custom_tab_icon(
+    icon: Option<&image::Handle>,
+    size: f32,
+    active_theme: &'static ThemeDefinition,
+) -> Element<'static, Message> {
+    match icon {
+        Some(handle) => image(handle.clone())
+            .width(size)
+            .height(size)
+            .content_fit(ContentFit::Contain)
+            .into(),
+        None => icon_layers::<Theme>()
+            .size(size - 3.0)
+            .color(active_theme.colors.text())
+            .into(),
+    }
 }
 
 fn dialog_title(

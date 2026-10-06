@@ -512,12 +512,7 @@ impl DashboardState {
             .entries
             .iter()
             .find(|entry| entry.account.id == account_id)
-            .map(|entry| {
-                (
-                    entry.account.display_name().to_owned(),
-                    entry.account.label.clone(),
-                )
-            })
+            .map(|entry| (account_name(&entry.account), entry.account.label.clone()))
         else {
             return;
         };
@@ -657,6 +652,28 @@ pub(crate) fn shown_email(email: &str) -> &str {
         domain == "invalid" || domain.ends_with(".invalid")
     });
     if is_placeholder { "" } else { email }
+}
+
+/// The name an account card shows: the user's alias, else the email for
+/// providers signed in with one (Codex, Claude, Antigravity), else the label.
+pub(crate) fn account_name(account: &AccountRecord) -> String {
+    if account.alias.is_none() && name_is_email(account) {
+        return account.email.clone();
+    }
+    account.display_name().to_owned()
+}
+
+/// Whether [`account_name`] already shows the account's email.
+pub(crate) fn name_is_email(account: &AccountRecord) -> bool {
+    account.alias.is_none()
+        && !shown_email(&account.email).is_empty()
+        && [
+            UsageProvider::Codex,
+            UsageProvider::Claude,
+            UsageProvider::Antigravity,
+        ]
+        .into_iter()
+        .any(|provider| belongs_to_provider(&account.provider_id, provider))
 }
 
 pub(crate) fn belongs_to_provider(provider_id: &str, provider: UsageProvider) -> bool {

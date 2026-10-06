@@ -93,8 +93,12 @@ pub(super) fn account_deletion_picker_dialog(
         let mut account_rows = Vec::with_capacity(provider_accounts.len());
         for entry in provider_accounts {
             let account_id = entry.account.id;
-            let display_name = entry.account.display_name().to_owned();
-            let email = dashboard::shown_email(&entry.account.email).to_owned();
+            let display_name = dashboard::account_name(&entry.account);
+            let email = if dashboard::name_is_email(&entry.account) {
+                String::new()
+            } else {
+                dashboard::shown_email(&entry.account.email).to_owned()
+            };
             account_rows.push(
                 button(
                     row![

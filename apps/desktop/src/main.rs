@@ -43,6 +43,7 @@ mod memory_saver;
 mod percent_display;
 mod smooth_scroll;
 mod spinner;
+mod tab_icons;
 mod tab_manager;
 mod tabs;
 mod theme;
@@ -116,6 +117,10 @@ fn main() -> iced::Result {
                     Ok("tab-editor") => {
                         boot.push(Task::done(Message::ToggleTabManager));
                         Some(Message::NewCustomTab)
+                    }
+                    Ok("tab-edit") => {
+                        boot.push(Task::done(Message::ToggleTabManager));
+                        Some(Message::EditCustomTab(1))
                     }
                     Ok("deepseek-tab") => Some(Message::SelectTab(DashboardTab::Provider(
                         UsageProvider::DeepSeek,
@@ -338,6 +343,10 @@ struct App {
     tab_manager_open: bool,
     /// The custom tab being created (`id: None`) or edited in the manager.
     tab_editor: Option<tab_manager::TabEditor>,
+    /// The images the user picked for custom tabs, by tab id.
+    tab_icons: std::collections::HashMap<u32, image::Handle>,
+    /// The image file dialog is open.
+    tab_icon_picking: bool,
     dashboard_refresh_running: bool,
     popup_visible: bool,
     window_focused: bool,
@@ -373,6 +382,8 @@ impl App {
             account_add_cancel: None,
             account_add_status: None,
             selected_tab: tab_layout.resolve(DashboardTab::Provider(UsageProvider::Codex)),
+            tab_icons: tab_icons::load_saved(&tab_layout),
+            tab_icon_picking: false,
             tab_layout,
             tab_manager_open: false,
             tab_editor: None,
@@ -644,6 +655,9 @@ enum Message {
     TabEditorToggleProvider(UsageProvider),
     SaveTabEditor,
     CancelTabEditor,
+    ChooseTabIcon,
+    TabIconChosen(Result<Option<tab_icons::TabIcon>, String>),
+    RemoveTabIcon,
     ToggleFavorite(usage_monitor_core::accounts::AccountId),
     DashboardLoaded(Result<Vec<dashboard::AccountUsageEntry>, String>),
     UsageRefreshEvent(usage_refresh::RefreshEvent),
