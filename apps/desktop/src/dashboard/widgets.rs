@@ -343,24 +343,56 @@ pub(super) fn reset_time_label(
     language: Language,
 ) -> Element<'static, Message> {
     let label = reset_label(reset_at, now, language);
-    let Some((prefix, countdown)) = countdown_label_parts(&label, language) else {
-        return text(label)
-            .size(typography::RESET_TIME_SIZE)
-            .font(typography::STRONG)
-            .color(muted_text(theme))
-            .into();
+    // On the shaded pill of an image theme, secondary grey would read dim.
+    let prefix_color = if theme.backdrop.is_some() {
+        theme.colors.text()
+    } else {
+        muted_text(theme)
     };
+    let label: Element<'static, Message> =
+        if let Some((prefix, countdown)) = countdown_label_parts(&label, language) {
+            rich_text::<(), Message, iced::Theme, iced::Renderer>([
+                span::<(), iced::Font>(prefix.to_owned()).color(prefix_color),
+                span::<(), iced::Font>(countdown.to_owned())
+                    .font(typography::STRONG)
+                    .color(reset_time_accent(theme)),
+            ])
+            .size(typography::RESET_TIME_SIZE)
+            .font(typography::MEDIUM)
+            .into()
+        } else {
+            text(label)
+                .size(typography::RESET_TIME_SIZE)
+                .font(typography::STRONG)
+                .color(prefix_color)
+                .into()
+        };
+    container(shade_over_backdrop(label, theme))
+        .width(Fill)
+        .into()
+}
 
-    rich_text::<(), Message, iced::Theme, iced::Renderer>([
-        span::<(), iced::Font>(prefix.to_owned()).color(muted_text(theme)),
-        span::<(), iced::Font>(countdown.to_owned())
-            .font(typography::STRONG)
-            .color(reset_time_accent(theme)),
-    ])
-    .size(typography::RESET_TIME_SIZE)
-    .font(typography::MEDIUM)
-    .width(Fill)
-    .into()
+/// On themes with a background image, lays a light shade behind small text
+/// so bright parts of the picture cannot wash it out. Plain themes are
+/// left as they are.
+fn shade_over_backdrop(
+    content: Element<'static, Message>,
+    theme: &'static crate::theme::ThemeDefinition,
+) -> Element<'static, Message> {
+    if theme.backdrop.is_none() {
+        return content;
+    }
+    container(content)
+        .padding([1, 6])
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.35))),
+            border: Border {
+                radius: 6.0.into(),
+                ..Border::default()
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 pub(super) fn countdown_label_parts(label: &str, language: Language) -> Option<(&str, &str)> {
