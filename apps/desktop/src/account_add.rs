@@ -1,6 +1,7 @@
 //! Adds accounts by running the CLI's provider sign-in, and cancels it.
 
 use super::*;
+use usage_monitor_core::{providers::copilot, transport::ReqwestUsageHttpTransport};
 
 pub(super) fn sibling_account_cli_path(current_executable: &Path) -> std::path::PathBuf {
     let extension = std::env::consts::EXE_EXTENSION;
@@ -78,7 +79,7 @@ pub(super) async fn add_account(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    if provider.uses_api_key() {
+    if credentials.is_some() {
         command.arg("--credentials-stdin");
     }
 
@@ -136,6 +137,33 @@ pub(super) async fn add_account(
         let details = account_add_failure_detail(&output.stdout, &output.stderr);
         Err(redact_and_limit_account_add_error(details, &secrets))
     }
+}
+
+/// Signs in to GitHub with a device code, then adds the Copilot account
+/// with the token. `codes` receives the code to show, then `None` once it
+/// was entered.
+pub(super) async fn add_copilot_account(
+    codes: Sender<Option<copilot::DeviceCode>>,
+    cancel: Receiver<()>,
+) -> Result<(), String> {
+    let transport = ReqwestUsageHttpTransport::new(std::time::Duration::from_secs(30))
+        .map_err(|error| format!("Could not reach GitHub: {error}"))?;
+    let code = tokio::select! {
+        code = copilot::request_device_code(&transport) => code.map_err(|error| error.to_string())?,
+        Ok(()) = cancel.recv() => return Err(ACCOUNT_ADD_CANCELLED.to_owned()),
+    };
+    let _ = codes.send(Some(code.clone())).await;
+    let token = tokio::select! {
+        token = copilot::poll_for_token(&transport, &code) => token.map_err(|error| error.to_string()),
+        Ok(()) = cancel.recv() => Err(ACCOUNT_ADD_CANCELLED.to_owned()),
+    };
+    let _ = codes.send(None).await;
+    add_account(
+        UsageProvider::Copilot,
+        Some((token?, String::new())),
+        cancel,
+    )
+    .await
 }
 
 pub(super) fn kill_process_tree(process_id: u32) {
@@ -200,5 +228,28 @@ pub(super) fn redact_and_limit_account_add_error(
         "The provider sign-in did not complete.".to_owned()
     } else {
         limited
+    }
+}
+
+/// Opens a web page in the default browser.
+pub(super) fn open_in_browser(url: &str) {
+    if !url.starts_with("https://") {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        let operation: Vec<u16> = "open\0".encode_utf16().collect();
+        let url: Vec<u16> = format!("{url}\0").encode_utf16().collect();
+        // SAFETY: both strings are NUL-terminated and outlive the call.
+        unsafe {
+            windows_sys::Win32::UI::Shell::ShellExecuteW(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                url.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+            );
+        }
     }
 }

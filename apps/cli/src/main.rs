@@ -14,7 +14,8 @@ use tokio::{
 };
 use usage_monitor_core::{
     accounts::{
-        ANTIGRAVITY, AccountRecord, AccountStore, CLAUDE, DEEPSEEK, OPENAI, OPENCODE_GO, OPENROUTER,
+        ANTIGRAVITY, AccountRecord, AccountStore, CLAUDE, COPILOT, DEEPSEEK, OPENAI, OPENCODE_GO,
+        OPENROUTER,
     },
     auth::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,

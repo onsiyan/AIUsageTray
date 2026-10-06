@@ -1125,3 +1125,43 @@ fn a_custom_tab_lists_accounts_picked_one_by_one() {
         "the unpicked Codex account keeps its slot"
     );
 }
+
+#[test]
+fn copilot_lanes_and_notes_read_in_the_chosen_language() {
+    use super::widgets::{display_window_name, format_amount, metric_display_name};
+    assert_eq!(
+        display_window_name("Premium requests", Language::Arabic),
+        "الطلبات المميزة"
+    );
+    assert_eq!(display_window_name("Chat", Language::English), "Chat");
+
+    let over_quota = UsageMetric {
+        key: "premium.over_quota".to_owned(),
+        name: "Premium requests: 120% used".to_owned(),
+        used_percent: None,
+        used_amount: None,
+        limit_amount: None,
+        remaining_amount: None,
+        unit: None,
+        reset_at_utc: None,
+        reset_label: None,
+        metadata: std::collections::HashMap::from([("used_percent".to_owned(), "120".to_owned())]),
+    };
+    assert_eq!(
+        metric_display_name(&over_quota, Language::English),
+        "Premium requests: 120% used"
+    );
+    assert_eq!(
+        metric_display_name(&over_quota, Language::Arabic),
+        "الطلبات المميزة: 120% مستخدم"
+    );
+    assert_eq!(
+        format_amount(31.0, Some("credits"), None, Language::English),
+        "31 credits"
+    );
+    assert_eq!(
+        format_amount(2.5, Some("credits"), None, Language::English),
+        "2.50 credits"
+    );
+    assert!(belongs_to_provider("copilot", UsageProvider::Copilot));
+}

@@ -474,6 +474,109 @@ pub(super) fn api_key_dialog<'a>(
     .into()
 }
 
+/// GitHub's device code for a Copilot sign-in, while the app waits for the
+/// user to enter it on GitHub.
+pub(super) fn copilot_sign_in_dialog(
+    code: &usage_monitor_core::providers::copilot::DeviceCode,
+    language: locale::Language,
+    active_theme: &'static ThemeDefinition,
+) -> Element<'static, Message> {
+    let code_box = container(
+        row![
+            text(code.user_code.clone())
+                .size(26)
+                .font(typography::STRONG)
+                .color(active_theme.colors.text())
+                .width(Fill)
+                .align_x(Alignment::Center),
+            button(container(lucide_icons::iced::icon_copy().size(15)).center(Fill))
+                .on_press(Message::CopyCopilotCode)
+                .width(30)
+                .height(30)
+                .padding(0)
+                .style(move |framework_theme: &Theme, status| {
+                    let mut style = button::text(framework_theme, status);
+                    style.background =
+                        matches!(status, button::Status::Hovered | button::Status::Pressed)
+                            .then(|| Background::Color(active_theme.colors.hover()));
+                    style.text_color = active_theme.colors.text();
+                    style.border = Border {
+                        radius: 6.0.into(),
+                        ..Border::default()
+                    };
+                    style
+                }),
+        ]
+        .align_y(Alignment::Center),
+    )
+    .padding([10, 10])
+    .width(Fill)
+    .style(move |_| container::Style {
+        background: Some(Background::Color(active_theme.colors.control_surface())),
+        border: Border {
+            color: active_theme.colors.border(0.24),
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        ..Default::default()
+    });
+
+    container(
+        column![
+            row![
+                image(provider_logo_handle(
+                    UsageProvider::Copilot,
+                    active_theme.colors.is_light
+                ))
+                .width(22)
+                .height(22)
+                .content_fit(ContentFit::Contain),
+                text(locale::text(language, locale::Text::CopilotTitle))
+                    .size(typography::ACCOUNT_NAME_SIZE)
+                    .font(typography::EMPHASIS)
+                    .color(active_theme.colors.text()),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            text(locale::text(language, locale::Text::CopilotEnterCode))
+                .size(typography::METADATA_SIZE)
+                .font(typography::MEDIUM)
+                .color(active_theme.colors.muted_text()),
+            code_box,
+            text(locale::text(language, locale::Text::CopilotWaiting))
+                .size(typography::METADATA_SIZE)
+                .font(typography::MEDIUM)
+                .color(active_theme.colors.muted_text()),
+            row![
+                Space::new().width(Fill).height(1),
+                account_dialog_button(
+                    locale::text(language, locale::Text::Cancel),
+                    false,
+                    true,
+                    active_theme,
+                    Message::CancelAccountAdd,
+                ),
+                account_dialog_button(
+                    locale::text(language, locale::Text::OpenGitHub),
+                    true,
+                    true,
+                    active_theme,
+                    Message::OpenCopilotPage,
+                ),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .width(Fill),
+        ]
+        .spacing(10)
+        .width(Fill),
+    )
+    .width(344)
+    .padding(16)
+    .style(move |_| account_menu_surface_style(active_theme))
+    .into()
+}
+
 pub(super) fn account_key_input_style(
     framework_theme: &Theme,
     status: text_input::Status,

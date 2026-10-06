@@ -10,6 +10,7 @@ pub const OPENCODE_GO: &str = "opencodego";
 pub const OPENROUTER: &str = "openrouter";
 pub const ANTIGRAVITY: &str = "antigravity";
 pub const DEEPSEEK: &str = "deepseek";
+pub const COPILOT: &str = "copilot";
 
 pub(crate) fn account_reference_prefix(provider_id: &str) -> &'static str {
     match provider_id {
@@ -19,6 +20,7 @@ pub(crate) fn account_reference_prefix(provider_id: &str) -> &'static str {
         "opencodego" => "oc",
         "antigravity" => "ag",
         "deepseek" => "ds",
+        "copilot" => "cp",
         _ => "ac",
     }
 }

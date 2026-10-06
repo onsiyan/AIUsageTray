@@ -41,6 +41,12 @@ All notable changes to this project are documented here. The format follows
   of its name.
 - Custom tabs can pick single accounts as well as whole providers; leaving
   one account out of a whole provider keeps its other accounts picked.
+- GitHub Copilot accounts, signed in with GitHub's device code (the app shows
+  and copies the code, then waits for it to be entered on GitHub; or
+  `usage account add copilot`). The tab shows premium requests and chat
+  quotas with their monthly reset, credits used, unlimited and billed-by-usage
+  plans, and a note when a quota is exceeded. Accounts are matched by GitHub
+  user, so signing in again refreshes the existing one.
 - `usage-monitor-cli` for people and agents, with stable account references
   and JSON output.
 

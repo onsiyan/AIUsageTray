@@ -161,6 +161,10 @@ impl App {
             Message::RuntimeEvent(Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(keyboard::key::Named::Escape),
                 ..
+            })) if self.copilot_code.is_some() => self.update(Message::CancelAccountAdd),
+            Message::RuntimeEvent(Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                ..
             })) if self.account_delete_dialog_open
                 && !self.account_delete_running
                 && self.pending_account_deletion.is_some() =>
@@ -411,6 +415,30 @@ impl App {
                 self.credentials_provider = None;
                 self.begin_account_add(provider, Some((api_key, management_key)))
             }
+            Message::CopilotCode(code) => {
+                // A code arriving after a cancel belongs to no sign-in.
+                if !self.account_add_running {
+                    self.copilot_code = None;
+                    return Task::none();
+                }
+                let copy = code
+                    .as_ref()
+                    .map(|code| iced::clipboard::write(code.user_code.clone()));
+                self.copilot_code = code;
+                // As CodexBar does, the code is copied, ready to paste on GitHub.
+                copy.unwrap_or_else(Task::none)
+            }
+            Message::CopyCopilotCode => match &self.copilot_code {
+                Some(code) => iced::clipboard::write(code.user_code.clone()),
+                None => Task::none(),
+            },
+            Message::OpenCopilotPage => {
+                if let Some(code) = &self.copilot_code {
+                    open_in_browser(&code.verification_uri);
+                    return iced::clipboard::write(code.user_code.clone());
+                }
+                Task::none()
+            }
             Message::CancelCredentials => {
                 self.cancel_credentials();
                 Task::none()
@@ -418,6 +446,7 @@ impl App {
             Message::AccountAddCompleted(provider, result) => {
                 self.account_add_running = false;
                 self.account_add_cancel = None;
+                self.copilot_code = None;
                 match result {
                     Err(error) if error == ACCOUNT_ADD_CANCELLED => {
                         self.account_add_status = None;
@@ -443,6 +472,7 @@ impl App {
                 }
             }
             Message::CancelAccountAdd => {
+                self.copilot_code = None;
                 if let Some(cancel) = self.account_add_cancel.take() {
                     let _ = cancel.try_send(());
                 }

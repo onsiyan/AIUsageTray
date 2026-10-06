@@ -719,6 +719,7 @@ pub(crate) fn belongs_to_provider(provider_id: &str, provider: UsageProvider) ->
         UsageProvider::OpenCodeGo => provider_id == "opencodego",
         UsageProvider::OpenRouter => provider_id == "openrouter",
         UsageProvider::DeepSeek => provider_id == "deepseek",
+        UsageProvider::Copilot => provider_id == "copilot",
     }
 }
 

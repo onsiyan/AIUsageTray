@@ -121,13 +121,37 @@ pub(super) fn metric_row(
             .map(|reset| format_local_reset(reset.with_timezone(&Local), language))
     };
 
+    let name = metric_display_name(metric, language);
     if let Some(value) = value {
-        info_line(&metric.name, &value, theme)
+        info_line(&name, &value, theme)
     } else {
-        text(metric.name.clone())
+        text(name)
             .size(typography::METADATA_SIZE)
             .color(muted_text(theme))
             .into()
+    }
+}
+
+/// Names of provider notes the app translates; others show as sent.
+pub(super) fn metric_display_name(metric: &UsageMetric, language: Language) -> String {
+    let over_quota = |lane: Text| {
+        let used = metric
+            .metadata
+            .get("used_percent")
+            .map_or(String::new(), |percent| format!("{percent}% "));
+        format!(
+            "{}: {used}{}",
+            locale::text(language, lane),
+            locale::text(language, Text::UsedSuffix)
+        )
+    };
+    match metric.key.as_str() {
+        "credits.used" => locale::text(language, Text::CreditsUsed).to_owned(),
+        "quota.unlimited" => locale::text(language, Text::Unlimited).to_owned(),
+        "quota.usage_billed" => locale::text(language, Text::BilledByUsage).to_owned(),
+        "premium.over_quota" => over_quota(Text::PremiumRequests),
+        "chat.over_quota" => over_quota(Text::Chat),
+        _ => metric.name.clone(),
     }
 }
 
@@ -300,6 +324,7 @@ pub(super) fn format_amount(
 
     match unit {
         Some("tokens") => format!("{amount} token"),
+        Some("credits") => format!("{} credits", amount.trim_end_matches(".00")),
         Some(unit) => format!("{amount} {unit}"),
         None => amount,
     }
@@ -325,6 +350,8 @@ pub(super) fn display_window_name(name: &str, language: Language) -> String {
         }
         "daily" | "day" => locale::text(language, Text::Daily).to_owned(),
         "monthly" | "month" => locale::text(language, Text::Monthly).to_owned(),
+        "premium requests" => locale::text(language, Text::PremiumRequests).to_owned(),
+        "chat" => locale::text(language, Text::Chat).to_owned(),
         _ => name.to_owned(),
     }
 }

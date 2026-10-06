@@ -149,6 +149,18 @@ impl App {
                 .width(Fill)
                 .height(Fill)
                 .into()
+        } else if let Some(code) = &self.copilot_code {
+            // No click-away dismissal: a stray click must not end a sign-in
+            // the user is finishing on GitHub.
+            let dialog = container(copilot_sign_in_dialog(code, self.language, active_theme))
+                .width(Fill)
+                .height(Fill)
+                .center(Fill);
+
+            stack![page, dialog_scrim(), dialog]
+                .width(Fill)
+                .height(Fill)
+                .into()
         } else if let Some(credentials_provider) = self.credentials_provider {
             let dismiss_area = mouse_area(Space::new().width(Fill).height(Fill))
                 .on_press(Message::CancelCredentials);

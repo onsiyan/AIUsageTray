@@ -127,6 +127,7 @@ fn main() -> iced::Result {
                     ))),
                     Ok("add") => Some(Message::ToggleAccountAddMenu),
                     Ok("deepseek") => Some(Message::ChooseAccountProvider(UsageProvider::DeepSeek)),
+                    Ok("copilot") => Some(Message::ChooseAccountProvider(UsageProvider::Copilot)),
                     Ok("openrouter") => {
                         Some(Message::ChooseAccountProvider(UsageProvider::OpenRouter))
                     }
@@ -197,6 +198,7 @@ enum UsageProvider {
     OpenCodeGo,
     OpenRouter,
     DeepSeek,
+    Copilot,
 }
 
 impl UsageProvider {
@@ -208,6 +210,7 @@ impl UsageProvider {
             Self::OpenCodeGo => "opencode-go",
             Self::OpenRouter => "openrouter",
             Self::DeepSeek => "deepseek",
+            Self::Copilot => "copilot",
         }
     }
 
@@ -219,6 +222,7 @@ impl UsageProvider {
             Self::OpenCodeGo => "OpenCode Go",
             Self::OpenRouter => "OpenRouter",
             Self::DeepSeek => "DeepSeek",
+            Self::Copilot => "Copilot",
         }
     }
 
@@ -314,10 +318,14 @@ const PROVIDER_TABS: &[ProviderTab] = &[
         provider: UsageProvider::DeepSeek,
         label: "DeepSeek",
     },
+    ProviderTab {
+        provider: UsageProvider::Copilot,
+        label: "Copilot",
+    },
 ];
 
-static PROVIDER_LOGOS: OnceLock<[image::Handle; 6]> = OnceLock::new();
-static LIGHT_THEME_PROVIDER_LOGOS: OnceLock<[image::Handle; 2]> = OnceLock::new();
+static PROVIDER_LOGOS: OnceLock<[image::Handle; 7]> = OnceLock::new();
+static LIGHT_THEME_PROVIDER_LOGOS: OnceLock<[image::Handle; 3]> = OnceLock::new();
 
 struct App {
     window_id: Option<window::Id>,
@@ -336,6 +344,8 @@ struct App {
     management_key_input: String,
     account_add_running: bool,
     account_add_cancel: Option<Sender<()>>,
+    /// The GitHub code shown while a Copilot sign-in waits for the user.
+    copilot_code: Option<usage_monitor_core::providers::copilot::DeviceCode>,
     account_add_status: Option<AccountAddStatus>,
     selected_tab: DashboardTab,
     /// The user's arrangement of the tab bar.
@@ -382,6 +392,7 @@ impl App {
             management_key_input: String::new(),
             account_add_running: false,
             account_add_cancel: None,
+            copilot_code: None,
             account_add_status: None,
             selected_tab: tab_layout.resolve(DashboardTab::Provider(UsageProvider::Codex)),
             tab_icons: tab_icons::load_saved(&tab_layout),
@@ -412,6 +423,7 @@ impl App {
         ];
 
         let blocking_dialog_open = app.credentials_provider.is_some()
+            || app.copilot_code.is_some()
             || app.account_delete_dialog_open
             || app.tab_manager_open;
         if should_run_popup_animation_ticks(
@@ -556,8 +568,16 @@ impl App {
         self.account_add_status = Some(AccountAddStatus::Running(provider));
         let (cancel_sender, cancel_receiver) = async_channel::bounded(1);
         self.account_add_cancel = Some(cancel_sender);
-        let completion_receiver = match spawn_account_add_worker(move || {
-            add_account(provider, credentials, cancel_receiver)
+        // Copilot first signs in on GitHub with a device code, shown in its
+        // own dialog while the worker waits for it to be entered.
+        let (code_sender, code_receiver) = async_channel::bounded(2);
+        let signs_in_on_github = provider == UsageProvider::Copilot && credentials.is_none();
+        let completion_receiver = match spawn_account_add_worker(move || async move {
+            if signs_in_on_github {
+                add_copilot_account(code_sender, cancel_receiver).await
+            } else {
+                add_account(provider, credentials, cancel_receiver).await
+            }
         }) {
             Ok(receiver) => receiver,
             Err(error) => {
@@ -565,7 +585,7 @@ impl App {
             }
         };
 
-        Task::perform(
+        let completion = Task::perform(
             async move {
                 completion_receiver.recv().await.unwrap_or_else(|error| {
                     Err(format!(
@@ -574,7 +594,12 @@ impl App {
                 })
             },
             move |result| Message::AccountAddCompleted(provider, result),
-        )
+        );
+        if signs_in_on_github {
+            Task::batch([completion, Task::run(code_receiver, Message::CopilotCode)])
+        } else {
+            completion
+        }
     }
 
     fn cancel_credentials(&mut self) {
@@ -632,6 +657,10 @@ enum Message {
     ApiKeyChanged(String),
     ManagementKeyChanged(String),
     SubmitCredentials,
+    /// A Copilot sign-in's GitHub code, or `None` once it was entered.
+    CopilotCode(Option<usage_monitor_core::providers::copilot::DeviceCode>),
+    OpenCopilotPage,
+    CopyCopilotCode,
     CancelCredentials,
     AccountAddCompleted(UsageProvider, Result<(), String>),
     CancelAccountAdd,

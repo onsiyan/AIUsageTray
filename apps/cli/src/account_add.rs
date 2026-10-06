@@ -10,6 +10,7 @@ pub(super) enum AccountAddProvider {
     OpenCodeGo,
     Antigravity,
     DeepSeek,
+    Copilot,
 }
 
 impl AccountAddProvider {
@@ -21,6 +22,7 @@ impl AccountAddProvider {
             "opencode" | "opencodego" => Some(Self::OpenCodeGo),
             "antigravity" => Some(Self::Antigravity),
             "deepseek" => Some(Self::DeepSeek),
+            "copilot" | "githubcopilot" => Some(Self::Copilot),
             _ => None,
         }
     }
@@ -33,6 +35,7 @@ impl AccountAddProvider {
             Self::OpenCodeGo => OPENCODE_GO,
             Self::Antigravity => ANTIGRAVITY,
             Self::DeepSeek => DEEPSEEK,
+            Self::Copilot => COPILOT,
         }
     }
 
@@ -45,6 +48,7 @@ impl AccountAddProvider {
             Self::OpenCodeGo => "opencode-go",
             Self::Antigravity => "antigravity",
             Self::DeepSeek => "deepseek",
+            Self::Copilot => "copilot",
         }
     }
 
@@ -56,6 +60,12 @@ impl AccountAddProvider {
             Self::DeepSeek => Some("DEEPSEEK_API_KEY"),
             _ => None,
         }
+    }
+
+    /// Whether the credential may come from stdin: an API key, or the
+    /// GitHub token of a Copilot device-flow sign-in finished elsewhere.
+    pub(super) fn accepts_stdin_credentials(self) -> bool {
+        self.api_key_environment().is_some() || self == Self::Copilot
     }
 }
 
@@ -106,6 +116,13 @@ pub(super) fn build_account_add_arguments(
             }
         }
         AccountAddProvider::OpenCodeGo => {}
+        // Without a token on stdin, the helper runs GitHub's device flow in
+        // the terminal. Accounts are matched by GitHub user, never doubled.
+        AccountAddProvider::Copilot => {
+            if arguments.api_key_stdin || arguments.credentials_stdin {
+                result.push("--credentials-stdin".into());
+            }
+        }
         AccountAddProvider::Antigravity => {
             // Open the normal login flow even when another Antigravity account
             // is already saved. Identity deduplication remains in the probe.
@@ -119,8 +136,7 @@ pub(super) fn account_add_uses_stdin(
     provider: AccountAddProvider,
     arguments: &AccountAddArgs,
 ) -> bool {
-    provider.api_key_environment().is_some()
-        && (arguments.api_key_stdin || arguments.credentials_stdin)
+    provider.accepts_stdin_credentials() && (arguments.api_key_stdin || arguments.credentials_stdin)
 }
 
 pub(super) fn has_api_key_source(
@@ -155,7 +171,7 @@ pub(super) async fn execute_account_add(
         return Err(CliFailure::new(
             "unsupported_provider",
             format!(
-                "Unsupported provider `{}`. Choose codex, claude, openrouter, opencode-go, antigravity, or deepseek.",
+                "Unsupported provider `{}`. Choose codex, claude, openrouter, opencode-go, antigravity, deepseek, or copilot.",
                 arguments.provider
             ),
             2,
@@ -174,10 +190,12 @@ pub(super) async fn execute_account_add(
         ));
     }
     let api_key_environment = provider.api_key_environment();
-    if api_key_environment.is_none() && (arguments.api_key_stdin || arguments.credentials_stdin) {
+    if !provider.accepts_stdin_credentials()
+        && (arguments.api_key_stdin || arguments.credentials_stdin)
+    {
         return Err(CliFailure::new(
             "invalid_arguments",
-            "Stdin credential options can only be used with `account add openrouter` or `account add deepseek`.",
+            "Stdin credential options can only be used with `account add openrouter`, `account add deepseek`, or `account add copilot`.",
             2,
         ));
     }
