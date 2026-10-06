@@ -5,6 +5,7 @@ pub mod codex_workspace;
 pub mod copilot;
 pub mod cursor;
 pub mod deepseek;
+pub mod kimi;
 pub mod openai;
 pub mod opencode_go;
 pub mod openrouter;

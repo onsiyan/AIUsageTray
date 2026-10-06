@@ -364,6 +364,7 @@ pub(super) fn display_window_name(name: &str, language: Language) -> String {
         "premium requests" => locale::text(language, Text::PremiumRequests).to_owned(),
         "chat" => locale::text(language, Text::Chat).to_owned(),
         "total" => locale::text(language, Text::Total).to_owned(),
+        "total usage" => locale::text(language, Text::TotalUsage).to_owned(),
         "requests" => locale::text(language, Text::Requests).to_owned(),
         _ => name.to_owned(),
     }

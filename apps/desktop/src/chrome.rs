@@ -343,6 +343,7 @@ pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -
             decode_provider_logo(include_bytes!("../assets/providers/deepseek.png"), false),
             decode_provider_logo(include_bytes!("../assets/providers/copilot.png"), false),
             decode_provider_logo(include_bytes!("../assets/providers/cursor.png"), false),
+            decode_provider_logo(include_bytes!("../assets/providers/kimi.png"), false),
         ]
     });
 
@@ -355,6 +356,7 @@ pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -
         UsageProvider::DeepSeek => 5,
         UsageProvider::Copilot => 6,
         UsageProvider::Cursor => 7,
+        UsageProvider::Kimi => 8,
     }]
     .clone()
 }

@@ -250,6 +250,7 @@ fn account_add_routes_each_provider_to_its_existing_login_flow() {
         ("deepseek", AccountAddProvider::DeepSeek),
         ("copilot", AccountAddProvider::Copilot),
         ("cursor", AccountAddProvider::Cursor),
+        ("kimi", AccountAddProvider::Kimi),
     ];
     let arguments = AccountAddArgs {
         provider: String::new(),

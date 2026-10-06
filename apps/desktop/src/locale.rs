@@ -29,6 +29,8 @@ pub enum Text {
     BilledByUsage,
     UsedSuffix,
     CursorTitle,
+    KimiTitle,
+    TotalUsage,
     CursorSession,
     CursorSessionHint,
     OpenCursor,
@@ -172,6 +174,8 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, BilledByUsage) => "Billed by usage",
         (English, UsedSuffix) => "used",
         (English, CursorTitle) => "Add Cursor account",
+        (English, KimiTitle) => "Add Kimi Code account",
+        (English, TotalUsage) => "Total usage",
         (English, CursorSession) => "WorkosCursorSessionToken cookie",
         (English, CursorSessionHint) => {
             "The Cursor app is not signed in on this computer. Sign in to it and try again, or sign in at cursor.com and paste the WorkosCursorSessionToken cookie (browser developer tools → Application → Cookies)."
@@ -306,6 +310,8 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (Arabic, BilledByUsage) => "يُحاسب حسب الاستخدام",
         (Arabic, UsedSuffix) => "مستخدم",
         (Arabic, CursorTitle) => "إضافة حساب Cursor",
+        (Arabic, KimiTitle) => "إضافة حساب Kimi Code",
+        (Arabic, TotalUsage) => "إجمالي الاستخدام",
         (Arabic, CursorSession) => "ملف تعريف الارتباط WorkosCursorSessionToken",
         (Arabic, CursorSessionHint) => {
             "تطبيق Cursor غير مسجل الدخول على هذا الجهاز. سجّل الدخول فيه وأعد المحاولة، أو سجّل الدخول في cursor.com والصق ملف تعريف الارتباط WorkosCursorSessionToken (أدوات المطور في المتصفح ← Application ← Cookies)."

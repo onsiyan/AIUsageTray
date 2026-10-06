@@ -129,6 +129,7 @@ fn main() -> iced::Result {
                     Ok("deepseek") => Some(Message::ChooseAccountProvider(UsageProvider::DeepSeek)),
                     Ok("copilot") => Some(Message::ChooseAccountProvider(UsageProvider::Copilot)),
                     Ok("cursor") => Some(Message::ChooseAccountProvider(UsageProvider::Cursor)),
+                    Ok("kimi") => Some(Message::ChooseAccountProvider(UsageProvider::Kimi)),
                     Ok("openrouter") => {
                         Some(Message::ChooseAccountProvider(UsageProvider::OpenRouter))
                     }
@@ -201,6 +202,7 @@ enum UsageProvider {
     DeepSeek,
     Copilot,
     Cursor,
+    Kimi,
 }
 
 impl UsageProvider {
@@ -214,6 +216,7 @@ impl UsageProvider {
             Self::DeepSeek => "deepseek",
             Self::Copilot => "copilot",
             Self::Cursor => "cursor",
+            Self::Kimi => "kimi",
         }
     }
 
@@ -227,12 +230,13 @@ impl UsageProvider {
             Self::DeepSeek => "DeepSeek",
             Self::Copilot => "Copilot",
             Self::Cursor => "Cursor",
+            Self::Kimi => "Kimi Code",
         }
     }
 
     /// Providers added by pasting an API key rather than signing in.
     const fn uses_api_key(self) -> bool {
-        matches!(self, Self::OpenRouter | Self::DeepSeek)
+        matches!(self, Self::OpenRouter | Self::DeepSeek | Self::Kimi)
     }
 }
 
@@ -330,9 +334,13 @@ const PROVIDER_TABS: &[ProviderTab] = &[
         provider: UsageProvider::Cursor,
         label: "Cursor",
     },
+    ProviderTab {
+        provider: UsageProvider::Kimi,
+        label: "Kimi Code",
+    },
 ];
 
-static PROVIDER_LOGOS: OnceLock<[image::Handle; 8]> = OnceLock::new();
+static PROVIDER_LOGOS: OnceLock<[image::Handle; 9]> = OnceLock::new();
 static LIGHT_THEME_PROVIDER_LOGOS: OnceLock<[image::Handle; 4]> = OnceLock::new();
 
 struct App {

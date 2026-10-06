@@ -54,6 +54,10 @@ All notable changes to this project are documented here. The format follows
   allowance, request quotas on legacy plans, and on-demand spend against its
   budget. While the Cursor app stays signed in to the account, each refresh
   uses its newer session.
+- Kimi Code accounts, added from a Kimi Code API key (desktop dialog, or
+  `usage account add kimi` with `KIMI_CODE_API_KEY` or stdin). The tab shows
+  the 5-hour and weekly quotas and the monthly total usage pool, with the
+  membership plan. Older count-based responses are read too.
 - `usage-monitor-cli` for people and agents, with stable account references
   and JSON output.
 

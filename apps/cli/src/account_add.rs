@@ -12,6 +12,7 @@ pub(super) enum AccountAddProvider {
     DeepSeek,
     Copilot,
     Cursor,
+    Kimi,
 }
 
 impl AccountAddProvider {
@@ -25,6 +26,7 @@ impl AccountAddProvider {
             "deepseek" => Some(Self::DeepSeek),
             "copilot" | "githubcopilot" => Some(Self::Copilot),
             "cursor" => Some(Self::Cursor),
+            "kimi" | "kimicode" => Some(Self::Kimi),
             _ => None,
         }
     }
@@ -39,6 +41,7 @@ impl AccountAddProvider {
             Self::DeepSeek => DEEPSEEK,
             Self::Copilot => COPILOT,
             Self::Cursor => CURSOR,
+            Self::Kimi => KIMI,
         }
     }
 
@@ -53,6 +56,7 @@ impl AccountAddProvider {
             Self::DeepSeek => "deepseek",
             Self::Copilot => "copilot",
             Self::Cursor => "cursor",
+            Self::Kimi => "kimi",
         }
     }
 
@@ -62,6 +66,7 @@ impl AccountAddProvider {
         match self {
             Self::OpenRouter => Some("OPENROUTER_API_KEY"),
             Self::DeepSeek => Some("DEEPSEEK_API_KEY"),
+            Self::Kimi => Some("KIMI_CODE_API_KEY"),
             _ => None,
         }
     }
@@ -80,6 +85,7 @@ const API_KEY_ENVIRONMENT: &[&str] = &[
     "OPENROUTER_API_KEY",
     "OPENROUTER_MANAGEMENT_API_KEY",
     "DEEPSEEK_API_KEY",
+    "KIMI_CODE_API_KEY",
 ];
 
 /// The sign-in helper shipped next to the CLI.
@@ -109,7 +115,9 @@ pub(super) fn build_account_add_arguments(
         // The Claude probe owns its single official Claude Code OAuth login
         // flow and always uses the system-default browser.
         AccountAddProvider::Claude => {}
-        AccountAddProvider::OpenRouter | AccountAddProvider::DeepSeek => {
+        AccountAddProvider::OpenRouter
+        | AccountAddProvider::DeepSeek
+        | AccountAddProvider::Kimi => {
             // Each explicit add gets its own credential slot; a repeated label
             // must not silently replace another key.
             result.push("--new".into());
@@ -177,7 +185,7 @@ pub(super) async fn execute_account_add(
         return Err(CliFailure::new(
             "unsupported_provider",
             format!(
-                "Unsupported provider `{}`. Choose codex, claude, openrouter, opencode-go, antigravity, deepseek, copilot, or cursor.",
+                "Unsupported provider `{}`. Choose codex, claude, openrouter, opencode-go, antigravity, deepseek, copilot, cursor, or kimi.",
                 arguments.provider
             ),
             2,
@@ -201,7 +209,7 @@ pub(super) async fn execute_account_add(
     {
         return Err(CliFailure::new(
             "invalid_arguments",
-            "Stdin credential options can only be used with `account add openrouter`, `account add deepseek`, `account add copilot`, or `account add cursor`.",
+            "Stdin credential options can only be used with `account add openrouter`, `account add deepseek`, `account add kimi`, `account add copilot`, or `account add cursor`.",
             2,
         ));
     }
@@ -251,6 +259,7 @@ pub(super) async fn execute_account_add(
         let belongs_to_provider = match provider {
             AccountAddProvider::OpenRouter => variable.starts_with("OPENROUTER_"),
             AccountAddProvider::DeepSeek => variable.starts_with("DEEPSEEK_"),
+            AccountAddProvider::Kimi => variable.starts_with("KIMI_"),
             _ => false,
         };
         if !belongs_to_provider {

@@ -433,6 +433,7 @@ pub(super) fn api_key_dialog<'a>(
     let title = match provider {
         UsageProvider::DeepSeek => locale::text(language, locale::Text::DeepSeekTitle),
         UsageProvider::Cursor => locale::text(language, locale::Text::CursorTitle),
+        UsageProvider::Kimi => locale::text(language, locale::Text::KimiTitle),
         _ => locale::text(language, locale::Text::OpenRouterTitle),
     };
     let hint = if is_cursor {
