@@ -47,16 +47,16 @@ pub(super) fn reset_credit_info_line(
             rich_text::<(), Message, iced::Theme, iced::Renderer>([
                 span::<(), iced::Font>(prefix.to_owned()).color(muted_text(theme)),
                 span::<(), iced::Font>(countdown.to_owned())
-                    .font(typography::EMPHASIS)
+                    .font(typography::STRONG)
                     .color(reset_time_accent(theme)),
             ])
-            .size(typography::COMPACT_SIZE)
-            .font(typography::EMPHASIS)
+            .size(typography::RESET_TIME_SIZE)
+            .font(typography::MEDIUM)
             .into()
         } else {
             text(value.to_owned())
-                .size(typography::COMPACT_SIZE)
-                .font(typography::EMPHASIS)
+                .size(typography::RESET_TIME_SIZE)
+                .font(typography::MEDIUM)
                 .color(theme.colors.text())
                 .into()
         };
