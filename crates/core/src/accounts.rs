@@ -13,6 +13,7 @@ pub const DEEPSEEK: &str = "deepseek";
 pub const COPILOT: &str = "copilot";
 pub const CURSOR: &str = "cursor";
 pub const KIMI: &str = "kimi";
+pub const ZAI: &str = "zai";
 
 pub(crate) fn account_reference_prefix(provider_id: &str) -> &'static str {
     match provider_id {
@@ -25,6 +26,7 @@ pub(crate) fn account_reference_prefix(provider_id: &str) -> &'static str {
         "copilot" => "cp",
         "cursor" => "cu",
         "kimi" => "km",
+        "zai" => "za",
         _ => "ac",
     }
 }

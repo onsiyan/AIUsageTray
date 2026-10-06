@@ -6,7 +6,8 @@
 //! provider that also needs a second value (an id that goes with the key)
 //! takes it from the next stdin line or its own variable. Both are written
 //! only to the account's Windows Credential Manager entry before the normal
-//! runtime reads the account's usage once.
+//! runtime reads the account's usage once. z.ai keys belong to one region;
+//! the region that accepts the key is found here and stored in its place.
 
 use std::{
     env,
@@ -16,12 +17,12 @@ use std::{
     time::Duration,
 };
 use usage_monitor_core::{
-    accounts::{AccountRecord, AccountStore, KIMI},
+    accounts::{AccountRecord, AccountStore, KIMI, ZAI},
     auth::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
         StoredAuthMaterialProvider,
     },
-    providers::registry::ProviderRegistryConfig,
+    providers::{registry::ProviderRegistryConfig, zai},
     refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
     runtime::UsageRuntime,
     storage::{SqliteStore, default_accounts_database_path},
@@ -38,6 +39,9 @@ pub struct ApiKeyProvider {
     pub key_variable: &'static str,
     /// A required value that goes with the key, kept as the secondary token.
     pub second: Option<SecondValue>,
+    /// Find the z.ai region that accepts the key and keep it as the
+    /// secondary token.
+    pub zai_region: bool,
 }
 
 pub struct SecondValue {
@@ -51,6 +55,16 @@ pub const KIMI_CODE: ApiKeyProvider = ApiKeyProvider {
     name: "Kimi Code",
     key_variable: "KIMI_CODE_API_KEY",
     second: None,
+    zai_region: false,
+};
+
+pub const ZAI_CODING_PLAN: ApiKeyProvider = ApiKeyProvider {
+    command: "zai",
+    provider_id: ZAI,
+    name: "z.ai",
+    key_variable: "Z_AI_API_KEY",
+    second: None,
+    zai_region: true,
 };
 
 #[derive(Debug, Default)]
@@ -70,7 +84,7 @@ pub async fn run(provider: &ApiKeyProvider) -> Result<(), Box<dyn std::error::Er
         std::fs::create_dir_all(parent)?;
     }
 
-    let (api_key, second) = if arguments.stdin {
+    let (api_key, mut second) = if arguments.stdin {
         read_stdin_values(provider)?
     } else {
         let variable = |name: &str| {
@@ -95,6 +109,12 @@ pub async fn run(provider: &ApiKeyProvider) -> Result<(), Box<dyn std::error::Er
         (api_key, second)
     };
 
+    let transport = Arc::new(ReqwestUsageHttpTransport::new(Duration::from_secs(45))?);
+    if provider.zai_region {
+        let region = zai::detect_region(transport.as_ref(), &api_key).await?;
+        second = region.stored().map(str::to_owned);
+    }
+
     let sqlite = Arc::new(SqliteStore::open(&database_path)?);
     let account_store: Arc<dyn AccountStore> = sqlite.clone();
     let snapshot_store: Arc<dyn UsageSnapshotStore> = sqlite.clone();
@@ -113,7 +133,6 @@ pub async fn run(provider: &ApiKeyProvider) -> Result<(), Box<dyn std::error::Er
     .await?;
     account_store.upsert(&account).await?;
 
-    let transport = Arc::new(ReqwestUsageHttpTransport::new(Duration::from_secs(45))?);
     let secure_material_store = Arc::new(WindowsCredentialManagerAuthMaterialStore);
     let material = AccountAuthMaterial {
         bearer_token: Some(api_key),

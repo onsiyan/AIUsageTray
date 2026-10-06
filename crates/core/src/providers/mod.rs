@@ -11,3 +11,4 @@ pub mod opencode_go;
 pub mod openrouter;
 pub mod registry;
 pub mod shared;
+pub mod zai;

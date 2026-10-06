@@ -162,6 +162,8 @@ pub(super) fn metric_display_name(metric: &UsageMetric, language: Language) -> S
         "on_demand" => locale::text(language, Text::OnDemand).to_owned(),
         "on_demand.team" => locale::text(language, Text::TeamOnDemand).to_owned(),
         "on_demand.yours" => locale::text(language, Text::YourOnDemand).to_owned(),
+        "rate.peak" => locale::text(language, Text::PeakRate).to_owned(),
+        "rate.off_peak" => locale::text(language, Text::OffPeakRate).to_owned(),
         _ => metric.name.clone(),
     }
 }

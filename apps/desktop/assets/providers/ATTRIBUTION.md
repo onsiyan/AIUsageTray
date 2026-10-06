@@ -9,3 +9,4 @@
 - `copilot.png`: GitHub Copilot mark from [CodexBar](https://github.com/steipete/CodexBar) `docs/logos/copilot.svg` (MIT), recolored white and rasterized at 192 px with a small margin to match the other tab icons.
 - `cursor.png`: Cursor cube mark from [CodexBar](https://github.com/steipete/CodexBar) `docs/logos/cursor.svg` (MIT), recolored white and rasterized at 192 px with a small margin to match the other tab icons.
 - `kimi.png`: Kimi mark from [CodexBar](https://github.com/steipete/CodexBar) `docs/logos/kimi.svg` (MIT), rasterized at 192 px with a small margin to match the other tab icons.
+- `zai.png`: Z mark from [CodexBar](https://github.com/steipete/CodexBar) `docs/logos/zai-dark.svg` (MIT), rasterized at 192 px with a small margin to match the other tab icons.

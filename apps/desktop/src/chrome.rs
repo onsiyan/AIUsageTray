@@ -315,6 +315,7 @@ pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -
             UsageProvider::OpenRouter => Some(1),
             UsageProvider::Copilot => Some(2),
             UsageProvider::Cursor => Some(3),
+            UsageProvider::Zai => Some(4),
             _ => None,
         };
         if let Some(logo_index) = logo_index {
@@ -327,6 +328,7 @@ pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -
                     ),
                     decode_provider_logo(include_bytes!("../assets/providers/copilot.png"), true),
                     decode_provider_logo(include_bytes!("../assets/providers/cursor.png"), true),
+                    decode_provider_logo(include_bytes!("../assets/providers/zai.png"), true),
                 ]
             });
             return logos[logo_index].clone();
@@ -344,6 +346,7 @@ pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -
             decode_provider_logo(include_bytes!("../assets/providers/copilot.png"), false),
             decode_provider_logo(include_bytes!("../assets/providers/cursor.png"), false),
             decode_provider_logo(include_bytes!("../assets/providers/kimi.png"), false),
+            decode_provider_logo(include_bytes!("../assets/providers/zai.png"), false),
         ]
     });
 
@@ -357,6 +360,7 @@ pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -
         UsageProvider::Copilot => 6,
         UsageProvider::Cursor => 7,
         UsageProvider::Kimi => 8,
+        UsageProvider::Zai => 9,
     }]
     .clone()
 }

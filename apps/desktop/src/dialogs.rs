@@ -434,6 +434,7 @@ pub(super) fn api_key_dialog<'a>(
         UsageProvider::DeepSeek => locale::text(language, locale::Text::DeepSeekTitle),
         UsageProvider::Cursor => locale::text(language, locale::Text::CursorTitle),
         UsageProvider::Kimi => locale::text(language, locale::Text::KimiTitle),
+        UsageProvider::Zai => locale::text(language, locale::Text::ZaiTitle),
         _ => locale::text(language, locale::Text::OpenRouterTitle),
     };
     let hint = if is_cursor {

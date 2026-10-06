@@ -723,6 +723,7 @@ pub(crate) fn belongs_to_provider(provider_id: &str, provider: UsageProvider) ->
         UsageProvider::Copilot => provider_id == "copilot",
         UsageProvider::Cursor => provider_id == "cursor",
         UsageProvider::Kimi => provider_id == "kimi",
+        UsageProvider::Zai => provider_id == "zai",
     }
 }
 

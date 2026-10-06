@@ -251,6 +251,7 @@ fn account_add_routes_each_provider_to_its_existing_login_flow() {
         ("copilot", AccountAddProvider::Copilot),
         ("cursor", AccountAddProvider::Cursor),
         ("kimi", AccountAddProvider::Kimi),
+        ("zai", AccountAddProvider::Zai),
     ];
     let arguments = AccountAddArgs {
         provider: String::new(),
