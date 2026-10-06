@@ -385,7 +385,7 @@ fn shade_over_backdrop(
     container(content)
         .padding([1, 6])
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.35))),
+            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.48))),
             border: Border {
                 radius: 6.0.into(),
                 ..Border::default()
