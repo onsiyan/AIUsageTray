@@ -26,6 +26,8 @@ usage-monitor-windows.workspace = true
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
     "Win32_UI_Controls_Dialogs",
     "Win32_System_Threading",
     "Win32_UI_HiDpi",

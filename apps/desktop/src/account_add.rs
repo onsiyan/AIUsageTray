@@ -253,3 +253,86 @@ pub(super) fn open_in_browser(url: &str) {
         }
     }
 }
+
+/// Puts `text` on the Windows clipboard.
+///
+/// Written directly with the Win32 API: iced's clipboard is tied to one
+/// window and does nothing once the tray popup has been closed and reopened.
+pub(super) fn copy_to_clipboard(text: &str) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::{
+            Foundation::GlobalFree,
+            System::{
+                DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
+                Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
+            },
+        };
+        const CF_UNICODETEXT: u32 = 13;
+        let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+        let bytes = wide.len() * std::mem::size_of::<u16>();
+        // SAFETY: the allocation is `bytes` long and filled from `wide`; once
+        // SetClipboardData succeeds the system owns it, otherwise it is freed.
+        unsafe {
+            // With no owner window, EmptyClipboard leaves the clipboard
+            // ownerless and SetClipboardData then fails, so one of the app's
+            // own windows takes ownership. Another program may hold the
+            // clipboard for a moment; try a few times.
+            let owner = own_window();
+            if !(0..5).any(|attempt| {
+                if attempt > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                OpenClipboard(owner) != 0
+            }) {
+                return;
+            }
+            EmptyClipboard();
+            let memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+            if !memory.is_null() {
+                let target = GlobalLock(memory).cast::<u16>();
+                if target.is_null() {
+                    GlobalFree(memory);
+                } else {
+                    std::ptr::copy_nonoverlapping(wide.as_ptr(), target, wide.len());
+                    GlobalUnlock(memory);
+                    if SetClipboardData(CF_UNICODETEXT, memory).is_null() {
+                        GlobalFree(memory);
+                    }
+                }
+            }
+            CloseClipboard();
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = text;
+}
+
+/// A top-level window of this process, to own the clipboard.
+#[cfg(windows)]
+fn own_window() -> windows_sys::Win32::Foundation::HWND {
+    use windows_sys::Win32::{
+        Foundation::{HWND, LPARAM},
+        System::Threading::GetCurrentProcessId,
+        UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId},
+    };
+    unsafe extern "system" fn find(window: HWND, found: LPARAM) -> i32 {
+        let mut process = 0;
+        // SAFETY: `found` points at the HWND slot owned by `own_window`.
+        unsafe {
+            GetWindowThreadProcessId(window, &mut process);
+            if process == GetCurrentProcessId() {
+                *(found as *mut HWND) = window;
+                return 0;
+            }
+        }
+        1
+    }
+    let mut window: HWND = std::ptr::null_mut();
+    // SAFETY: the callback only writes through the pointer to `window`,
+    // which lives until EnumWindows returns.
+    unsafe {
+        EnumWindows(Some(find), &mut window as *mut HWND as LPARAM);
+    }
+    window
+}

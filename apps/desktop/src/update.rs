@@ -421,21 +421,23 @@ impl App {
                     self.copilot_code = None;
                     return Task::none();
                 }
-                let copy = code
-                    .as_ref()
-                    .map(|code| iced::clipboard::write(code.user_code.clone()));
-                self.copilot_code = code;
                 // As CodexBar does, the code is copied, ready to paste on GitHub.
-                copy.unwrap_or_else(Task::none)
+                if let Some(code) = &code {
+                    copy_to_clipboard(&code.user_code);
+                }
+                self.copilot_code = code;
+                Task::none()
             }
-            Message::CopyCopilotCode => match &self.copilot_code {
-                Some(code) => iced::clipboard::write(code.user_code.clone()),
-                None => Task::none(),
-            },
+            Message::CopyCopilotCode => {
+                if let Some(code) = &self.copilot_code {
+                    copy_to_clipboard(&code.user_code);
+                }
+                Task::none()
+            }
             Message::OpenCopilotPage => {
                 if let Some(code) = &self.copilot_code {
+                    copy_to_clipboard(&code.user_code);
                     open_in_browser(&code.verification_uri);
-                    return iced::clipboard::write(code.user_code.clone());
                 }
                 Task::none()
             }
