@@ -235,9 +235,13 @@ pub(super) fn account_card(
         .and_then(|snapshot| usage_animation.animated_snapshot(account_id, snapshot));
     let snapshot = animated_snapshot.as_ref().or(stored_snapshot);
     let plan_type = snapshot.and_then(|snapshot| snapshot.plan_type.clone());
-    if account.workspace_name.is_some() || !account.email.is_empty() || plan_type.is_some() {
+    if crate::display_options::show_account_details()
+        && (account.workspace_name.is_some()
+            || !shown_email(&account.email).is_empty()
+            || plan_type.is_some())
+    {
         let mut metadata = row![
-            text(account.email.clone())
+            text(shown_email(&account.email).to_owned())
                 .size(typography::METADATA_SIZE)
                 .font(typography::MEDIUM)
                 .color(muted_text(theme)),

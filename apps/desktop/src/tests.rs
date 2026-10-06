@@ -346,3 +346,11 @@ fn memory_saver_closes_the_hidden_popup_window() {
         "the memory saver closes the window"
     );
 }
+
+#[test]
+fn favorites_sit_in_the_middle_of_the_tab_bar() {
+    // Six providers: three tabs on each side of the star.
+    assert_eq!(favorites_tab_position(6), 3);
+    assert_eq!(favorites_tab_position(5), 3);
+    assert_eq!(favorites_tab_position(0), 0);
+}

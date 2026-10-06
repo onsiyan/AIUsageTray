@@ -1,70 +1,107 @@
-//! The palette menu: theme choice, usage percentage display, and memory saver.
+//! The palette menu: theme, usage percentage display, what account cards
+//! show, and memory saver.
 
 use super::*;
+use display_options::ResetCreditVisibility;
 
 pub(super) fn theme_dropdown(
     current_theme: ThemeId,
     language: locale::Language,
     memory_saver: bool,
+    active_theme: &'static ThemeDefinition,
 ) -> Element<'static, Message> {
     let mut items = THEME_MANIFEST
         .iter()
         .copied()
-        .map(|theme| theme_choice_row(theme, current_theme))
+        .map(|theme| theme_choice_row(theme, current_theme, active_theme))
         .collect::<Vec<_>>();
 
-    items.push(menu_section_title(locale::text(
-        language,
-        locale::Text::PercentDisplayTitle,
-    )));
+    items.push(menu_section_title(
+        locale::text(language, locale::Text::PercentDisplayTitle),
+        active_theme,
+    ));
     let current_display = percent_display::current();
     for (mode, label) in [
         (PercentDisplay::Remaining, locale::Text::ShowRemaining),
         (PercentDisplay::Used, locale::Text::ShowUsed),
     ] {
-        items.push(percent_display_choice_row(
-            mode,
+        items.push(choice_row(
             locale::text(language, label),
             mode == current_display,
+            Message::SelectPercentDisplay(mode),
+            active_theme,
         ));
     }
 
-    items.push(menu_section_title(locale::text(
-        language,
-        locale::Text::MemoryTitle,
-    )));
+    items.push(menu_section_title(
+        locale::text(language, locale::Text::CardDetailsTitle),
+        active_theme,
+    ));
+    let details_shown = display_options::show_account_details();
+    items.push(choice_row(
+        locale::text(language, locale::Text::ShowEmailAndPlan),
+        details_shown,
+        Message::SetShowAccountDetails(!details_shown),
+        active_theme,
+    ));
+
+    items.push(menu_section_title(
+        locale::text(language, locale::Text::ResetCreditsTitle),
+        active_theme,
+    ));
+    let current_reset_credits = display_options::reset_credits();
+    for (mode, label) in [
+        (ResetCreditVisibility::All, locale::Text::ResetCreditsAll),
+        (
+            ResetCreditVisibility::ExpiringSoon,
+            locale::Text::ResetCreditsSoon,
+        ),
+        (ResetCreditVisibility::None, locale::Text::ResetCreditsNone),
+    ] {
+        items.push(choice_row(
+            locale::text(language, label),
+            mode == current_reset_credits,
+            Message::SelectResetCredits(mode),
+            active_theme,
+        ));
+    }
+
+    items.push(menu_section_title(
+        locale::text(language, locale::Text::MemoryTitle),
+        active_theme,
+    ));
     items.push(choice_row(
         locale::text(language, locale::Text::MemorySaver),
         memory_saver,
         Message::SetMemorySaver(!memory_saver),
+        active_theme,
     ));
     items.push(
         container(
             text(locale::text(language, locale::Text::MemorySaverTradeoff))
                 .size(typography::METADATA_SIZE)
-                .color(Color::from_rgba(1.0, 1.0, 1.0, 0.5)),
+                .font(typography::MEDIUM)
+                .color(active_theme.colors.muted_text()),
         )
         .padding([2, 9])
         .into(),
     );
 
-    container(column(items).spacing(2))
-        .width(176)
+    container(column(items).spacing(1))
+        .width(200)
         .padding(6)
-        .style(theme_dropdown_surface_style)
+        .style(move |_| theme_dropdown_surface_style(active_theme))
         .into()
 }
+
+const MENU_ROW_HEIGHT: f32 = 30.0;
 
 pub(super) fn theme_choice_row(
     theme_choice: ThemeDefinition,
     current_theme: ThemeId,
+    active_theme: &'static ThemeDefinition,
 ) -> Element<'static, Message> {
     let selected = theme_choice.id == current_theme;
-    let check: Element<'static, Message> = if selected {
-        icon_check::<Theme>().size(15).color(Color::WHITE).into()
-    } else {
-        Space::new().width(16).height(15).into()
-    };
     let swatch_color = theme_choice.swatch_color();
 
     let swatch = container(Space::new().width(Fill).height(Fill))
@@ -73,7 +110,7 @@ pub(super) fn theme_choice_row(
         .style(move |_| container::Style {
             background: Some(Background::Color(swatch_color)),
             border: Border {
-                color: Color::from_rgba(1.0, 1.0, 1.0, 0.22),
+                color: active_theme.colors.border(0.45),
                 width: 1.0,
                 radius: 4.0.into(),
             },
@@ -85,71 +122,97 @@ pub(super) fn theme_choice_row(
             swatch,
             text(theme_choice.label)
                 .size(typography::LABEL_SIZE)
-                .color(Color::WHITE)
+                .font(typography::MEDIUM)
+                .color(active_theme.colors.text())
                 .width(Fill),
-            check,
+            check_mark(selected, active_theme),
         ]
         .spacing(8)
         .align_y(Alignment::Center),
     )
     .on_press(Message::SelectTheme(theme_choice.id))
     .width(Fill)
-    .height(34)
+    .height(MENU_ROW_HEIGHT)
     .padding([4, 9])
-    .style(move |theme: &Theme, status| theme_menu_item_style(theme, selected, status))
+    .style(move |theme: &Theme, status| {
+        theme_menu_item_style(theme, selected, status, active_theme)
+    })
     .into()
 }
 
-fn menu_section_title(title: &'static str) -> Element<'static, Message> {
+fn check_mark(selected: bool, active_theme: &'static ThemeDefinition) -> Element<'static, Message> {
+    if selected {
+        icon_check::<Theme>()
+            .size(15)
+            .color(active_theme.colors.text())
+            .into()
+    } else {
+        Space::new().width(16).height(15).into()
+    }
+}
+
+fn menu_section_title(
+    title: &'static str,
+    active_theme: &'static ThemeDefinition,
+) -> Element<'static, Message> {
     container(
         text(title)
             .size(typography::METADATA_SIZE)
-            .color(Color::from_rgba(1.0, 1.0, 1.0, 0.6)),
+            .font(typography::EMPHASIS)
+            .color(active_theme.colors.muted_text()),
     )
-    .padding([6, 9])
+    .padding(iced::Padding {
+        top: 8.0,
+        right: 9.0,
+        bottom: 3.0,
+        left: 9.0,
+    })
     .into()
 }
 
-pub(super) fn percent_display_choice_row(
-    mode: PercentDisplay,
+fn choice_row(
     label: &'static str,
     selected: bool,
+    message: Message,
+    active_theme: &'static ThemeDefinition,
 ) -> Element<'static, Message> {
-    choice_row(label, selected, Message::SelectPercentDisplay(mode))
-}
-
-fn choice_row(label: &'static str, selected: bool, message: Message) -> Element<'static, Message> {
-    let check: Element<'static, Message> = if selected {
-        icon_check::<Theme>().size(15).color(Color::WHITE).into()
-    } else {
-        Space::new().width(16).height(15).into()
-    };
-
     button(
         row![
             text(label)
                 .size(typography::LABEL_SIZE)
-                .color(Color::WHITE)
+                .font(typography::MEDIUM)
+                .color(active_theme.colors.text())
                 .width(Fill),
-            check,
+            check_mark(selected, active_theme),
         ]
         .spacing(8)
         .align_y(Alignment::Center),
     )
     .on_press(message)
     .width(Fill)
-    .height(34)
+    .height(MENU_ROW_HEIGHT)
     .padding([4, 9])
-    .style(move |theme: &Theme, status| theme_menu_item_style(theme, selected, status))
+    .style(move |theme: &Theme, status| {
+        theme_menu_item_style(theme, selected, status, active_theme)
+    })
     .into()
 }
 
-pub(super) fn theme_dropdown_surface_style(_: &Theme) -> container::Style {
+pub(super) fn theme_dropdown_surface_style(
+    active_theme: &'static ThemeDefinition,
+) -> container::Style {
     container::Style {
-        background: Some(Background::Color(Color::BLACK)),
+        // Opaque even on themes with a backdrop image, so the menu stays
+        // readable over it.
+        background: Some(Background::Color(active_theme.colors.window_surface())),
         border: Border {
-            radius: 14.0.into(),
-            ..Border::default()
+            color: active_theme.colors.border(if active_theme.colors.is_light {
+                0.45
+            } else {
+                0.22
+            }),
+            width: 1.0,
+            radius: 12.0.into(),
         },
         shadow: Shadow::default(),
         ..Default::default()
@@ -160,17 +223,18 @@ pub(super) fn theme_menu_item_style(
     framework_theme: &Theme,
     selected: bool,
     status: button::Status,
+    active_theme: &'static ThemeDefinition,
 ) -> button::Style {
     let mut style = button::text(framework_theme, status);
     style.background =
         if selected || matches!(status, button::Status::Hovered | button::Status::Pressed) {
-            Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.14)))
+            Some(Background::Color(active_theme.colors.hover()))
         } else {
             None
         };
-    style.text_color = Color::WHITE;
+    style.text_color = active_theme.colors.text();
     style.border = Border {
-        radius: 8.0.into(),
+        radius: 7.0.into(),
         ..Border::default()
     };
     style.shadow = Shadow::default();

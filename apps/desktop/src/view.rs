@@ -137,18 +137,12 @@ impl App {
             .height(Fill)
             .center(Fill);
 
-            stack![page, dismiss_area, credentials_dialog]
+            stack![page, dialog_scrim(), dismiss_area, credentials_dialog]
                 .width(Fill)
                 .height(Fill)
                 .into()
         } else if self.account_delete_dialog_open {
-            let scrim = container(Space::new().width(Fill).height(Fill))
-                .width(Fill)
-                .height(Fill)
-                .style(|_| container::Style {
-                    background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.54))),
-                    ..Default::default()
-                });
+            let scrim = dialog_scrim();
             let dismiss_area = mouse_area(Space::new().width(Fill).height(Fill))
                 .on_press(Message::DismissAccountDeleteDialog);
             let dialog = if let Some(pending) = &self.pending_account_deletion {
@@ -206,6 +200,7 @@ impl App {
                 self.theme_id,
                 self.language,
                 self.memory_saver,
+                active_theme,
             ))
             .width(Fill)
             .height(Fill)
@@ -234,4 +229,16 @@ impl App {
             .style(move |_| window_frame_style(active_theme))
             .into()
     }
+}
+
+/// Dims the popup behind a dialog so the dialog stands apart from it.
+fn dialog_scrim<'a>() -> Element<'a, Message> {
+    container(Space::new().width(Fill).height(Fill))
+        .width(Fill)
+        .height(Fill)
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.54))),
+            ..Default::default()
+        })
+        .into()
 }

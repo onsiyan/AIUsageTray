@@ -626,6 +626,17 @@ pub fn view(
         .into()
 }
 
+/// The account's email as shown to the user. Accounts added from an API key
+/// have no email; they hold a placeholder on the reserved `.invalid` domain,
+/// which is never shown.
+pub(crate) fn shown_email(email: &str) -> &str {
+    let is_placeholder = email.trim().rsplit_once('@').is_some_and(|(_, domain)| {
+        let domain = domain.to_ascii_lowercase();
+        domain == "invalid" || domain.ends_with(".invalid")
+    });
+    if is_placeholder { "" } else { email }
+}
+
 pub(crate) fn belongs_to_provider(provider_id: &str, provider: UsageProvider) -> bool {
     match provider {
         UsageProvider::Codex => matches!(provider_id, "openai" | "codex"),

@@ -1044,3 +1044,12 @@ fn amounts_in_a_currency_unit_read_as_money() {
         "1.00 CHF"
     );
 }
+
+#[test]
+fn placeholder_emails_of_key_based_accounts_are_not_shown() {
+    assert_eq!(shown_email("deepseek@local.invalid"), "");
+    assert_eq!(shown_email("openrouter@LOCAL.INVALID"), "");
+    assert_eq!(shown_email("someone@example.invalid"), "");
+    assert_eq!(shown_email("someone@example.com"), "someone@example.com");
+    assert_eq!(shown_email("invalid@gmail.com"), "invalid@gmail.com");
+}

@@ -205,10 +205,12 @@ pub const THEME_MANIFEST: &[ThemeDefinition] = &[
         accent: [49, 100, 165],
         colors: ThemeColors {
             window_surface: [255, 255, 255],
-            text: [30, 36, 45],
-            muted_text: [86, 96, 109],
-            control_surface: [245, 247, 250],
-            border: [116, 128, 143],
+            // Near-black text and a dark slate for secondary lines: the
+            // lighter grey was hard to read on white.
+            text: [17, 24, 39],
+            muted_text: [55, 65, 81],
+            control_surface: [241, 244, 248],
+            border: [100, 112, 128],
             is_light: true,
             hover: [66, 101, 145],
             hover_opacity: 0.11,

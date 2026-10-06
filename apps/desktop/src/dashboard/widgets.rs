@@ -65,7 +65,7 @@ pub(super) fn reset_credit_info_line(
         text(label.to_owned())
             .size(typography::LABEL_SIZE)
             .font(typography::EMPHASIS)
-            .color(theme.colors.text().scale_alpha(0.92)),
+            .color(theme.colors.text()),
         space().width(Fill),
         value,
     ]
@@ -164,7 +164,12 @@ pub(super) fn percent_line(
         progress_bar(0.0..=100.0, shown as f32)
             .girth(5)
             .style(move |_| progress_bar::Style {
-                background: Background::Color(theme.colors.border(0.16)),
+                // The empty part of the bar must stay visible on white.
+                background: Background::Color(theme.colors.border(if theme.colors.is_light {
+                    0.26
+                } else {
+                    0.16
+                })),
                 bar: Background::Color(accent),
                 border: Border {
                     radius: 4.0.into(),
@@ -196,7 +201,8 @@ pub(super) fn warning_line(
     };
     container(
         text(message.to_owned())
-            .size(typography::BODY_SIZE)
+            .size(typography::LABEL_SIZE)
+            .font(typography::MEDIUM)
             .color(text_color),
     )
     .width(Fill)

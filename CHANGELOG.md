@@ -30,11 +30,22 @@ All notable changes to this project are documented here. The format follows
   funds, and a notice when the balance is empty or cannot be used.
 - Money amounts in usage rows read as `$7.25` or `¥8.50` instead of
   `7.25 USD`.
+- Palette menu options to hide the email and plan line on account cards,
+  and to list all stored reset credits, only those expiring within 5 days,
+  or none.
 - `usage-monitor-cli` for people and agents, with stable account references
   and JSON output.
 
 ### Changed
 
+- The Favorites tab sits in the middle of the tab bar.
+- Accounts added from an API key (DeepSeek, OpenRouter) no longer show their
+  placeholder email address.
+- The White theme uses near-black text and darker secondary text, and the
+  empty part of usage bars stays visible on white.
+- Menus, dialogs, tooltips, and warnings use heavier, larger type; the
+  palette menu follows the active theme instead of always being black, and
+  the API-key dialog dims the popup behind it.
 - The popup scales with the screen it opens on: on large screens it grows to
   about 72% of the usable height (at most double size), while laptop screens
   keep the designed size.

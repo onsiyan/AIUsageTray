@@ -35,6 +35,7 @@ mod chrome;
 mod codex_switch;
 mod dashboard;
 mod dialogs;
+mod display_options;
 mod graphics;
 mod hint;
 mod locale;
@@ -105,6 +106,22 @@ fn main() -> iced::Result {
             }
             if std::env::var_os("USAGE_UI_PREVIEW_OPEN_ON_START").is_some() {
                 boot.push(Task::done(Message::OpenPreview));
+                // Opens one menu or dialog for screenshots during development.
+                let menu = match std::env::var("USAGE_UI_PREVIEW_MENU").as_deref() {
+                    Ok("theme") => Some(Message::ToggleThemeMenu),
+                    Ok("deepseek-tab") => Some(Message::SelectTab(DashboardTab::Provider(
+                        UsageProvider::DeepSeek,
+                    ))),
+                    Ok("add") => Some(Message::ToggleAccountAddMenu),
+                    Ok("deepseek") => Some(Message::ChooseAccountProvider(UsageProvider::DeepSeek)),
+                    Ok("openrouter") => {
+                        Some(Message::ChooseAccountProvider(UsageProvider::OpenRouter))
+                    }
+                    _ => None,
+                };
+                if let Some(menu) = menu {
+                    boot.push(Task::done(menu));
+                }
             }
             (app, Task::batch(boot))
         },
@@ -216,8 +233,11 @@ impl DashboardTab {
     }
 }
 
-/// Where the Favorites tab sits among the provider tabs.
-const FAVORITES_TAB_POSITION: usize = 2;
+/// Where the Favorites tab sits among `provider_tabs` provider tabs: the
+/// middle of the bar, so it stays central as providers are added.
+const fn favorites_tab_position(provider_tabs: usize) -> usize {
+    provider_tabs.div_ceil(2)
+}
 
 #[derive(Clone, Copy)]
 struct ProviderTab {
@@ -304,6 +324,7 @@ impl App {
     fn new() -> Self {
         let theme_id = load_saved_theme();
         percent_display::set_current(percent_display::load_saved());
+        display_options::load_saved();
         Self {
             window_id: None,
             theme_id,
@@ -573,6 +594,8 @@ enum Message {
     SelectTheme(ThemeId),
     SelectPercentDisplay(PercentDisplay),
     SetMemorySaver(bool),
+    SetShowAccountDetails(bool),
+    SelectResetCredits(display_options::ResetCreditVisibility),
     SetUiZoom(f32),
     SwitchCodexDesktopAccount(usage_monitor_core::accounts::AccountId),
     SwitchAntigravityAppAccount(usage_monitor_core::accounts::AccountId),

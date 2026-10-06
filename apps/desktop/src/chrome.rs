@@ -160,7 +160,7 @@ pub(super) fn provider_tab_bar(
         .map(|tab| provider_tab(tab, selected_tab, active_theme))
         .collect::<Vec<_>>();
     tabs.insert(
-        FAVORITES_TAB_POSITION.min(tabs.len()),
+        favorites_tab_position(tabs.len()),
         favorites_tab(selected_tab, active_theme, language),
     );
 

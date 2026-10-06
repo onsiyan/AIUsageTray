@@ -76,10 +76,11 @@ pub(super) fn append_snapshot_rows(
                 && reset_inventory_anchor == Some(index)
                 && let Some(inventory) = &snapshot.credit_inventory
             {
-                if inventory.available_count > 0 {
+                let credit_rows = reset_credit_inventory_rows(inventory, theme, language);
+                if !credit_rows.is_empty() {
                     rows.push(space().height(Length::Fixed(8.0)).into());
                 }
-                append_reset_credit_inventory(rows, inventory, theme, language);
+                rows.extend(credit_rows);
                 reset_inventory_rendered = true;
             }
         }
@@ -457,26 +458,48 @@ pub(super) fn append_reset_credit_inventory(
     theme: &'static crate::theme::ThemeDefinition,
     language: Language,
 ) {
+    rows.extend(reset_credit_inventory_rows(inventory, theme, language));
+}
+
+/// The stored reset credits the user chose to see, soonest expiry first.
+fn reset_credit_inventory_rows(
+    inventory: &UsageCreditInventory,
+    theme: &'static crate::theme::ThemeDefinition,
+    language: Language,
+) -> Vec<Element<'static, Message>> {
+    let mut rows = Vec::new();
+    let visibility = crate::display_options::reset_credits();
+    if visibility == crate::display_options::ResetCreditVisibility::None {
+        return rows;
+    }
+    let now = Utc::now();
     let mut available_credits = available_reset_credits(inventory);
+    available_credits.retain(|credit| visibility.shows(credit.expires_at_utc, now));
     available_credits.sort_by_key(|credit| credit.expires_at_utc);
 
     for credit in &available_credits {
         let label = reset_credit_label(credit, language);
         let expiration = credit.expires_at_utc.map_or_else(
             || locale::text(language, Text::NoExpiryDate).to_owned(),
-            |expires_at| credit_expiration_label(expires_at, Utc::now(), language),
+            |expires_at| credit_expiration_label(expires_at, now, language),
         );
         rows.push(reset_credit_info_line(&label, &expiration, theme, language));
     }
 
-    if available_credits.len() < inventory.available_count as usize {
+    // Some credits came without details; only worth saying when every
+    // credit is meant to be listed.
+    if visibility == crate::display_options::ResetCreditVisibility::All
+        && available_credits.len() < inventory.available_count as usize
+    {
         rows.push(
             text(locale::text(language, Text::ResetExpiryUnavailable))
                 .size(typography::METADATA_SIZE)
+                .font(typography::MEDIUM)
                 .color(muted_text(theme))
                 .into(),
         );
     }
+    rows
 }
 
 pub(super) fn available_reset_credits(inventory: &UsageCreditInventory) -> Vec<&UsageCreditRecord> {

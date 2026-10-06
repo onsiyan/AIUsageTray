@@ -294,7 +294,7 @@ impl App {
                     account_id,
                     provider,
                     display_name: entry.account.display_name().to_owned(),
-                    email: entry.account.email.clone(),
+                    email: dashboard::shown_email(&entry.account.email).to_owned(),
                 });
                 self.account_delete_error = None;
                 Task::none()
@@ -484,6 +484,20 @@ impl App {
                 self.memory_saver = enabled;
                 if let Err(error) = memory_saver::save(enabled) {
                     preview_log(format!("memory saver preference save failed: {error}"));
+                }
+                Task::none()
+            }
+            Message::SetShowAccountDetails(shown) => {
+                display_options::set_show_account_details(shown);
+                if let Err(error) = display_options::save_show_account_details(shown) {
+                    preview_log(format!("account details preference save failed: {error}"));
+                }
+                Task::none()
+            }
+            Message::SelectResetCredits(mode) => {
+                display_options::set_reset_credits(mode);
+                if let Err(error) = display_options::save_reset_credits(mode) {
+                    preview_log(format!("reset credits preference save failed: {error}"));
                 }
                 Task::none()
             }

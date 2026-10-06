@@ -16,7 +16,8 @@ pub(super) fn account_add_dropdown(
     container(
         column![
             text(locale::text(language, locale::Text::ChooseProvider))
-                .size(typography::LABEL_SIZE)
+                .size(typography::METADATA_SIZE)
+                .font(typography::EMPHASIS)
                 .color(active_theme.colors.muted_text()),
             column(providers).spacing(2),
         ]
@@ -42,7 +43,8 @@ pub(super) fn account_provider_choice(
             .height(24)
             .content_fit(ContentFit::Contain),
             text(provider.label)
-                .size(typography::CONTROL_SIZE)
+                .size(typography::LABEL_SIZE)
+                .font(typography::EMPHASIS)
                 .color(active_theme.colors.text())
                 .width(Fill),
         ]
@@ -92,16 +94,18 @@ pub(super) fn account_deletion_picker_dialog(
         for entry in provider_accounts {
             let account_id = entry.account.id;
             let display_name = entry.account.display_name().to_owned();
-            let email = entry.account.email.clone();
+            let email = dashboard::shown_email(&entry.account.email).to_owned();
             account_rows.push(
                 button(
                     row![
                         column![
                             text(display_name)
                                 .size(typography::LABEL_SIZE)
+                                .font(typography::MEDIUM)
                                 .color(active_theme.colors.text()),
                             text(email)
                                 .size(typography::METADATA_SIZE)
+                                .font(typography::MEDIUM)
                                 .color(active_theme.colors.muted_text()),
                         ]
                         .spacing(1)
@@ -169,6 +173,7 @@ pub(super) fn account_deletion_picker_dialog(
         container(
             text(locale::text(language, locale::Text::NoSavedAccounts))
                 .size(typography::BODY_SIZE)
+                .font(typography::MEDIUM)
                 .color(active_theme.colors.muted_text()),
         )
         .width(Fill)
@@ -194,6 +199,7 @@ pub(super) fn account_deletion_picker_dialog(
                 .color(active_theme.colors.text()),
             text(locale::text(language, locale::Text::ChooseAccountToDelete))
                 .size(typography::METADATA_SIZE)
+                .font(typography::MEDIUM)
                 .color(active_theme.colors.muted_text()),
             account_list,
             row![
@@ -237,6 +243,7 @@ pub(super) fn account_deletion_confirmation_dialog(
         column![
             text(pending.provider.display_name())
                 .size(typography::METADATA_SIZE)
+                .font(typography::MEDIUM)
                 .color(active_theme.colors.muted_text()),
             text(pending.display_name.clone())
                 .size(typography::LABEL_SIZE)
@@ -244,6 +251,7 @@ pub(super) fn account_deletion_confirmation_dialog(
                 .color(active_theme.colors.text()),
             text(pending.email.clone())
                 .size(typography::METADATA_SIZE)
+                .font(typography::MEDIUM)
                 .color(active_theme.colors.muted_text()),
         ]
         .spacing(2)
@@ -258,9 +266,11 @@ pub(super) fn account_deletion_confirmation_dialog(
             column![
                 text(locale::text(language, locale::Text::AccountDeletionFailed))
                     .size(typography::LABEL_SIZE)
+                    .font(typography::MEDIUM)
                     .color(active_theme.colors.danger_hover()),
                 text(error.to_owned())
                     .size(typography::METADATA_SIZE)
+                    .font(typography::MEDIUM)
                     .color(active_theme.colors.muted_text()),
             ]
             .spacing(3)
@@ -272,6 +282,7 @@ pub(super) fn account_deletion_confirmation_dialog(
     let refresh_notice: Element<'static, Message> = if queued {
         text(locale::text(language, locale::Text::WaitForUsageRefresh))
             .size(typography::METADATA_SIZE)
+            .font(typography::MEDIUM)
             .color(active_theme.colors.muted_text())
             .into()
     } else {
@@ -287,6 +298,7 @@ pub(super) fn account_deletion_confirmation_dialog(
             account_identity,
             text(locale::text(language, locale::Text::AccountDeletionWarning))
                 .size(typography::BODY_SIZE)
+                .font(typography::MEDIUM)
                 .color(active_theme.colors.muted_text()),
             refresh_notice,
             error_message,
@@ -335,34 +347,38 @@ pub(super) fn destructive_dialog_button(
 ) -> Element<'static, Message> {
     const DANGER: Color = Color::from_rgb8(166, 48, 48);
 
-    button(text(label).size(typography::CONTROL_SIZE))
-        .on_press_maybe(enabled.then_some(message))
-        .padding([7, 12])
-        .style(move |framework_theme: &Theme, status| {
-            let mut style = button::text(framework_theme, status);
-            style.background = Some(Background::Color(
-                if enabled && matches!(status, button::Status::Hovered | button::Status::Pressed) {
-                    active_theme.colors.danger_hover()
-                } else if enabled {
-                    DANGER
-                } else {
-                    active_theme.colors.control_surface()
-                },
-            ));
-            style.text_color = if enabled {
-                Color::WHITE
+    button(
+        text(label)
+            .size(typography::LABEL_SIZE)
+            .font(typography::EMPHASIS),
+    )
+    .on_press_maybe(enabled.then_some(message))
+    .padding([7, 12])
+    .style(move |framework_theme: &Theme, status| {
+        let mut style = button::text(framework_theme, status);
+        style.background = Some(Background::Color(
+            if enabled && matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                active_theme.colors.danger_hover()
+            } else if enabled {
+                DANGER
             } else {
-                active_theme.colors.muted_text()
-            };
-            style.border = Border {
-                color: active_theme.colors.border(0.24),
-                width: 1.0,
-                radius: 7.0.into(),
-            };
-            style.shadow = Shadow::default();
-            style
-        })
-        .into()
+                active_theme.colors.control_surface()
+            },
+        ));
+        style.text_color = if enabled {
+            Color::WHITE
+        } else {
+            active_theme.colors.muted_text()
+        };
+        style.border = Border {
+            color: active_theme.colors.border(0.24),
+            width: 1.0,
+            radius: 7.0.into(),
+        };
+        style.shadow = Shadow::default();
+        style
+    })
+    .into()
 }
 
 pub(super) fn api_key_dialog<'a>(
@@ -377,7 +393,8 @@ pub(super) fn api_key_dialog<'a>(
         api_key,
     )
     .secure(true)
-    .size(typography::CONTROL_SIZE)
+    .size(typography::LABEL_SIZE)
+    .font(typography::MEDIUM)
     .padding([8, 10])
     .on_input(Message::ApiKeyChanged)
     .width(Fill)
@@ -392,7 +409,8 @@ pub(super) fn api_key_dialog<'a>(
             management_key,
         )
         .secure(true)
-        .size(typography::CONTROL_SIZE)
+        .size(typography::LABEL_SIZE)
+        .font(typography::MEDIUM)
         .padding([8, 10])
         .on_input(Message::ManagementKeyChanged)
         .width(Fill)
@@ -410,12 +428,14 @@ pub(super) fn api_key_dialog<'a>(
         column![
             text(title)
                 .size(typography::ACCOUNT_NAME_SIZE)
+                .font(typography::EMPHASIS)
                 .color(active_theme.colors.text()),
             text(locale::text(
                 language,
                 locale::Text::OpenRouterCredentialHint
             ))
             .size(typography::METADATA_SIZE)
+            .font(typography::MEDIUM)
             .color(active_theme.colors.muted_text()),
             api_key_input,
         ]
@@ -481,34 +501,38 @@ pub(super) fn account_dialog_button(
     active_theme: &'static ThemeDefinition,
     message: Message,
 ) -> Element<'static, Message> {
-    button(text(label).size(typography::CONTROL_SIZE))
-        .on_press_maybe(enabled.then_some(message))
-        .padding([7, 12])
-        .style(move |framework_theme: &Theme, status| {
-            let mut style = button::text(framework_theme, status);
-            style.background = if primary && enabled {
-                Some(Background::Color(active_theme.accent_color()))
-            } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-                Some(Background::Color(active_theme.colors.hover()))
-            } else {
-                Some(Background::Color(active_theme.colors.control_surface()))
-            };
-            style.text_color = if primary && enabled {
-                Color::WHITE
-            } else if enabled {
-                active_theme.colors.text()
-            } else {
-                active_theme.colors.muted_text()
-            };
-            style.border = Border {
-                color: active_theme.colors.border(0.24),
-                width: 1.0,
-                radius: 7.0.into(),
-            };
-            style.shadow = Shadow::default();
-            style
-        })
-        .into()
+    button(
+        text(label)
+            .size(typography::LABEL_SIZE)
+            .font(typography::EMPHASIS),
+    )
+    .on_press_maybe(enabled.then_some(message))
+    .padding([7, 12])
+    .style(move |framework_theme: &Theme, status| {
+        let mut style = button::text(framework_theme, status);
+        style.background = if primary && enabled {
+            Some(Background::Color(active_theme.accent_color()))
+        } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+            Some(Background::Color(active_theme.colors.hover()))
+        } else {
+            Some(Background::Color(active_theme.colors.control_surface()))
+        };
+        style.text_color = if primary && enabled {
+            Color::WHITE
+        } else if enabled {
+            active_theme.colors.text()
+        } else {
+            active_theme.colors.muted_text()
+        };
+        style.border = Border {
+            color: active_theme.colors.border(0.24),
+            width: 1.0,
+            radius: 7.0.into(),
+        };
+        style.shadow = Shadow::default();
+        style
+    })
+    .into()
 }
 
 pub(super) fn account_add_status_banner(
@@ -520,9 +544,11 @@ pub(super) fn account_add_status_banner(
         AccountAddStatus::Running(provider) => row![
             text(locale::text(language, locale::Text::AccountAddRunning))
                 .size(typography::LABEL_SIZE)
+                .font(typography::MEDIUM)
                 .color(active_theme.colors.muted_text()),
             text(provider.display_name())
                 .size(typography::LABEL_SIZE)
+                .font(typography::EMPHASIS)
                 .color(active_theme.colors.text()),
         ]
         .spacing(5)
@@ -531,9 +557,11 @@ pub(super) fn account_add_status_banner(
         AccountAddStatus::Added(provider) => row![
             text(locale::text(language, locale::Text::AccountAdded))
                 .size(typography::LABEL_SIZE)
+                .font(typography::MEDIUM)
                 .color(active_theme.colors.muted_text()),
             text(provider.display_name())
                 .size(typography::LABEL_SIZE)
+                .font(typography::EMPHASIS)
                 .color(active_theme.colors.text()),
         ]
         .spacing(5)
@@ -542,9 +570,11 @@ pub(super) fn account_add_status_banner(
         AccountAddStatus::Failed(error) => column![
             text(locale::text(language, locale::Text::AccountAddFailed))
                 .size(typography::LABEL_SIZE)
+                .font(typography::MEDIUM)
                 .color(active_theme.colors.danger_hover()),
             text(error.clone())
                 .size(typography::METADATA_SIZE)
+                .font(typography::MEDIUM)
                 .color(active_theme.colors.muted_text()),
         ]
         .spacing(2)
@@ -554,27 +584,31 @@ pub(super) fn account_add_status_banner(
 
     let close_button: Element<'static, Message> = if matches!(status, AccountAddStatus::Running(_))
     {
-        button(text(locale::text(language, locale::Text::Cancel)).size(typography::METADATA_SIZE))
-            .on_press(Message::CancelAccountAdd)
-            .padding([3, 9])
-            .style(move |framework_theme: &Theme, state| {
-                let mut style = button::text(framework_theme, state);
-                style.background = Some(Background::Color(
-                    if matches!(state, button::Status::Hovered | button::Status::Pressed) {
-                        active_theme.colors.hover()
-                    } else {
-                        active_theme.colors.control_surface()
-                    },
-                ));
-                style.text_color = active_theme.colors.text();
-                style.border = Border {
-                    color: active_theme.colors.border(0.20),
-                    width: 1.0,
-                    radius: 6.0.into(),
-                };
-                style
-            })
-            .into()
+        button(
+            text(locale::text(language, locale::Text::Cancel))
+                .size(typography::METADATA_SIZE)
+                .font(typography::EMPHASIS),
+        )
+        .on_press(Message::CancelAccountAdd)
+        .padding([3, 9])
+        .style(move |framework_theme: &Theme, state| {
+            let mut style = button::text(framework_theme, state);
+            style.background = Some(Background::Color(
+                if matches!(state, button::Status::Hovered | button::Status::Pressed) {
+                    active_theme.colors.hover()
+                } else {
+                    active_theme.colors.control_surface()
+                },
+            ));
+            style.text_color = active_theme.colors.text();
+            style.border = Border {
+                color: active_theme.colors.border(0.20),
+                width: 1.0,
+                radius: 6.0.into(),
+            };
+            style
+        })
+        .into()
     } else {
         button(container(icon_x().size(13)).center(Fill))
             .on_press(Message::DismissAccountAddStatus)

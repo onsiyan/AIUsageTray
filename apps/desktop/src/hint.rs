@@ -19,7 +19,8 @@ pub fn hint(
 ) -> Element<'static, Message> {
     let label = container(
         text(label.into())
-            .size(typography::BODY_SIZE)
+            .size(typography::LABEL_SIZE)
+            .font(typography::MEDIUM)
             .color(theme.colors.text()),
     )
     .max_width(HINT_MAX_WIDTH);
