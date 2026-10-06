@@ -143,6 +143,17 @@ impl App {
             Message::RuntimeEvent(Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(keyboard::key::Named::Escape),
                 ..
+            })) if self.tab_manager_open => {
+                if self.tab_editor.is_some() {
+                    self.tab_editor = None;
+                } else {
+                    self.close_tab_manager();
+                }
+                Task::none()
+            }
+            Message::RuntimeEvent(Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                ..
             })) if self.credentials_provider.is_some() => {
                 self.cancel_credentials();
                 Task::none()
@@ -197,6 +208,17 @@ impl App {
                 self.dashboard.close_any_model_visibility_menu();
                 self.hide_popup()
             }
+            message @ (Message::ToggleTabManager
+            | Message::DismissTabManager
+            | Message::ToggleTabVisible(_)
+            | Message::MoveTab(..)
+            | Message::NewCustomTab
+            | Message::EditCustomTab(_)
+            | Message::DeleteCustomTab(_)
+            | Message::TabEditorNameChanged(_)
+            | Message::TabEditorToggleProvider(_)
+            | Message::SaveTabEditor
+            | Message::CancelTabEditor) => self.update_tabs(message),
             Message::SelectTab(tab) => {
                 self.selected_tab = tab;
                 self.theme_menu_open = false;
@@ -395,7 +417,14 @@ impl App {
                     }
                     Ok(()) => {
                         self.account_add_status = Some(AccountAddStatus::Added(provider));
-                        self.selected_tab = DashboardTab::Provider(provider);
+                        // Show the new account even if its tab was hidden.
+                        if self.tab_layout.tab_showing(provider).is_none() {
+                            self.tab_layout.show_provider(provider);
+                            self.save_tab_layout();
+                        }
+                        if let Some(tab) = self.tab_layout.tab_showing(provider) {
+                            self.selected_tab = tab;
+                        }
                         Task::perform(dashboard::load_saved_accounts(), Message::DashboardLoaded)
                     }
                     Err(error) => {

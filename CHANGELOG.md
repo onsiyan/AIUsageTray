@@ -33,6 +33,10 @@ All notable changes to this project are documented here. The format follows
 - Palette menu options to hide the email and plan line on account cards,
   and to list all stored reset credits, only those expiring within 5 days,
   or none.
+- Tabs button in the title bar: show or hide each tab, reorder them, and
+  create named tabs that gather several providers (for example a "Prepaid"
+  tab for OpenRouter and DeepSeek). The layout is saved in `tabs.txt`; a
+  hidden provider's tab comes back when an account is added for it.
 - `usage-monitor-cli` for people and agents, with stable account references
   and JSON output.
 

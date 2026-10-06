@@ -11,6 +11,13 @@ pub enum Text {
     NoAccountsForProvider,
     NoFavoriteAccounts,
     Favorites,
+    Tabs,
+    TabsHint,
+    NewTab,
+    EditTab,
+    TabName,
+    TabProviders,
+    Done,
     AddToFavorites,
     RemoveFromFavorites,
     EditName,
@@ -120,6 +127,15 @@ pub const fn text(language: Language, key: Text) -> &'static str {
             "No favorite accounts yet. Point at an account's name in any tab and press the star to add it here."
         }
         (English, Favorites) => "Favorites",
+        (English, Tabs) => "Tabs",
+        (English, TabsHint) => {
+            "Choose which tabs show and their order, or create a tab that gathers several providers."
+        }
+        (English, NewTab) => "New tab",
+        (English, EditTab) => "Edit tab",
+        (English, TabName) => "Tab name",
+        (English, TabProviders) => "Providers in this tab",
+        (English, Done) => "Done",
         (English, AddToFavorites) => "Add to Favorites",
         (English, RemoveFromFavorites) => "Remove from Favorites",
         (English, EditName) => "Edit name",
@@ -222,6 +238,13 @@ pub const fn text(language: Language, key: Text) -> &'static str {
             "لا توجد حسابات مفضلة بعد. مرّر المؤشر على اسم أي حساب في أي تبويب واضغط النجمة لإضافته هنا."
         }
         (Arabic, Favorites) => "المفضلة",
+        (Arabic, Tabs) => "التبويبات",
+        (Arabic, TabsHint) => "اختر التبويبات الظاهرة وترتيبها، أو أنشئ تبويبًا يجمع عدة مزودين.",
+        (Arabic, NewTab) => "تبويب جديد",
+        (Arabic, EditTab) => "تعديل التبويب",
+        (Arabic, TabName) => "اسم التبويب",
+        (Arabic, TabProviders) => "المزودون في هذا التبويب",
+        (Arabic, Done) => "تم",
         (Arabic, AddToFavorites) => "إضافة إلى المفضلة",
         (Arabic, RemoveFromFavorites) => "إزالة من المفضلة",
         (Arabic, EditName) => "تعديل الاسم",

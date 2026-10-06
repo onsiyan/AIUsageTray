@@ -1053,3 +1053,40 @@ fn placeholder_emails_of_key_based_accounts_are_not_shown() {
     assert_eq!(shown_email("someone@example.com"), "someone@example.com");
     assert_eq!(shown_email("invalid@gmail.com"), "invalid@gmail.com");
 }
+
+#[test]
+fn a_custom_tab_gathers_its_providers_and_reorders_within_them() {
+    let make = |provider: &str, email: &str| AccountUsageEntry {
+        account: AccountRecord::create(email, email, None, provider, None).unwrap(),
+        snapshot: None,
+    };
+    let entries = vec![
+        make(usage_monitor_core::accounts::OPENROUTER, "r@example.com"),
+        make(usage_monitor_core::accounts::CLAUDE, "c@example.com"),
+        make(usage_monitor_core::accounts::DEEPSEEK, "d@example.com"),
+    ];
+    let ids = entries
+        .iter()
+        .map(|entry| entry.account.id)
+        .collect::<Vec<_>>();
+    let mut state = DashboardState::loading();
+    state.entries = entries;
+    state.account_order = Vec::new();
+
+    let prepaid = DashboardTab::Custom {
+        id: 1,
+        providers: crate::tabs::ProviderSet::from_providers([
+            UsageProvider::OpenRouter,
+            UsageProvider::DeepSeek,
+        ]),
+    };
+    assert_eq!(state.tab_account_ids(prepaid), vec![ids[0], ids[2]]);
+
+    assert!(state.move_account(prepaid, ids[2], -1));
+    assert_eq!(state.tab_account_ids(prepaid), vec![ids[2], ids[0]]);
+    assert_eq!(
+        state.account_order,
+        vec![ids[2], ids[1], ids[0]],
+        "the Claude account keeps its slot"
+    );
+}

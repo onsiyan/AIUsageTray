@@ -219,11 +219,29 @@ impl DashboardState {
                 .iter()
                 .filter_map(|id| self.entries.iter().find(|entry| entry.account.id == *id))
                 .collect(),
+            DashboardTab::Custom { providers, .. } => {
+                let mut accounts = self
+                    .entries
+                    .iter()
+                    .filter(|entry| {
+                        providers.providers().any(|provider| {
+                            belongs_to_provider(&entry.account.provider_id, provider)
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                accounts.sort_by_key(|entry| account_rank(&self.account_order, entry.account.id));
+                accounts
+            }
         }
     }
 
-    pub fn favorite_accounts(&self) -> &[AccountId] {
-        &self.favorites
+    /// The accounts a tab shows, in display order; refreshed first while the
+    /// tab is open.
+    pub fn tab_account_ids(&self, tab: DashboardTab) -> Vec<AccountId> {
+        self.ordered_entries(tab)
+            .iter()
+            .map(|entry| entry.account.id)
+            .collect()
     }
 
     fn is_favorite(&self, account_id: AccountId) -> bool {
@@ -270,7 +288,7 @@ impl DashboardState {
         };
         tab_ids.swap(index, target);
 
-        let DashboardTab::Provider(provider) = tab else {
+        if tab == DashboardTab::Favorites {
             // Starred accounts that no longer exist keep their place after
             // the shown ones; they disappear for good when unstarred.
             let missing = self
@@ -281,7 +299,7 @@ impl DashboardState {
                 .collect::<Vec<_>>();
             self.favorites = tab_ids.into_iter().chain(missing).collect();
             return true;
-        };
+        }
 
         // Rebuild the global order: other tabs keep their places, and this
         // tab's slots take its new sequence.
@@ -291,7 +309,11 @@ impl DashboardState {
         self.account_order = all
             .iter()
             .map(|entry| {
-                if belongs_to_provider(&entry.account.provider_id, provider) {
+                let in_tab = PROVIDER_TABS.iter().any(|provider_tab| {
+                    tab.includes_provider(provider_tab.provider)
+                        && belongs_to_provider(&entry.account.provider_id, provider_tab.provider)
+                });
+                if in_tab {
                     reordered.next().unwrap_or(entry.account.id)
                 } else {
                     entry.account.id

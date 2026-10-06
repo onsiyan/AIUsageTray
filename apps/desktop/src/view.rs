@@ -7,7 +7,12 @@ use iced::widget::column;
 impl App {
     pub(super) fn view(&self) -> Element<'_, Message> {
         let active_theme = self.theme_id.definition();
-        let provider_tab_bar = provider_tab_bar(self.selected_tab, active_theme, self.language);
+        let provider_tab_bar = provider_tab_bar(
+            &self.tab_layout,
+            self.selected_tab,
+            active_theme,
+            self.language,
+        );
         let title_bar = container(
             row![
                 mouse_area(Space::new().width(Fill).height(Length::Fill))
@@ -22,6 +27,7 @@ impl App {
                     self.language,
                 ),
                 refresh_button(self.dashboard_refresh_running, active_theme, self.language,),
+                tab_manager_button(self.tab_manager_open, active_theme, self.language),
                 theme_button(active_theme),
                 close_window_button(active_theme),
             ]
@@ -123,7 +129,24 @@ impl App {
             .height(Fill)
             .into();
 
-        let content = if let Some(credentials_provider) = self.credentials_provider {
+        let content = if self.tab_manager_open {
+            let dismiss_area = mouse_area(Space::new().width(Fill).height(Fill))
+                .on_press(Message::DismissTabManager);
+            let dialog = container(tab_manager_dialog(
+                &self.tab_layout,
+                self.tab_editor.as_ref(),
+                self.language,
+                active_theme,
+            ))
+            .width(Fill)
+            .height(Fill)
+            .center(Fill);
+
+            stack![page, dialog_scrim(), dismiss_area, dialog]
+                .width(Fill)
+                .height(Fill)
+                .into()
+        } else if let Some(credentials_provider) = self.credentials_provider {
             let dismiss_area = mouse_area(Space::new().width(Fill).height(Fill))
                 .on_press(Message::CancelCredentials);
             let credentials_dialog = container(api_key_dialog(

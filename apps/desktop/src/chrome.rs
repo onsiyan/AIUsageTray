@@ -150,19 +150,28 @@ pub(super) fn refresh_button(
 }
 
 pub(super) fn provider_tab_bar(
+    layout: &tabs::TabLayout,
     selected_tab: DashboardTab,
     active_theme: &'static ThemeDefinition,
     language: locale::Language,
 ) -> Element<'static, Message> {
-    let mut tabs = PROVIDER_TABS
-        .iter()
-        .copied()
-        .map(|tab| provider_tab(tab, selected_tab, active_theme))
+    let tabs = layout
+        .visible_tabs()
+        .map(|entry| match &entry.kind {
+            tabs::TabKind::Provider(provider) => {
+                let tab = PROVIDER_TABS
+                    .iter()
+                    .copied()
+                    .find(|tab| tab.provider == *provider)
+                    .expect("every provider has a tab");
+                provider_tab(tab, selected_tab, active_theme)
+            }
+            tabs::TabKind::Favorites => favorites_tab(selected_tab, active_theme, language),
+            tabs::TabKind::Custom(custom) => {
+                custom_tab(custom, entry.dashboard_tab(), selected_tab, active_theme)
+            }
+        })
         .collect::<Vec<_>>();
-    tabs.insert(
-        favorites_tab_position(tabs.len()),
-        favorites_tab(selected_tab, active_theme, language),
-    );
 
     container(row(tabs).spacing(2).width(Fill))
         .width(Fill)
@@ -196,6 +205,7 @@ pub(super) fn provider_tab(
         DashboardTab::Provider(tab.provider),
         selected_tab,
         tab.label,
+        Length::FillPortion(2),
         active_theme,
     )
 }
@@ -214,6 +224,35 @@ fn favorites_tab(
         DashboardTab::Favorites,
         selected_tab,
         locale::text(language, locale::Text::Favorites),
+        Length::FillPortion(2),
+        active_theme,
+    )
+}
+
+/// A custom tab shows its name, so it gets more room than an icon tab.
+fn custom_tab(
+    custom: &tabs::CustomTab,
+    tab: DashboardTab,
+    selected_tab: DashboardTab,
+    active_theme: &'static ThemeDefinition,
+) -> Element<'static, Message> {
+    let name = text(custom.name.clone())
+        .size(typography::LABEL_SIZE)
+        .font(typography::EMPHASIS)
+        .color(active_theme.colors.text())
+        .wrapping(text::Wrapping::None);
+    let providers = custom
+        .providers
+        .providers()
+        .map(UsageProvider::display_name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    tab_button(
+        name.into(),
+        tab,
+        selected_tab,
+        providers,
+        Length::FillPortion(4),
         active_theme,
     )
 }
@@ -222,13 +261,14 @@ fn tab_button(
     content: Element<'static, Message>,
     tab: DashboardTab,
     selected_tab: DashboardTab,
-    label: &'static str,
+    label: impl Into<String>,
+    width: Length,
     active_theme: &'static ThemeDefinition,
 ) -> Element<'static, Message> {
-    let selected = tab == selected_tab;
+    let selected = tab.same_tab(selected_tab);
     let tab_button = button(container(content).center(Fill))
         .on_press(Message::SelectTab(tab))
-        .width(Fill)
+        .width(width)
         .height(31)
         .padding(0)
         .style(move |framework_theme: &Theme, status| {

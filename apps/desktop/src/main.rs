@@ -43,6 +43,8 @@ mod memory_saver;
 mod percent_display;
 mod smooth_scroll;
 mod spinner;
+mod tab_manager;
+mod tabs;
 mod theme;
 mod theme_menu;
 mod tray;
@@ -55,6 +57,7 @@ use account_add::*;
 use chrome::*;
 use dialogs::*;
 use graphics::*;
+use tab_manager::*;
 use theme_menu::*;
 use tray::*;
 
@@ -109,6 +112,11 @@ fn main() -> iced::Result {
                 // Opens one menu or dialog for screenshots during development.
                 let menu = match std::env::var("USAGE_UI_PREVIEW_MENU").as_deref() {
                     Ok("theme") => Some(Message::ToggleThemeMenu),
+                    Ok("tabs") => Some(Message::ToggleTabManager),
+                    Ok("tab-editor") => {
+                        boot.push(Task::done(Message::ToggleTabManager));
+                        Some(Message::NewCustomTab)
+                    }
                     Ok("deepseek-tab") => Some(Message::SelectTab(DashboardTab::Provider(
                         UsageProvider::DeepSeek,
                     ))),
@@ -215,28 +223,44 @@ impl UsageProvider {
     }
 }
 
-/// A tab of the popup: one provider's accounts, or the accounts the user
-/// starred from any provider.
+/// A tab of the popup: one provider's accounts, the accounts the user
+/// starred, or a custom tab gathering several providers' accounts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DashboardTab {
     Provider(UsageProvider),
     Favorites,
+    Custom {
+        id: u32,
+        providers: tabs::ProviderSet,
+    },
 }
 
 impl DashboardTab {
     /// Keeps each tab's scroll position apart.
-    const fn scroll_key(self) -> &'static str {
+    fn scroll_key(self) -> String {
         match self {
-            Self::Provider(provider) => provider.cli_name(),
-            Self::Favorites => "favorites",
+            Self::Provider(provider) => provider.cli_name().to_owned(),
+            Self::Favorites => "favorites".to_owned(),
+            Self::Custom { id, .. } => format!("custom-{id}"),
         }
     }
-}
 
-/// Where the Favorites tab sits among `provider_tabs` provider tabs: the
-/// middle of the bar, so it stays central as providers are added.
-const fn favorites_tab_position(provider_tabs: usize) -> usize {
-    provider_tabs.div_ceil(2)
+    /// The same tab, even if a custom tab's providers changed since.
+    fn same_tab(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Custom { id, .. }, Self::Custom { id: other, .. }) => id == other,
+            _ => self == other,
+        }
+    }
+
+    /// Whether the tab lists accounts by provider and includes `provider`.
+    fn includes_provider(self, provider: UsageProvider) -> bool {
+        match self {
+            Self::Provider(own) => own == provider,
+            Self::Favorites => false,
+            Self::Custom { providers, .. } => providers.contains(provider),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -309,6 +333,11 @@ struct App {
     account_add_cancel: Option<Sender<()>>,
     account_add_status: Option<AccountAddStatus>,
     selected_tab: DashboardTab,
+    /// The user's arrangement of the tab bar.
+    tab_layout: tabs::TabLayout,
+    tab_manager_open: bool,
+    /// The custom tab being created (`id: None`) or edited in the manager.
+    tab_editor: Option<tab_manager::TabEditor>,
     dashboard_refresh_running: bool,
     popup_visible: bool,
     window_focused: bool,
@@ -325,6 +354,7 @@ impl App {
         let theme_id = load_saved_theme();
         percent_display::set_current(percent_display::load_saved());
         display_options::load_saved();
+        let tab_layout = tabs::load_saved();
         Self {
             window_id: None,
             theme_id,
@@ -342,7 +372,10 @@ impl App {
             account_add_running: false,
             account_add_cancel: None,
             account_add_status: None,
-            selected_tab: DashboardTab::Provider(UsageProvider::Codex),
+            selected_tab: tab_layout.resolve(DashboardTab::Provider(UsageProvider::Codex)),
+            tab_layout,
+            tab_manager_open: false,
+            tab_editor: None,
             dashboard_refresh_running: false,
             popup_visible: false,
             window_focused: false,
@@ -365,8 +398,9 @@ impl App {
             Subscription::run(tray_event_stream),
         ];
 
-        let blocking_dialog_open =
-            app.credentials_provider.is_some() || app.account_delete_dialog_open;
+        let blocking_dialog_open = app.credentials_provider.is_some()
+            || app.account_delete_dialog_open
+            || app.tab_manager_open;
         if should_run_popup_animation_ticks(
             app.popup_visible,
             blocking_dialog_open,
@@ -482,9 +516,7 @@ impl App {
         self.dashboard_refresh_running = true;
         let first = match self.selected_tab {
             DashboardTab::Provider(provider) => usage_refresh::RefreshFirst::Provider(provider),
-            DashboardTab::Favorites => {
-                usage_refresh::RefreshFirst::Accounts(self.dashboard.favorite_accounts().to_vec())
-            }
+            tab => usage_refresh::RefreshFirst::Accounts(self.dashboard.tab_account_ids(tab)),
         };
         Task::run(
             usage_refresh::refresh_accounts(first, trigger),
@@ -601,6 +633,17 @@ enum Message {
     SwitchAntigravityAppAccount(usage_monitor_core::accounts::AccountId),
     CodexDesktopSwitchFinished(usage_monitor_core::accounts::AccountId, Result<(), String>),
     SelectTab(DashboardTab),
+    ToggleTabManager,
+    DismissTabManager,
+    ToggleTabVisible(usize),
+    MoveTab(usize, isize),
+    NewCustomTab,
+    EditCustomTab(u32),
+    DeleteCustomTab(u32),
+    TabEditorNameChanged(String),
+    TabEditorToggleProvider(UsageProvider),
+    SaveTabEditor,
+    CancelTabEditor,
     ToggleFavorite(usage_monitor_core::accounts::AccountId),
     DashboardLoaded(Result<Vec<dashboard::AccountUsageEntry>, String>),
     UsageRefreshEvent(usage_refresh::RefreshEvent),
