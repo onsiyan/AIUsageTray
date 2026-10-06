@@ -1,8 +1,11 @@
 //! Kimi Code subscription quotas through the Kimi Code API.
 //!
-//! A Kimi Code API key (from kimi.com/code/console) reads
-//! `GET https://api.kimi.com/coding/v1/usages`. Following CodexBar, two
-//! response shapes are understood:
+//! A Kimi Code API key reads `GET /coding/v1/usages` on its region's host:
+//! `api.kimi.com` for keys from kimi.com (China, the default) or
+//! `api.kimi.ai` for keys from kimi.ai (International). The region that
+//! accepts the key is found when the account is added and kept as the
+//! account's secondary token. Following CodexBar, two response shapes are
+//! understood:
 //!
 //! - ratio pools under `usages`: `limit_5h`, `limit_7d`, and
 //!   `limit_month_total`, each a `used_ratio` with its `reset_time`;
@@ -16,7 +19,7 @@ use crate::{
     accounts::{AccountRecord, KIMI, VerifiedIdentity},
     auth::{AccountAuthMaterialProvider, AuthError},
     providers::shared::{invalid_payload, json_string, map_http_error, missing_auth},
-    transport::{TransportError, UsageHttpRequest, UsageHttpTransport},
+    transport::{TransportError, UsageHttpRequest, UsageHttpResponse, UsageHttpTransport},
     usage::{
         AdditionalRateLimitWindow, RateLimitWindow, UsageAdapter, UsagePrimaryWindowKind,
         UsageProbeResult, UsageSnapshot, UsageWindowKind,
@@ -29,7 +32,6 @@ use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use url::Url;
 
-const USAGE_URL: &str = "https://api.kimi.com/coding/v1/usages";
 const USER_AGENT: &str = "UsageMonitor/0.1";
 const DEFAULT_DEADLINE: Duration = Duration::from_secs(8);
 const FIVE_HOURS: i64 = 5 * 60 * 60;
@@ -39,10 +41,89 @@ pub const FIVE_HOUR_WINDOW_NAME: &str = "5 hours";
 pub const WEEKLY_WINDOW_NAME: &str = "Weekly";
 pub const MONTHLY_WINDOW_NAME: &str = "Total usage";
 
+/// The Kimi site an API key was created on; each has its own API host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KimiRegion {
+    China,
+    International,
+}
+
+impl KimiRegion {
+    pub const INTERNATIONAL: &'static str = "international";
+
+    fn usage_url(self) -> Url {
+        Url::parse(match self {
+            Self::China => "https://api.kimi.com/coding/v1/usages",
+            Self::International => "https://api.kimi.ai/coding/v1/usages",
+        })
+        .expect("static Kimi usage URL")
+    }
+
+    /// The region stored with an account; anything else is China, where
+    /// every account added before regions were known came from.
+    pub fn from_stored(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            Some(Self::INTERNATIONAL) => Self::International,
+            _ => Self::China,
+        }
+    }
+
+    /// The value to store with an account, `None` for the default.
+    pub fn stored(self) -> Option<&'static str> {
+        match self {
+            Self::China => None,
+            Self::International => Some(Self::INTERNATIONAL),
+        }
+    }
+}
+
+async fn fetch_usage(
+    transport: &dyn UsageHttpTransport,
+    region: KimiRegion,
+    api_key: &str,
+    deadline: Duration,
+) -> Result<UsageHttpResponse, TransportError> {
+    tokio::time::timeout(
+        deadline,
+        transport.send(UsageHttpRequest {
+            method: Method::GET,
+            url: region.usage_url(),
+            headers: BTreeMap::from([
+                ("Authorization".to_owned(), format!("Bearer {api_key}")),
+                ("Accept".to_owned(), "application/json".to_owned()),
+                ("User-Agent".to_owned(), USER_AGENT.to_owned()),
+            ]),
+            body: None,
+        }),
+    )
+    .await
+    .map_err(|_| TransportError::Timeout("kimi code usage".to_owned()))?
+}
+
+/// Finds the region whose host accepts the key and answers with usage.
+pub async fn detect_region(
+    transport: &dyn UsageHttpTransport,
+    api_key: &str,
+) -> Result<KimiRegion, String> {
+    let mut last_status = None;
+    for region in [KimiRegion::China, KimiRegion::International] {
+        let response = fetch_usage(transport, region, api_key, DEFAULT_DEADLINE)
+            .await
+            .map_err(|error| format!("Could not reach Kimi Code: {error}"))?;
+        if response.is_success() && parse_usage(&response.body).is_ok() {
+            return Ok(region);
+        }
+        last_status = Some(response.status_code);
+    }
+    Err(format!(
+        "Neither api.kimi.com nor api.kimi.ai accepted this API key (HTTP {})",
+        last_status.unwrap_or_default()
+    ))
+}
+
 pub struct KimiUsageAdapter {
     transport: Arc<dyn UsageHttpTransport>,
     auth: Arc<dyn AccountAuthMaterialProvider>,
-    usage_url: Url,
     deadline: Duration,
 }
 
@@ -54,8 +135,6 @@ impl KimiUsageAdapter {
         Ok(Self {
             transport,
             auth,
-            usage_url: Url::parse(USAGE_URL)
-                .map_err(|error| TransportError::InvalidUrl(error.to_string()))?,
             deadline: DEFAULT_DEADLINE,
         })
     }
@@ -73,33 +152,23 @@ impl UsageAdapter for KimiUsageAdapter {
     }
 
     async fn probe(&self, account: &AccountRecord) -> Result<UsageProbeResult, TransportError> {
-        let api_key = match self.auth.get(account).await {
-            Ok(Some(material)) => material
-                .bearer_token
-                .map(|key| key.trim().to_owned())
-                .filter(|key| !key.is_empty()),
-            Ok(None) | Err(AuthError::ReauthenticationRequired(_)) => None,
+        let (api_key, region) = match self.auth.get(account).await {
+            Ok(Some(material)) => (
+                material
+                    .bearer_token
+                    .map(|key| key.trim().to_owned())
+                    .filter(|key| !key.is_empty()),
+                KimiRegion::from_stored(material.secondary_bearer_token.as_deref()),
+            ),
+            Ok(None) | Err(AuthError::ReauthenticationRequired(_)) => (None, KimiRegion::China),
             Err(error) => return Ok(invalid_payload("Kimi Code", error.to_string())),
         };
         let Some(api_key) = api_key else {
             return Ok(missing_auth("Kimi Code"));
         };
 
-        let response = tokio::time::timeout(
-            self.deadline,
-            self.transport.send(UsageHttpRequest {
-                method: Method::GET,
-                url: self.usage_url.clone(),
-                headers: BTreeMap::from([
-                    ("Authorization".to_owned(), format!("Bearer {api_key}")),
-                    ("Accept".to_owned(), "application/json".to_owned()),
-                    ("User-Agent".to_owned(), USER_AGENT.to_owned()),
-                ]),
-                body: None,
-            }),
-        )
-        .await
-        .map_err(|_| TransportError::Timeout("kimi code usage".to_owned()))??;
+        let response =
+            fetch_usage(self.transport.as_ref(), region, &api_key, self.deadline).await?;
         if !response.is_success() {
             return Ok(map_http_error(&response, "Kimi Code"));
         }

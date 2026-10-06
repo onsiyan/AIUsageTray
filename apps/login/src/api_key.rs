@@ -6,8 +6,9 @@
 //! provider that also needs a second value (an id that goes with the key)
 //! takes it from the next stdin line or its own variable. Both are written
 //! only to the account's Windows Credential Manager entry before the normal
-//! runtime reads the account's usage once. z.ai keys belong to one region;
-//! the region that accepts the key is found here and stored in its place.
+//! runtime reads the account's usage once. Kimi Code and z.ai keys belong to
+//! one region; the region that accepts the key is found here and stored in
+//! the second value's place.
 
 use std::{
     env,
@@ -22,7 +23,7 @@ use usage_monitor_core::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
         StoredAuthMaterialProvider,
     },
-    providers::{registry::ProviderRegistryConfig, xai, zai},
+    providers::{kimi, registry::ProviderRegistryConfig, xai, zai},
     refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
     runtime::UsageRuntime,
     storage::{SqliteStore, default_accounts_database_path},
@@ -39,9 +40,15 @@ pub struct ApiKeyProvider {
     pub key_variable: &'static str,
     /// A required value that goes with the key, kept as the secondary token.
     pub second: Option<SecondValue>,
-    /// Find the z.ai region that accepts the key and keep it as the
+    /// Find the region whose host accepts the key and keep it as the
     /// secondary token.
-    pub zai_region: bool,
+    pub region: Option<Region>,
+}
+
+#[derive(Clone, Copy)]
+pub enum Region {
+    Kimi,
+    Zai,
 }
 
 pub struct SecondValue {
@@ -57,7 +64,7 @@ pub const KIMI_CODE: ApiKeyProvider = ApiKeyProvider {
     name: "Kimi Code",
     key_variable: "KIMI_CODE_API_KEY",
     second: None,
-    zai_region: false,
+    region: Some(Region::Kimi),
 };
 
 pub const ZAI_CODING_PLAN: ApiKeyProvider = ApiKeyProvider {
@@ -66,7 +73,7 @@ pub const ZAI_CODING_PLAN: ApiKeyProvider = ApiKeyProvider {
     name: "z.ai",
     key_variable: "Z_AI_API_KEY",
     second: None,
-    zai_region: true,
+    region: Some(Region::Zai),
 };
 
 pub const XAI_MANAGEMENT: ApiKeyProvider = ApiKeyProvider {
@@ -79,7 +86,7 @@ pub const XAI_MANAGEMENT: ApiKeyProvider = ApiKeyProvider {
         name: "team ID",
         is_valid: xai::valid_team_id,
     }),
-    zai_region: false,
+    region: None,
 };
 
 #[derive(Debug, Default)]
@@ -131,9 +138,16 @@ pub async fn run(provider: &ApiKeyProvider) -> Result<(), Box<dyn std::error::Er
     }
 
     let transport = Arc::new(ReqwestUsageHttpTransport::new(Duration::from_secs(45))?);
-    if provider.zai_region {
-        let region = zai::detect_region(transport.as_ref(), &api_key).await?;
-        second = region.stored().map(str::to_owned);
+    match provider.region {
+        Some(Region::Kimi) => {
+            let region = kimi::detect_region(transport.as_ref(), &api_key).await?;
+            second = region.stored().map(str::to_owned);
+        }
+        Some(Region::Zai) => {
+            let region = zai::detect_region(transport.as_ref(), &api_key).await?;
+            second = region.stored().map(str::to_owned);
+        }
+        None => {}
     }
 
     let sqlite = Arc::new(SqliteStore::open(&database_path)?);

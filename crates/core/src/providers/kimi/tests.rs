@@ -180,7 +180,10 @@ fn the_probe_reads_the_code_usage_endpoint_with_the_api_key() {
         r#"{"usages":{"limit_5h":{"used_ratio":0.1},"limit_7d":{"used_ratio":0.2}}}"#,
     );
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].url.as_str(), USAGE_URL);
+    assert_eq!(
+        requests[0].url.as_str(),
+        "https://api.kimi.com/coding/v1/usages"
+    );
     assert_eq!(
         requests[0].headers.get("Authorization").map(String::as_str),
         Some("Bearer sk-kimi-test")
@@ -194,4 +197,99 @@ fn the_probe_reads_the_code_usage_endpoint_with_the_api_key() {
         rejected.error.unwrap().code,
         UsageAdapterErrorCode::Unauthorized
     );
+}
+
+/// Answers by host: the `accepting` host returns usage, others reject the key.
+struct HostTransport {
+    accepting: &'static str,
+    requests: Mutex<Vec<UsageHttpRequest>>,
+}
+
+#[async_trait]
+impl UsageHttpTransport for HostTransport {
+    async fn send(&self, request: UsageHttpRequest) -> Result<UsageHttpResponse, TransportError> {
+        let accepted = request.url.host_str() == Some(self.accepting);
+        self.requests.lock().unwrap().push(request);
+        Ok(UsageHttpResponse {
+            status_code: if accepted { 200 } else { 401 },
+            body: if accepted {
+                r#"{"usages":{"limit_5h":{"used_ratio":0.25}}}"#
+            } else {
+                r#"{"error":"invalid api key"}"#
+            }
+            .to_owned(),
+            headers: BTreeMap::new(),
+        })
+    }
+}
+
+struct RegionAuth(Option<&'static str>);
+
+#[async_trait]
+impl AccountAuthMaterialProvider for RegionAuth {
+    async fn get(
+        &self,
+        _account: &AccountRecord,
+    ) -> Result<Option<AccountAuthMaterial>, AuthError> {
+        Ok(Some(AccountAuthMaterial {
+            bearer_token: Some("kimi-key".to_owned()),
+            secondary_bearer_token: self.0.map(str::to_owned),
+            ..AccountAuthMaterial::default()
+        }))
+    }
+}
+
+fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(future)
+}
+
+#[test]
+fn an_international_key_is_found_on_kimi_ai_and_read_there() {
+    let transport = Arc::new(HostTransport {
+        accepting: "api.kimi.ai",
+        requests: Mutex::new(Vec::new()),
+    });
+    assert_eq!(
+        block_on(detect_region(transport.as_ref(), "kimi-key")),
+        Ok(KimiRegion::International)
+    );
+    let hosts = transport
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|request| request.url.host_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(hosts, ["api.kimi.com", "api.kimi.ai"]);
+    assert_eq!(KimiRegion::International.stored(), Some("international"));
+    assert_eq!(KimiRegion::China.stored(), None);
+
+    transport.requests.lock().unwrap().clear();
+    let adapter = KimiUsageAdapter::new(
+        transport.clone(),
+        Arc::new(RegionAuth(Some("international"))),
+    )
+    .unwrap();
+    let result = block_on(adapter.probe(&account())).unwrap();
+    assert_eq!(result.snapshot.unwrap().primary.unwrap().used_percent, 25.0);
+    let url = transport.requests.lock().unwrap()[0].url.clone();
+    assert_eq!(url.as_str(), "https://api.kimi.ai/coding/v1/usages");
+
+    // Accounts added before regions were stored stay on kimi.com.
+    let adapter = KimiUsageAdapter::new(transport.clone(), Arc::new(RegionAuth(None))).unwrap();
+    let rejected = block_on(adapter.probe(&account())).unwrap();
+    assert_eq!(
+        rejected.error.unwrap().code,
+        crate::usage::UsageAdapterErrorCode::Unauthorized
+    );
+
+    let nowhere = HostTransport {
+        accepting: "example.invalid",
+        requests: Mutex::new(Vec::new()),
+    };
+    assert!(block_on(detect_region(&nowhere, "kimi-key")).is_err());
 }

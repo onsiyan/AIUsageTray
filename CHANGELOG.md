@@ -58,6 +58,8 @@ All notable changes to this project are documented here. The format follows
   `usage account add kimi` with `KIMI_CODE_API_KEY` or stdin). The tab shows
   the 5-hour and weekly quotas and the monthly total usage pool, with the
   membership plan. Older count-based responses are read too.
+  Keys from kimi.com (China) and kimi.ai (International) both work: the
+  region that accepts the key is found when the account is added.
 - z.ai (GLM Coding Plan) accounts, added from an API key (desktop dialog, or
   `usage account add zai` with `Z_AI_API_KEY` or stdin). The key's region
   (api.z.ai or open.bigmodel.cn) is found when the account is added. The tab
