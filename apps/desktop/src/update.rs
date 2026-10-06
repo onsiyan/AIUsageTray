@@ -19,8 +19,19 @@ impl App {
                 Task::none()
             }
             Message::MoveAccount(account_id, offset) => {
-                if let Err(error) = self.dashboard.move_account(account_id, offset) {
+                if self
+                    .dashboard
+                    .move_account(self.selected_tab, account_id, offset)
+                    && let Err(error) = self.dashboard.save_account_lists()
+                {
                     preview_log(format!("account order save failed: {error}"));
+                }
+                Task::none()
+            }
+            Message::ToggleFavorite(account_id) => {
+                self.dashboard.toggle_favorite(account_id);
+                if let Err(error) = self.dashboard.save_account_lists() {
+                    preview_log(format!("favorite accounts save failed: {error}"));
                 }
                 Task::none()
             }
@@ -186,8 +197,8 @@ impl App {
                 self.dashboard.close_any_model_visibility_menu();
                 self.hide_popup()
             }
-            Message::SelectProvider(provider) => {
-                self.selected_provider = provider;
+            Message::SelectTab(tab) => {
+                self.selected_tab = tab;
                 self.theme_menu_open = false;
                 self.account_add_menu_open = false;
                 self.dismiss_account_delete_dialog();
@@ -379,7 +390,7 @@ impl App {
                     }
                     Ok(()) => {
                         self.account_add_status = Some(AccountAddStatus::Added(provider));
-                        self.selected_provider = provider;
+                        self.selected_tab = DashboardTab::Provider(provider);
                         Task::perform(dashboard::load_saved_accounts(), Message::DashboardLoaded)
                     }
                     Err(error) => {

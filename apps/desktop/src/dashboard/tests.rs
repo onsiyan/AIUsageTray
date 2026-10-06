@@ -457,24 +457,73 @@ fn moving_an_account_reorders_only_its_own_tab() {
 
     let codex_order = |state: &DashboardState| {
         state
-            .ordered_entries(UsageProvider::Codex)
+            .ordered_entries(DashboardTab::Provider(UsageProvider::Codex))
             .iter()
             .map(|entry| entry.account.id)
             .collect::<Vec<_>>()
     };
     assert_eq!(codex_order(&state), vec![ids[0], ids[2]]);
 
+    let codex = DashboardTab::Provider(UsageProvider::Codex);
     // Moving the first account up does nothing.
-    let _ = state.move_account(ids[0], -1);
+    assert!(!state.move_account(codex, ids[0], -1));
     assert_eq!(codex_order(&state), vec![ids[0], ids[2]]);
 
-    let _ = state.move_account(ids[2], -1);
+    assert!(state.move_account(codex, ids[2], -1));
     assert_eq!(codex_order(&state), vec![ids[2], ids[0]]);
     assert_eq!(
         state.account_order,
         vec![ids[2], ids[1], ids[0]],
         "the Claude account keeps its slot"
     );
+}
+
+#[test]
+fn favorites_gather_starred_accounts_in_their_own_order() {
+    let make = |provider: &str, email: &str| AccountUsageEntry {
+        account: AccountRecord::create(email, email, None, provider, None).unwrap(),
+        snapshot: None,
+    };
+    let entries = vec![
+        make(usage_monitor_core::accounts::OPENAI, "a@example.com"),
+        make(usage_monitor_core::accounts::CLAUDE, "c@example.com"),
+        make(usage_monitor_core::accounts::OPENAI, "b@example.com"),
+    ];
+    let ids = entries
+        .iter()
+        .map(|entry| entry.account.id)
+        .collect::<Vec<_>>();
+    let mut state = DashboardState::loading();
+    state.entries = entries;
+    state.account_order = Vec::new();
+    state.favorites = Vec::new();
+
+    let favorites = |state: &DashboardState| {
+        state
+            .ordered_entries(DashboardTab::Favorites)
+            .iter()
+            .map(|entry| entry.account.id)
+            .collect::<Vec<_>>()
+    };
+    assert!(favorites(&state).is_empty());
+
+    // Starred accounts from different providers, in the order starred.
+    state.toggle_favorite(ids[2]);
+    state.toggle_favorite(ids[1]);
+    assert_eq!(favorites(&state), vec![ids[2], ids[1]]);
+
+    // Reordering the Favorites tab leaves the provider order alone.
+    assert!(state.move_account(DashboardTab::Favorites, ids[1], -1));
+    assert_eq!(favorites(&state), vec![ids[1], ids[2]]);
+    assert!(state.account_order.is_empty());
+
+    // A starred account that was deleted is not shown.
+    let deleted = AccountId::new();
+    state.favorites.push(deleted);
+    assert_eq!(favorites(&state), vec![ids[1], ids[2]]);
+
+    state.toggle_favorite(ids[1]);
+    assert_eq!(favorites(&state), vec![ids[2]]);
 }
 
 #[test]

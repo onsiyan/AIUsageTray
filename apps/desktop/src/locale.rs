@@ -9,6 +9,10 @@ pub enum Text {
     LoadingAccounts,
     AccountsDatabaseUnavailable,
     NoAccountsForProvider,
+    NoFavoriteAccounts,
+    Favorites,
+    AddToFavorites,
+    RemoveFromFavorites,
     EditName,
     Save,
     Cancel,
@@ -106,6 +110,12 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, LoadingAccounts) => "Loading saved accounts and usage",
         (English, AccountsDatabaseUnavailable) => "Could not read the local accounts database",
         (English, NoAccountsForProvider) => "No saved accounts for this provider",
+        (English, NoFavoriteAccounts) => {
+            "No favorite accounts yet. Point at an account's name in any tab and press the star to add it here."
+        }
+        (English, Favorites) => "Favorites",
+        (English, AddToFavorites) => "Add to Favorites",
+        (English, RemoveFromFavorites) => "Remove from Favorites",
         (English, EditName) => "Edit name",
         (English, Save) => "Save",
         (English, Cancel) => "Cancel",
@@ -196,6 +206,12 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (Arabic, LoadingAccounts) => "جارٍ تحميل الحسابات وقراءات الاستخدام المحفوظة",
         (Arabic, AccountsDatabaseUnavailable) => "تعذرت قراءة قاعدة بيانات الحسابات المحلية",
         (Arabic, NoAccountsForProvider) => "لا توجد حسابات محفوظة لهذا المزود",
+        (Arabic, NoFavoriteAccounts) => {
+            "لا توجد حسابات مفضلة بعد. مرّر المؤشر على اسم أي حساب في أي تبويب واضغط النجمة لإضافته هنا."
+        }
+        (Arabic, Favorites) => "المفضلة",
+        (Arabic, AddToFavorites) => "إضافة إلى المفضلة",
+        (Arabic, RemoveFromFavorites) => "إزالة من المفضلة",
         (Arabic, EditName) => "تعديل الاسم",
         (Arabic, Save) => "حفظ",
         (Arabic, Cancel) => "إلغاء",

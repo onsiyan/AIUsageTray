@@ -1,4 +1,25 @@
 use crate::{UsageProvider, dashboard::AccountUsageEntry};
+use usage_monitor_core::accounts::{AccountId, AccountRecord};
+
+/// The accounts a refresh reads first: those of the tab on screen.
+#[derive(Debug, Clone)]
+pub enum RefreshFirst {
+    Provider(UsageProvider),
+    /// These accounts, in this order.
+    Accounts(Vec<AccountId>),
+}
+
+impl RefreshFirst {
+    /// The account's place among the first accounts, if it is one.
+    fn rank(&self, account: &AccountRecord) -> Option<usize> {
+        match self {
+            Self::Provider(provider) => {
+                crate::dashboard::belongs_to_provider(&account.provider_id, *provider).then_some(0)
+            }
+            Self::Accounts(ids) => ids.iter().position(|id| *id == account.id),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct RefreshSummary {
@@ -17,8 +38,8 @@ pub enum RefreshEvent {
 
 #[cfg(target_os = "windows")]
 mod windows {
-    use super::{RefreshEvent, RefreshSummary, UsageProvider};
-    use crate::dashboard::{self, AccountUsageEntry};
+    use super::{RefreshEvent, RefreshFirst, RefreshSummary};
+    use crate::dashboard::AccountUsageEntry;
     use std::{
         sync::{Arc, OnceLock},
         time::Duration,
@@ -104,9 +125,7 @@ mod windows {
         })
     }
 
-    pub fn refresh_accounts_for_provider(
-        provider: UsageProvider,
-    ) -> async_channel::Receiver<RefreshEvent> {
+    pub fn refresh_accounts(first: RefreshFirst) -> async_channel::Receiver<RefreshEvent> {
         let (sender, receiver) = async_channel::bounded(8);
         let context = match refresh_context() {
             Ok(context) => context,
@@ -115,11 +134,9 @@ mod windows {
                 return receiver;
             }
         };
-        let worker = context.runtime.spawn(refresh_accounts_for_provider_inner(
-            context,
-            provider,
-            sender.clone(),
-        ));
+        let worker = context
+            .runtime
+            .spawn(refresh_accounts_inner(context, first, sender.clone()));
         // Report the outcome, including a panic, so the dashboard never
         // waits forever for a refresh to finish.
         context.runtime.spawn(async move {
@@ -135,9 +152,9 @@ mod windows {
         receiver
     }
 
-    async fn refresh_accounts_for_provider_inner(
+    async fn refresh_accounts_inner(
         context: &'static RefreshContext,
-        provider: UsageProvider,
+        first: RefreshFirst,
         sender: async_channel::Sender<RefreshEvent>,
     ) -> Result<RefreshSummary, String> {
         let accounts = context
@@ -145,7 +162,7 @@ mod windows {
             .list()
             .await
             .map_err(|error| format!("could not load saved accounts: {error}"))?;
-        let targets = prioritize_accounts(accounts, provider);
+        let targets = prioritize_accounts(accounts, &first);
         refresh_targets(targets, sender, |account| refresh_account(context, account)).await
     }
 
@@ -267,12 +284,13 @@ mod windows {
 
     fn prioritize_accounts(
         accounts: Vec<AccountRecord>,
-        provider: UsageProvider,
+        first: &RefreshFirst,
     ) -> Vec<AccountRecord> {
         use std::collections::VecDeque;
         let (mut priority, others): (Vec<_>, Vec<_>) = accounts
             .into_iter()
-            .partition(|account| dashboard::belongs_to_provider(&account.provider_id, provider));
+            .partition(|account| first.rank(account).is_some());
+        priority.sort_by_key(|account| first.rank(account));
         let mut groups: Vec<(String, VecDeque<AccountRecord>)> = Vec::new();
         for account in others {
             let provider_id = account.provider_id.to_ascii_lowercase();
@@ -354,7 +372,8 @@ mod windows {
             for pass in ["cold", "warm"] {
                 let started = std::time::Instant::now();
                 {
-                    let receiver = refresh_accounts_for_provider(UsageProvider::Codex);
+                    let receiver =
+                        refresh_accounts(RefreshFirst::Provider(crate::UsageProvider::Codex));
                     while let Ok(event) = receiver.recv_blocking() {
                         match event {
                             RefreshEvent::AccountUpdated(entry) => println!(
@@ -393,7 +412,10 @@ mod windows {
                 account("claude", "claude@example.com", CLAUDE),
             ];
 
-            let ordered = prioritize_accounts(accounts, UsageProvider::Codex);
+            let ordered = prioritize_accounts(
+                accounts,
+                &RefreshFirst::Provider(crate::UsageProvider::Codex),
+            );
             assert_eq!(ordered.len(), 4);
             assert_eq!(ordered[0].provider_id, OPENAI);
             assert_eq!(ordered[1].provider_id, "openrouter");
@@ -497,12 +519,10 @@ mod windows {
 }
 
 #[cfg(target_os = "windows")]
-pub use windows::refresh_accounts_for_provider;
+pub use windows::refresh_accounts;
 
 #[cfg(not(target_os = "windows"))]
-pub fn refresh_accounts_for_provider(
-    _provider: UsageProvider,
-) -> async_channel::Receiver<RefreshEvent> {
+pub fn refresh_accounts(_first: RefreshFirst) -> async_channel::Receiver<RefreshEvent> {
     let (sender, receiver) = async_channel::bounded(1);
     let _ = sender.send_blocking(RefreshEvent::Failed(
         "live usage refresh is only available on Windows".to_owned(),

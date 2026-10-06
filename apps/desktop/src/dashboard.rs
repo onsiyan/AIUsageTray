@@ -13,7 +13,7 @@ use iced::{
 };
 use lucide_icons::iced::{
     icon_arrow_left_right, icon_check, icon_chevron_down, icon_chevron_up, icon_eye, icon_eye_off,
-    icon_pencil, icon_x,
+    icon_pencil, icon_star, icon_x,
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -50,8 +50,9 @@ use widgets::*;
 pub use persistence::{delete_saved_account, load_saved_accounts, save_account_alias};
 
 const ACCOUNT_ORDER_FILE: &str = "account-order.txt";
-/// Rename (24) + move up (22) + move down (22) + two 1px gaps.
-const HOVER_CONTROLS_WIDTH: f32 = 70.0;
+const FAVORITE_ACCOUNTS_FILE: &str = "favorite-accounts.txt";
+/// Rename (24) + favorite (24) + move up (22) + move down (22) + three 1px gaps.
+const HOVER_CONTROLS_WIDTH: f32 = 95.0;
 const HIDE_ANTIGRAVITY_CLAUDE_GPT_FILE: &str = "antigravity-hide-claude-gpt.txt";
 
 /// Whether the Antigravity "Claude and GPT models" group is hidden.
@@ -62,7 +63,7 @@ fn antigravity_claude_gpt_hidden() -> bool {
 }
 
 use crate::{
-    Message, PROVIDER_TABS, UsageProvider,
+    DashboardTab, Message, PROVIDER_TABS, UsageProvider,
     locale::{self, Language, Text},
     typography,
 };
@@ -89,6 +90,8 @@ pub struct DashboardState {
     /// User-chosen display order; accounts not listed keep their saved order
     /// after the listed ones.
     account_order: Vec<AccountId>,
+    /// Starred accounts, in the order the Favorites tab shows them.
+    favorites: Vec<AccountId>,
 }
 
 /// Which saved Codex account the Codex desktop app is signed in with, and
@@ -178,7 +181,8 @@ impl DashboardState {
                 antigravity_email: current_antigravity_app_email(),
                 ..CodexDesktopState::default()
             },
-            account_order: load_account_order(),
+            account_order: load_account_ids(ACCOUNT_ORDER_FILE),
+            favorites: load_account_ids(FAVORITE_ACCOUNTS_FILE),
         }
         .with_loaded_display_preferences()
     }
@@ -199,42 +203,85 @@ impl DashboardState {
     }
 
     /// The accounts of one tab in display order.
-    fn ordered_entries(&self, provider: UsageProvider) -> Vec<&AccountUsageEntry> {
-        let mut accounts = self
-            .entries
-            .iter()
-            .filter(|entry| belongs_to_provider(&entry.account.provider_id, provider))
-            .collect::<Vec<_>>();
-        accounts.sort_by_key(|entry| account_rank(&self.account_order, entry.account.id));
-        accounts
+    fn ordered_entries(&self, tab: DashboardTab) -> Vec<&AccountUsageEntry> {
+        match tab {
+            DashboardTab::Provider(provider) => {
+                let mut accounts = self
+                    .entries
+                    .iter()
+                    .filter(|entry| belongs_to_provider(&entry.account.provider_id, provider))
+                    .collect::<Vec<_>>();
+                accounts.sort_by_key(|entry| account_rank(&self.account_order, entry.account.id));
+                accounts
+            }
+            DashboardTab::Favorites => self
+                .favorites
+                .iter()
+                .filter_map(|id| self.entries.iter().find(|entry| entry.account.id == *id))
+                .collect(),
+        }
     }
 
-    /// Moves an account one place up (`-1`) or down (`1`) within its tab and
-    /// saves the new order.
-    pub fn move_account(&mut self, account_id: AccountId, offset: isize) -> io::Result<()> {
-        let Some(provider) = self
-            .entries
-            .iter()
-            .find(|entry| entry.account.id == account_id)
-            .and_then(|entry| provider_tab(&entry.account.provider_id))
-        else {
-            return Ok(());
-        };
+    pub fn favorite_accounts(&self) -> &[AccountId] {
+        &self.favorites
+    }
+
+    fn is_favorite(&self, account_id: AccountId) -> bool {
+        self.favorites.contains(&account_id)
+    }
+
+    /// Stars an account, adding it to the end of the Favorites tab, or
+    /// removes its star.
+    pub fn toggle_favorite(&mut self, account_id: AccountId) {
+        if self.is_favorite(account_id) {
+            self.favorites.retain(|id| *id != account_id);
+        } else {
+            self.favorites.push(account_id);
+        }
+    }
+
+    /// Saves the account order and the favorites.
+    pub fn save_account_lists(&self) -> io::Result<()> {
+        save_account_ids(ACCOUNT_ORDER_FILE, &self.account_order)?;
+        save_account_ids(FAVORITE_ACCOUNTS_FILE, &self.favorites)
+    }
+
+    /// Moves an account one place up (`-1`) or down (`1`) within the shown
+    /// tab. Returns whether the order changed and needs saving.
+    pub fn move_account(
+        &mut self,
+        tab: DashboardTab,
+        account_id: AccountId,
+        offset: isize,
+    ) -> bool {
         let mut tab_ids = self
-            .ordered_entries(provider)
+            .ordered_entries(tab)
             .iter()
             .map(|entry| entry.account.id)
             .collect::<Vec<_>>();
         let Some(index) = tab_ids.iter().position(|id| *id == account_id) else {
-            return Ok(());
+            return false;
         };
         let Some(target) = index
             .checked_add_signed(offset)
             .filter(|target| *target < tab_ids.len())
         else {
-            return Ok(());
+            return false;
         };
         tab_ids.swap(index, target);
+
+        let DashboardTab::Provider(provider) = tab else {
+            // Starred accounts that no longer exist keep their place after
+            // the shown ones; they disappear for good when unstarred.
+            let missing = self
+                .favorites
+                .iter()
+                .filter(|id| !tab_ids.contains(id))
+                .copied()
+                .collect::<Vec<_>>();
+            self.favorites = tab_ids.into_iter().chain(missing).collect();
+            return true;
+        };
 
         // Rebuild the global order: other tabs keep their places, and this
         // tab's slots take its new sequence.
@@ -251,7 +298,7 @@ impl DashboardState {
                 }
             })
             .collect();
-        save_account_order(&self.account_order)
+        true
     }
 
     /// Marks a Codex desktop switch as running. Returns false while another
@@ -512,11 +559,11 @@ impl DashboardState {
 
 pub fn view(
     state: &DashboardState,
-    provider: UsageProvider,
+    tab: DashboardTab,
     theme: &'static crate::theme::ThemeDefinition,
     language: Language,
 ) -> Element<'static, Message> {
-    let accounts = state.ordered_entries(provider);
+    let accounts = state.ordered_entries(tab);
     let account_count = accounts.len();
 
     let body: Element<'static, Message> = if state.is_loading && !state.has_loaded {
@@ -527,7 +574,17 @@ pub fn view(
             theme,
         )
     } else if accounts.is_empty() {
-        centered_note(locale::text(language, Text::NoAccountsForProvider), theme)
+        centered_note(
+            locale::text(
+                language,
+                if tab == DashboardTab::Favorites {
+                    Text::NoFavoriteAccounts
+                } else {
+                    Text::NoAccountsForProvider
+                },
+            ),
+            theme,
+        )
     } else {
         let mut account_sections = Vec::with_capacity(accounts.len() * 2);
         for (index, entry) in accounts.into_iter().enumerate() {
@@ -540,6 +597,7 @@ pub fn view(
                 state.alias_editor.as_ref(),
                 &state.usage_animation,
                 state.account_name_is_hovered(entry.account.id),
+                state.is_favorite(entry.account.id),
                 state.model_visibility_menu_open(entry.account.id),
                 &state.model_visibility,
                 state.show_all_model_quotas,
@@ -551,7 +609,7 @@ pub fn view(
         }
 
         crate::smooth_scroll::smooth_scroll(
-            provider.cli_name(),
+            tab.scroll_key(),
             scrollable(column(account_sections).spacing(0).width(Fill))
                 .direction(scrollable::Direction::Vertical(
                     scrollable::Scrollbar::hidden(),

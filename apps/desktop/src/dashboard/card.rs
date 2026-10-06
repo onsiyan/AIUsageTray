@@ -8,6 +8,7 @@ pub(super) fn account_card(
     alias_editor: Option<&AliasEditor>,
     usage_animation: &UsageAnimationState,
     account_name_hovered: bool,
+    favorite: bool,
     model_visibility_menu_open: bool,
     model_visibility: &ModelVisibilityPreferences,
     show_all_model_quotas: bool,
@@ -88,6 +89,7 @@ pub(super) fn account_card(
         let edit_slot: Element<'static, Message> = if account_name_hovered {
             row![
                 edit_name_button(account_id, theme, language),
+                favorite_button(account_id, favorite, theme, language),
                 move_account_button(account_id, -1, can_move_up, theme, language),
                 move_account_button(account_id, 1, can_move_down, theme, language),
             ]
@@ -489,6 +491,46 @@ pub(super) fn move_account_button(
     };
     crate::hint::hint(control, locale::text(language, tip), theme)
 }
+
+/// Stars the account for the Favorites tab, or removes its star.
+pub(super) fn favorite_button(
+    account_id: AccountId,
+    favorite: bool,
+    theme: &'static crate::theme::ThemeDefinition,
+    language: Language,
+) -> Element<'static, Message> {
+    let color = if favorite {
+        FAVORITE_STAR_COLOR
+    } else {
+        theme.colors.text()
+    };
+    let control = button(container(icon_star().size(13).color(color)).center(24))
+        .on_press(Message::ToggleFavorite(account_id))
+        .width(24)
+        .height(24)
+        .padding(0)
+        .style(move |framework_theme, status| {
+            let mut style = button::text(framework_theme, status);
+            style.background = matches!(status, button::Status::Hovered | button::Status::Pressed)
+                .then(|| Background::Color(theme.colors.hover()));
+            style.text_color = theme.colors.text();
+            style.border = Border {
+                radius: 6.0.into(),
+                ..Border::default()
+            };
+            style.shadow = Default::default();
+            style
+        });
+    let tip = if favorite {
+        Text::RemoveFromFavorites
+    } else {
+        Text::AddToFavorites
+    };
+    crate::hint::hint(control, locale::text(language, tip), theme)
+}
+
+/// Gold, so a starred account reads as starred on every theme.
+const FAVORITE_STAR_COLOR: Color = Color::from_rgb(0.98, 0.76, 0.18);
 
 pub(super) fn edit_name_button(
     account_id: AccountId,

@@ -7,7 +7,7 @@ use iced::widget::column;
 impl App {
     pub(super) fn view(&self) -> Element<'_, Message> {
         let active_theme = self.theme_id.definition();
-        let provider_tab_bar = provider_tab_bar(self.selected_provider, active_theme);
+        let provider_tab_bar = provider_tab_bar(self.selected_tab, active_theme, self.language);
         let title_bar = container(
             row![
                 mouse_area(Space::new().width(Fill).height(Length::Fill))
@@ -72,7 +72,7 @@ impl App {
             account_add_status,
             dashboard::view(
                 &self.dashboard,
-                self.selected_provider,
+                self.selected_tab,
                 active_theme,
                 self.language,
             )

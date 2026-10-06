@@ -9,17 +9,11 @@ pub(super) fn account_rank(order: &[AccountId], account_id: AccountId) -> usize 
         .unwrap_or(usize::MAX)
 }
 
-pub(super) fn provider_tab(provider_id: &str) -> Option<UsageProvider> {
-    PROVIDER_TABS
-        .iter()
-        .map(|tab| tab.provider)
-        .find(|provider| belongs_to_provider(provider_id, *provider))
-}
-
-pub(super) fn load_account_order() -> Vec<AccountId> {
+/// Reads a saved list of account ids, one per line.
+pub(super) fn load_account_ids(file: &str) -> Vec<AccountId> {
     crate::theme::preference_directory()
         .ok()
-        .and_then(|directory| fs::read_to_string(directory.join(ACCOUNT_ORDER_FILE)).ok())
+        .and_then(|directory| fs::read_to_string(directory.join(file)).ok())
         .map(|contents| {
             contents
                 .lines()
@@ -29,15 +23,15 @@ pub(super) fn load_account_order() -> Vec<AccountId> {
         .unwrap_or_default()
 }
 
-pub(super) fn save_account_order(order: &[AccountId]) -> io::Result<()> {
+pub(super) fn save_account_ids(file: &str, ids: &[AccountId]) -> io::Result<()> {
     let directory = crate::theme::preference_directory()?;
     fs::create_dir_all(&directory)?;
-    let contents = order
+    let contents = ids
         .iter()
         .map(|id| id.0.to_string())
         .collect::<Vec<_>>()
         .join("\n");
-    fs::write(directory.join(ACCOUNT_ORDER_FILE), contents)
+    fs::write(directory.join(file), contents)
 }
 
 pub(super) fn load_hide_antigravity_claude_gpt() -> bool {

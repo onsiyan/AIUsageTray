@@ -150,13 +150,19 @@ pub(super) fn refresh_button(
 }
 
 pub(super) fn provider_tab_bar(
-    selected_provider: UsageProvider,
+    selected_tab: DashboardTab,
     active_theme: &'static ThemeDefinition,
+    language: locale::Language,
 ) -> Element<'static, Message> {
-    let tabs = PROVIDER_TABS
+    let mut tabs = PROVIDER_TABS
         .iter()
         .copied()
-        .map(|tab| provider_tab(tab, selected_provider, active_theme));
+        .map(|tab| provider_tab(tab, selected_tab, active_theme))
+        .collect::<Vec<_>>();
+    tabs.insert(
+        FAVORITES_TAB_POSITION.min(tabs.len()),
+        favorites_tab(selected_tab, active_theme, language),
+    );
 
     container(row(tabs).spacing(2).width(Fill))
         .width(Fill)
@@ -175,42 +181,71 @@ pub(super) fn provider_tab_bar(
 
 pub(super) fn provider_tab(
     tab: ProviderTab,
-    selected_provider: UsageProvider,
+    selected_tab: DashboardTab,
     active_theme: &'static ThemeDefinition,
 ) -> Element<'static, Message> {
-    let selected = tab.provider == selected_provider;
-
-    let tab_button = button(
-        container(
-            image(provider_logo_handle(
-                tab.provider,
-                active_theme.colors.is_light,
-            ))
-            .width(24)
-            .height(24)
-            .content_fit(ContentFit::Contain),
-        )
-        .center(Fill),
+    let logo = image(provider_logo_handle(
+        tab.provider,
+        active_theme.colors.is_light,
+    ))
+    .width(24)
+    .height(24)
+    .content_fit(ContentFit::Contain);
+    tab_button(
+        logo.into(),
+        DashboardTab::Provider(tab.provider),
+        selected_tab,
+        tab.label,
+        active_theme,
     )
-    .on_press(Message::SelectProvider(tab.provider))
-    .width(Fill)
-    .height(31)
-    .padding(0)
-    .style(move |framework_theme: &Theme, status| {
-        let mut style = button::text(framework_theme, status);
-        let highlighted =
-            selected || matches!(status, button::Status::Hovered | button::Status::Pressed);
-        style.background = highlighted.then(|| Background::Color(active_theme.colors.hover()));
-        style.text_color = active_theme.colors.text();
-        style.border = Border {
-            radius: 7.0.into(),
-            ..Border::default()
-        };
-        style.shadow = Shadow::default();
-        style
-    });
+}
 
-    hint::hint(tab_button, tab.label, active_theme)
+/// The tab of accounts the user starred, from any provider.
+fn favorites_tab(
+    selected_tab: DashboardTab,
+    active_theme: &'static ThemeDefinition,
+    language: locale::Language,
+) -> Element<'static, Message> {
+    let star = icon_star::<Theme>()
+        .size(20)
+        .color(active_theme.colors.text());
+    tab_button(
+        star.into(),
+        DashboardTab::Favorites,
+        selected_tab,
+        locale::text(language, locale::Text::Favorites),
+        active_theme,
+    )
+}
+
+fn tab_button(
+    content: Element<'static, Message>,
+    tab: DashboardTab,
+    selected_tab: DashboardTab,
+    label: &'static str,
+    active_theme: &'static ThemeDefinition,
+) -> Element<'static, Message> {
+    let selected = tab == selected_tab;
+    let tab_button = button(container(content).center(Fill))
+        .on_press(Message::SelectTab(tab))
+        .width(Fill)
+        .height(31)
+        .padding(0)
+        .style(move |framework_theme: &Theme, status| {
+            let mut style = button::text(framework_theme, status);
+            let highlighted =
+                selected || matches!(status, button::Status::Hovered | button::Status::Pressed);
+            style.background = highlighted.then(|| Background::Color(active_theme.colors.hover()));
+            style.text_color = active_theme.colors.text();
+            style.border = Border {
+                radius: 7.0.into(),
+                ..Border::default()
+            };
+            style.shadow = Shadow::default();
+            style
+        });
+
+    hint::hint(tab_button, label, active_theme)
 }
 
 pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -> image::Handle {

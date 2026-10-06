@@ -17,6 +17,9 @@ All notable changes to this project are documented here. The format follows
 - Choice to show usage as remaining or used percentage.
 - Account reordering, cancelling an in-progress sign-in, and hiding the
   Antigravity Claude/GPT group.
+- Favorites tab, third in the tab bar, gathering accounts starred from any
+  provider. The star sits with the rename and move controls on each account;
+  favorites keep their own order and are refreshed first while shown.
 - "Save memory in tray" option in the palette menu: closes the popup window
   while it is hidden, freeing about 100 MB of GPU memory, at the cost of a
   slower next open. Off by default.
@@ -59,6 +62,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Desktop tests no longer overwrite the saved account order.
 - Scrolling stuttered while a refresh ran: the spinning refresh icon rebuilt
   the whole window 20 times a second. The icon now spins by redrawing only
   itself.

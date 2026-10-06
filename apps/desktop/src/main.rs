@@ -25,7 +25,7 @@ use iced::{
 };
 use lucide_icons::{
     LUCIDE_FONT_BYTES,
-    iced::{icon_check, icon_palette, icon_trash_2, icon_user_round_plus, icon_x},
+    iced::{icon_check, icon_palette, icon_star, icon_trash_2, icon_user_round_plus, icon_x},
 };
 use tokio::{io::AsyncWriteExt, process::Command as TokioCommand};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -183,6 +183,27 @@ impl UsageProvider {
     }
 }
 
+/// A tab of the popup: one provider's accounts, or the accounts the user
+/// starred from any provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DashboardTab {
+    Provider(UsageProvider),
+    Favorites,
+}
+
+impl DashboardTab {
+    /// Keeps each tab's scroll position apart.
+    const fn scroll_key(self) -> &'static str {
+        match self {
+            Self::Provider(provider) => provider.cli_name(),
+            Self::Favorites => "favorites",
+        }
+    }
+}
+
+/// Where the Favorites tab sits among the provider tabs.
+const FAVORITES_TAB_POSITION: usize = 2;
+
 #[derive(Clone, Copy)]
 struct ProviderTab {
     provider: UsageProvider,
@@ -247,7 +268,7 @@ struct App {
     account_add_running: bool,
     account_add_cancel: Option<Sender<()>>,
     account_add_status: Option<AccountAddStatus>,
-    selected_provider: UsageProvider,
+    selected_tab: DashboardTab,
     dashboard_refresh_running: bool,
     popup_visible: bool,
     window_focused: bool,
@@ -278,7 +299,7 @@ impl App {
             account_add_running: false,
             account_add_cancel: None,
             account_add_status: None,
-            selected_provider: UsageProvider::Codex,
+            selected_tab: DashboardTab::Provider(UsageProvider::Codex),
             dashboard_refresh_running: false,
             popup_visible: false,
             window_focused: false,
@@ -404,9 +425,14 @@ impl App {
         }
 
         self.dashboard_refresh_running = true;
-        let provider = self.selected_provider;
+        let first = match self.selected_tab {
+            DashboardTab::Provider(provider) => usage_refresh::RefreshFirst::Provider(provider),
+            DashboardTab::Favorites => {
+                usage_refresh::RefreshFirst::Accounts(self.dashboard.favorite_accounts().to_vec())
+            }
+        };
         Task::run(
-            usage_refresh::refresh_accounts_for_provider(provider),
+            usage_refresh::refresh_accounts(first),
             Message::UsageRefreshEvent,
         )
     }
@@ -516,7 +542,8 @@ enum Message {
     SwitchCodexDesktopAccount(usage_monitor_core::accounts::AccountId),
     SwitchAntigravityAppAccount(usage_monitor_core::accounts::AccountId),
     CodexDesktopSwitchFinished(usage_monitor_core::accounts::AccountId, Result<(), String>),
-    SelectProvider(UsageProvider),
+    SelectTab(DashboardTab),
+    ToggleFavorite(usage_monitor_core::accounts::AccountId),
     DashboardLoaded(Result<Vec<dashboard::AccountUsageEntry>, String>),
     UsageRefreshEvent(usage_refresh::RefreshEvent),
     BeginAliasEdit(usage_monitor_core::accounts::AccountId),
