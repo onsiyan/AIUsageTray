@@ -166,6 +166,7 @@ enum UsageProvider {
     Antigravity,
     OpenCodeGo,
     OpenRouter,
+    DeepSeek,
 }
 
 impl UsageProvider {
@@ -176,6 +177,7 @@ impl UsageProvider {
             Self::Antigravity => "antigravity",
             Self::OpenCodeGo => "opencode-go",
             Self::OpenRouter => "openrouter",
+            Self::DeepSeek => "deepseek",
         }
     }
 
@@ -186,7 +188,13 @@ impl UsageProvider {
             Self::Antigravity => "Antigravity",
             Self::OpenCodeGo => "OpenCode Go",
             Self::OpenRouter => "OpenRouter",
+            Self::DeepSeek => "DeepSeek",
         }
+    }
+
+    /// Providers added by pasting an API key rather than signing in.
+    const fn uses_api_key(self) -> bool {
+        matches!(self, Self::OpenRouter | Self::DeepSeek)
     }
 }
 
@@ -253,9 +261,13 @@ const PROVIDER_TABS: &[ProviderTab] = &[
         provider: UsageProvider::OpenRouter,
         label: "OpenRouter",
     },
+    ProviderTab {
+        provider: UsageProvider::DeepSeek,
+        label: "DeepSeek",
+    },
 ];
 
-static PROVIDER_LOGOS: OnceLock<[image::Handle; 5]> = OnceLock::new();
+static PROVIDER_LOGOS: OnceLock<[image::Handle; 6]> = OnceLock::new();
 static LIGHT_THEME_PROVIDER_LOGOS: OnceLock<[image::Handle; 2]> = OnceLock::new();
 
 struct App {
@@ -269,9 +281,10 @@ struct App {
     account_delete_running: bool,
     account_delete_queued: bool,
     account_delete_error: Option<String>,
-    openrouter_credentials_open: bool,
-    openrouter_api_key: String,
-    openrouter_management_key: String,
+    /// The provider whose API-key dialog is open.
+    credentials_provider: Option<UsageProvider>,
+    api_key_input: String,
+    management_key_input: String,
     account_add_running: bool,
     account_add_cancel: Option<Sender<()>>,
     account_add_status: Option<AccountAddStatus>,
@@ -302,9 +315,9 @@ impl App {
             account_delete_running: false,
             account_delete_queued: false,
             account_delete_error: None,
-            openrouter_credentials_open: false,
-            openrouter_api_key: String::new(),
-            openrouter_management_key: String::new(),
+            credentials_provider: None,
+            api_key_input: String::new(),
+            management_key_input: String::new(),
             account_add_running: false,
             account_add_cancel: None,
             account_add_status: None,
@@ -332,7 +345,7 @@ impl App {
         ];
 
         let blocking_dialog_open =
-            app.openrouter_credentials_open || app.account_delete_dialog_open;
+            app.credentials_provider.is_some() || app.account_delete_dialog_open;
         if should_run_popup_animation_ticks(
             app.popup_visible,
             blocking_dialog_open,
@@ -498,10 +511,10 @@ impl App {
         )
     }
 
-    fn cancel_openrouter_credentials(&mut self) {
-        self.openrouter_credentials_open = false;
-        self.openrouter_api_key.clear();
-        self.openrouter_management_key.clear();
+    fn cancel_credentials(&mut self) {
+        self.credentials_provider = None;
+        self.api_key_input.clear();
+        self.management_key_input.clear();
     }
 
     /// Opens the popup window hidden; it is shown once placed by the tray.
@@ -550,10 +563,10 @@ enum Message {
     CancelAccountDeletion,
     ConfirmAccountDeletion,
     ChooseAccountProvider(UsageProvider),
-    OpenRouterApiKeyChanged(String),
-    OpenRouterManagementKeyChanged(String),
-    SubmitOpenRouterCredentials,
-    CancelOpenRouterCredentials,
+    ApiKeyChanged(String),
+    ManagementKeyChanged(String),
+    SubmitCredentials,
+    CancelCredentials,
     AccountAddCompleted(UsageProvider, Result<(), String>),
     CancelAccountAdd,
     DismissAccountAddStatus,

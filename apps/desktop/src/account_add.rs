@@ -78,7 +78,7 @@ pub(super) async fn add_account(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    if provider == UsageProvider::OpenRouter {
+    if provider.uses_api_key() {
         command.arg("--credentials-stdin");
     }
 

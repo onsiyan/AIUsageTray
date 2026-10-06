@@ -7,6 +7,7 @@
 use super::{
     antigravity::AntigravityUsageAdapter,
     claude::ClaudeUsageAdapter,
+    deepseek::DeepSeekUsageAdapter,
     openai::WhamUsageAdapter,
     opencode_go::{OpenCodeGoSourceMode, OpenCodeGoUsageAdapter},
     openrouter::OpenRouterUsageAdapter,
@@ -140,7 +141,19 @@ impl ProviderRegistry {
             Arc::clone(&auth),
         )?) as Arc<dyn UsageAdapter>;
 
-        Self::from_adapters([openai, claude, opencode_go, openrouter, antigravity])
+        let deepseek = Arc::new(DeepSeekUsageAdapter::new(
+            Arc::clone(&transport),
+            Arc::clone(&auth),
+        )?) as Arc<dyn UsageAdapter>;
+
+        Self::from_adapters([
+            openai,
+            claude,
+            opencode_go,
+            openrouter,
+            antigravity,
+            deepseek,
+        ])
     }
 
     pub fn get(&self, provider_id: &str) -> Option<Arc<dyn UsageAdapter>> {
@@ -197,7 +210,7 @@ fn insert_unique(
 mod tests {
     use super::*;
     use crate::{
-        accounts::{ANTIGRAVITY, AccountRecord, CLAUDE, OPENCODE_GO, OPENROUTER},
+        accounts::{ANTIGRAVITY, AccountRecord, CLAUDE, DEEPSEEK, OPENCODE_GO, OPENROUTER},
         transport::TransportError,
         usage::{UsageAdapter, UsageProbeResult},
     };
@@ -260,7 +273,8 @@ mod tests {
         let registry =
             ProviderRegistry::from_dependencies(transport, auth, ProviderRegistryConfig::default())
                 .unwrap();
-        assert_eq!(registry.len(), 5);
+        assert_eq!(registry.len(), 6);
+        assert!(registry.contains(DEEPSEEK));
         assert!(registry.contains(ANTIGRAVITY));
         assert!(registry.contains(OPENCODE_GO));
     }

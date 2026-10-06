@@ -125,7 +125,7 @@ impl App {
                     self.theme_menu_open = false;
                     self.account_add_menu_open = false;
                     self.dismiss_account_delete_dialog();
-                    self.cancel_openrouter_credentials();
+                    self.cancel_credentials();
                     self.dashboard.close_any_model_visibility_menu();
                     self.hide_popup()
                 }
@@ -143,8 +143,8 @@ impl App {
             Message::RuntimeEvent(Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(keyboard::key::Named::Escape),
                 ..
-            })) if self.openrouter_credentials_open => {
-                self.cancel_openrouter_credentials();
+            })) if self.credentials_provider.is_some() => {
+                self.cancel_credentials();
                 Task::none()
             }
             Message::RuntimeEvent(Event::Keyboard(keyboard::Event::KeyPressed {
@@ -193,7 +193,7 @@ impl App {
                 self.theme_menu_open = false;
                 self.account_add_menu_open = false;
                 self.dismiss_account_delete_dialog();
-                self.cancel_openrouter_credentials();
+                self.cancel_credentials();
                 self.dashboard.close_any_model_visibility_menu();
                 self.hide_popup()
             }
@@ -234,7 +234,7 @@ impl App {
             }
             Message::ToggleAccountAddMenu => {
                 if !self.account_add_running
-                    && !self.openrouter_credentials_open
+                    && self.credentials_provider.is_none()
                     && !self.account_delete_running
                 {
                     self.account_add_menu_open = !self.account_add_menu_open;
@@ -249,7 +249,7 @@ impl App {
             }
             Message::ToggleAccountDeleteDialog => {
                 if self.account_add_running
-                    || self.openrouter_credentials_open
+                    || self.credentials_provider.is_some()
                     || self.account_delete_running
                 {
                     return Task::none();
@@ -349,37 +349,40 @@ impl App {
                 if self.account_add_running {
                     return Task::none();
                 }
-                if provider == UsageProvider::OpenRouter {
-                    self.openrouter_api_key.clear();
-                    self.openrouter_management_key.clear();
-                    self.openrouter_credentials_open = true;
+                if provider.uses_api_key() {
+                    self.api_key_input.clear();
+                    self.management_key_input.clear();
+                    self.credentials_provider = Some(provider);
                     self.account_add_status = None;
                     Task::none()
                 } else {
                     self.begin_account_add(provider, None)
                 }
             }
-            Message::OpenRouterApiKeyChanged(value) => {
-                self.openrouter_api_key = value;
+            Message::ApiKeyChanged(value) => {
+                self.api_key_input = value;
                 Task::none()
             }
-            Message::OpenRouterManagementKeyChanged(value) => {
-                self.openrouter_management_key = value;
+            Message::ManagementKeyChanged(value) => {
+                self.management_key_input = value;
                 Task::none()
             }
-            Message::SubmitOpenRouterCredentials => {
-                let api_key = self.openrouter_api_key.trim().to_owned();
+            Message::SubmitCredentials => {
+                let api_key = self.api_key_input.trim().to_owned();
                 if api_key.is_empty() || self.account_add_running {
                     return Task::none();
                 }
-                let management_key = self.openrouter_management_key.trim().to_owned();
-                self.openrouter_api_key.clear();
-                self.openrouter_management_key.clear();
-                self.openrouter_credentials_open = false;
-                self.begin_account_add(UsageProvider::OpenRouter, Some((api_key, management_key)))
+                let Some(provider) = self.credentials_provider else {
+                    return Task::none();
+                };
+                let management_key = self.management_key_input.trim().to_owned();
+                self.api_key_input.clear();
+                self.management_key_input.clear();
+                self.credentials_provider = None;
+                self.begin_account_add(provider, Some((api_key, management_key)))
             }
-            Message::CancelOpenRouterCredentials => {
-                self.cancel_openrouter_credentials();
+            Message::CancelCredentials => {
+                self.cancel_credentials();
                 Task::none()
             }
             Message::AccountAddCompleted(provider, result) => {

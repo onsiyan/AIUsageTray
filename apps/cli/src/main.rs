@@ -13,7 +13,9 @@ use tokio::{
     process::Command as TokioCommand,
 };
 use usage_monitor_core::{
-    accounts::{ANTIGRAVITY, AccountRecord, AccountStore, CLAUDE, OPENAI, OPENCODE_GO, OPENROUTER},
+    accounts::{
+        ANTIGRAVITY, AccountRecord, AccountStore, CLAUDE, DEEPSEEK, OPENAI, OPENCODE_GO, OPENROUTER,
+    },
     auth::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
         AccountOAuthMaterialProvider, CompositeAuthMaterialProvider,

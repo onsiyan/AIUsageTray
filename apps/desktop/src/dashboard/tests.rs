@@ -1023,3 +1023,24 @@ fn remaining_percentage_is_clamped_and_non_finite_values_do_not_reach_ui() {
     assert_eq!(valid_percent(140.0), Some(100.0));
     assert_eq!(valid_percent(f64::NAN), None);
 }
+
+#[test]
+fn amounts_in_a_currency_unit_read_as_money() {
+    use super::widgets::format_amount;
+    assert_eq!(
+        format_amount(7.25, Some("USD"), None, Language::English),
+        "$7.25"
+    );
+    assert_eq!(
+        format_amount(8.5, Some("CNY"), None, Language::English),
+        "¥8.50"
+    );
+    assert_eq!(
+        format_amount(3.0, Some("requests"), None, Language::English),
+        "3.00 requests"
+    );
+    assert_eq!(
+        format_amount(1.0, None, Some("CHF"), Language::English),
+        "1.00 CHF"
+    );
+}

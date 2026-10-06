@@ -9,6 +9,7 @@ pub(super) enum AccountAddProvider {
     OpenRouter,
     OpenCodeGo,
     Antigravity,
+    DeepSeek,
 }
 
 impl AccountAddProvider {
@@ -19,6 +20,7 @@ impl AccountAddProvider {
             "openrouter" => Some(Self::OpenRouter),
             "opencode" | "opencodego" => Some(Self::OpenCodeGo),
             "antigravity" => Some(Self::Antigravity),
+            "deepseek" => Some(Self::DeepSeek),
             _ => None,
         }
     }
@@ -30,6 +32,7 @@ impl AccountAddProvider {
             Self::OpenRouter => OPENROUTER,
             Self::OpenCodeGo => OPENCODE_GO,
             Self::Antigravity => ANTIGRAVITY,
+            Self::DeepSeek => DEEPSEEK,
         }
     }
 
@@ -41,9 +44,28 @@ impl AccountAddProvider {
             Self::OpenRouter => "openrouter",
             Self::OpenCodeGo => "opencode-go",
             Self::Antigravity => "antigravity",
+            Self::DeepSeek => "deepseek",
+        }
+    }
+
+    /// The environment variable that may hold the API key of a provider
+    /// added from a key; `None` for providers that sign in.
+    pub(super) fn api_key_environment(self) -> Option<&'static str> {
+        match self {
+            Self::OpenRouter => Some("OPENROUTER_API_KEY"),
+            Self::DeepSeek => Some("DEEPSEEK_API_KEY"),
+            _ => None,
         }
     }
 }
+
+/// Every provider's API-key variables, kept away from other providers'
+/// login flows.
+const API_KEY_ENVIRONMENT: &[&str] = &[
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_MANAGEMENT_API_KEY",
+    "DEEPSEEK_API_KEY",
+];
 
 /// The sign-in helper shipped next to the CLI.
 pub(super) const LOGIN_HELPER_BINARY: &str = "usage-monitor-login";
@@ -72,7 +94,7 @@ pub(super) fn build_account_add_arguments(
         // The Claude probe owns its single official Claude Code OAuth login
         // flow and always uses the system-default browser.
         AccountAddProvider::Claude => {}
-        AccountAddProvider::OpenRouter => {
+        AccountAddProvider::OpenRouter | AccountAddProvider::DeepSeek => {
             // Each explicit add gets its own credential slot; a repeated label
             // must not silently replace another key.
             result.push("--new".into());
@@ -97,11 +119,11 @@ pub(super) fn account_add_uses_stdin(
     provider: AccountAddProvider,
     arguments: &AccountAddArgs,
 ) -> bool {
-    provider == AccountAddProvider::OpenRouter
+    provider.api_key_environment().is_some()
         && (arguments.api_key_stdin || arguments.credentials_stdin)
 }
 
-pub(super) fn has_openrouter_key_source(
+pub(super) fn has_api_key_source(
     arguments: &AccountAddArgs,
     environment_api_key: Option<&str>,
 ) -> bool {
@@ -133,7 +155,7 @@ pub(super) async fn execute_account_add(
         return Err(CliFailure::new(
             "unsupported_provider",
             format!(
-                "Unsupported provider `{}`. Choose codex, claude, openrouter, opencode-go, or antigravity.",
+                "Unsupported provider `{}`. Choose codex, claude, openrouter, opencode-go, antigravity, or deepseek.",
                 arguments.provider
             ),
             2,
@@ -151,24 +173,22 @@ pub(super) async fn execute_account_add(
             2,
         ));
     }
-    if provider != AccountAddProvider::OpenRouter
-        && (arguments.api_key_stdin || arguments.credentials_stdin)
-    {
+    let api_key_environment = provider.api_key_environment();
+    if api_key_environment.is_none() && (arguments.api_key_stdin || arguments.credentials_stdin) {
         return Err(CliFailure::new(
             "invalid_arguments",
-            "OpenRouter stdin credential options can only be used with `account add openrouter`.",
+            "Stdin credential options can only be used with `account add openrouter` or `account add deepseek`.",
             2,
         ));
     }
-    if provider == AccountAddProvider::OpenRouter
-        && !has_openrouter_key_source(
-            &arguments,
-            std::env::var("OPENROUTER_API_KEY").ok().as_deref(),
-        )
+    if let Some(variable) = api_key_environment
+        && !has_api_key_source(&arguments, std::env::var(variable).ok().as_deref())
     {
         return Err(CliFailure::new(
-            "openrouter_key_required",
-            "Provide OPENROUTER_API_KEY in this process environment, or pass the key through --api-key-stdin / --credentials-stdin. Keys are never accepted as command-line arguments.",
+            "api_key_required",
+            format!(
+                "Provide {variable} in this process environment, or pass the key through --api-key-stdin / --credentials-stdin. Keys are never accepted as command-line arguments."
+            ),
             2,
         ));
     }
@@ -203,10 +223,15 @@ pub(super) async fn execute_account_add(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if provider != AccountAddProvider::OpenRouter {
-        command
-            .env_remove("OPENROUTER_API_KEY")
-            .env_remove("OPENROUTER_MANAGEMENT_API_KEY");
+    for variable in API_KEY_ENVIRONMENT {
+        let belongs_to_provider = match provider {
+            AccountAddProvider::OpenRouter => variable.starts_with("OPENROUTER_"),
+            AccountAddProvider::DeepSeek => variable.starts_with("DEEPSEEK_"),
+            _ => false,
+        };
+        if !belongs_to_provider {
+            command.env_remove(variable);
+        }
     }
     command.kill_on_drop(true);
     let mut child = command.spawn().map_err(|error| {

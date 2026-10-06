@@ -16,7 +16,7 @@ impl App {
                 delete_account_button(
                     self.account_delete_dialog_open,
                     self.account_add_running
-                        || self.openrouter_credentials_open
+                        || self.credentials_provider.is_some()
                         || self.account_delete_running,
                     active_theme,
                     self.language,
@@ -123,12 +123,13 @@ impl App {
             .height(Fill)
             .into();
 
-        let content = if self.openrouter_credentials_open {
+        let content = if let Some(credentials_provider) = self.credentials_provider {
             let dismiss_area = mouse_area(Space::new().width(Fill).height(Fill))
-                .on_press(Message::CancelOpenRouterCredentials);
-            let credentials_dialog = container(openrouter_credentials_dialog(
-                &self.openrouter_api_key,
-                &self.openrouter_management_key,
+                .on_press(Message::CancelCredentials);
+            let credentials_dialog = container(api_key_dialog(
+                credentials_provider,
+                &self.api_key_input,
+                &self.management_key_input,
                 self.language,
                 active_theme,
             ))

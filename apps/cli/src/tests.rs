@@ -247,6 +247,7 @@ fn account_add_routes_each_provider_to_its_existing_login_flow() {
         ("openrouter", AccountAddProvider::OpenRouter),
         ("opencode-go", AccountAddProvider::OpenCodeGo),
         ("antigravity", AccountAddProvider::Antigravity),
+        ("deepseek", AccountAddProvider::DeepSeek),
     ];
     let arguments = AccountAddArgs {
         provider: String::new(),
@@ -346,10 +347,10 @@ fn openrouter_add_rejects_missing_or_blank_environment_keys() {
         credentials_stdin: false,
     };
 
-    assert!(!has_openrouter_key_source(&arguments, None));
-    assert!(!has_openrouter_key_source(&arguments, Some("  \t")));
-    assert!(has_openrouter_key_source(&arguments, Some("sk-or-test")));
-    assert!(has_openrouter_key_source(
+    assert!(!has_api_key_source(&arguments, None));
+    assert!(!has_api_key_source(&arguments, Some("  \t")));
+    assert!(has_api_key_source(&arguments, Some("sk-or-test")));
+    assert!(has_api_key_source(
         &AccountAddArgs {
             api_key_stdin: true,
             ..arguments
@@ -551,4 +552,34 @@ async fn scheduler_uses_each_accounts_own_source_mode() {
     let opencode = account(OPENCODE_GO, "oc1", "Go", "g@example.com", None, None);
     let result = dispatcher(OPENCODE_GO).probe(&opencode).await.unwrap();
     assert_eq!(result.error.unwrap().message, "api");
+}
+
+#[test]
+fn deepseek_add_takes_its_key_from_stdin_or_its_own_variable() {
+    let arguments = AccountAddArgs {
+        provider: "deepseek".to_owned(),
+        alias: None,
+        api_key_stdin: false,
+        credentials_stdin: true,
+    };
+    let built = build_account_add_arguments(
+        AccountAddProvider::DeepSeek,
+        Path::new("accounts.db"),
+        &arguments,
+    )
+    .iter()
+    .map(|value| value.to_string_lossy().into_owned())
+    .collect::<Vec<_>>();
+    assert_eq!(built[0], "deepseek");
+    assert!(built.contains(&"--credentials-stdin".to_owned()));
+    assert!(built.contains(&"--new".to_owned()));
+    assert!(account_add_uses_stdin(
+        AccountAddProvider::DeepSeek,
+        &arguments
+    ));
+    assert_eq!(
+        AccountAddProvider::DeepSeek.api_key_environment(),
+        Some("DEEPSEEK_API_KEY")
+    );
+    assert_eq!(AccountAddProvider::Claude.api_key_environment(), None);
 }

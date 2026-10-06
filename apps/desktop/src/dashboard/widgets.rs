@@ -282,13 +282,13 @@ pub(super) fn format_amount(
     };
 
     if let Some(currency) = currency {
-        let symbol = match currency.to_ascii_uppercase().as_str() {
-            "USD" => "$",
-            "EUR" => "€",
-            "GBP" => "£",
-            "JPY" => "¥",
-            _ => return format!("{amount} {currency}"),
+        return match currency_symbol(currency) {
+            Some(symbol) => format!("{symbol}{amount}"),
+            None => format!("{amount} {currency}"),
         };
+    }
+    // A metric whose unit is a currency code reads as money too.
+    if let Some(symbol) = unit.and_then(currency_symbol) {
         return format!("{symbol}{amount}");
     }
 
@@ -296,6 +296,16 @@ pub(super) fn format_amount(
         Some("tokens") => format!("{amount} token"),
         Some(unit) => format!("{amount} {unit}"),
         None => amount,
+    }
+}
+
+fn currency_symbol(code: &str) -> Option<&'static str> {
+    match code.trim().to_ascii_uppercase().as_str() {
+        "USD" => Some("$"),
+        "EUR" => Some("€"),
+        "GBP" => Some("£"),
+        "JPY" | "CNY" => Some("¥"),
+        _ => None,
     }
 }
 

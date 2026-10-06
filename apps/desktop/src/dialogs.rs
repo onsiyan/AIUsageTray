@@ -365,7 +365,8 @@ pub(super) fn destructive_dialog_button(
         .into()
 }
 
-pub(super) fn openrouter_credentials_dialog<'a>(
+pub(super) fn api_key_dialog<'a>(
+    provider: UsageProvider,
     api_key: &'a str,
     management_key: &'a str,
     language: locale::Language,
@@ -378,29 +379,36 @@ pub(super) fn openrouter_credentials_dialog<'a>(
     .secure(true)
     .size(typography::CONTROL_SIZE)
     .padding([8, 10])
-    .on_input(Message::OpenRouterApiKeyChanged)
+    .on_input(Message::ApiKeyChanged)
     .width(Fill)
     .style(move |framework_theme, status| {
         account_key_input_style(framework_theme, status, active_theme)
     });
 
-    let management_key_input = text_input(
-        locale::text(language, locale::Text::OpenRouterManagementKey),
-        management_key,
-    )
-    .secure(true)
-    .size(typography::CONTROL_SIZE)
-    .padding([8, 10])
-    .on_input(Message::OpenRouterManagementKeyChanged)
-    .width(Fill)
-    .style(move |framework_theme, status| {
-        account_key_input_style(framework_theme, status, active_theme)
+    // Only OpenRouter has a second, optional key (for Activity).
+    let management_key_input = (provider == UsageProvider::OpenRouter).then(|| {
+        text_input(
+            locale::text(language, locale::Text::OpenRouterManagementKey),
+            management_key,
+        )
+        .secure(true)
+        .size(typography::CONTROL_SIZE)
+        .padding([8, 10])
+        .on_input(Message::ManagementKeyChanged)
+        .width(Fill)
+        .style(move |framework_theme, status| {
+            account_key_input_style(framework_theme, status, active_theme)
+        })
     });
+    let title = match provider {
+        UsageProvider::DeepSeek => locale::text(language, locale::Text::DeepSeekTitle),
+        _ => locale::text(language, locale::Text::OpenRouterTitle),
+    };
 
     let submit_enabled = !api_key.trim().is_empty();
     container(
         column![
-            text(locale::text(language, locale::Text::OpenRouterTitle))
+            text(title)
                 .size(typography::ACCOUNT_NAME_SIZE)
                 .color(active_theme.colors.text()),
             text(locale::text(
@@ -410,27 +418,29 @@ pub(super) fn openrouter_credentials_dialog<'a>(
             .size(typography::METADATA_SIZE)
             .color(active_theme.colors.muted_text()),
             api_key_input,
-            management_key_input,
+        ]
+        .push(management_key_input)
+        .push(
             row![
                 account_dialog_button(
                     locale::text(language, locale::Text::Cancel),
                     false,
                     true,
                     active_theme,
-                    Message::CancelOpenRouterCredentials,
+                    Message::CancelCredentials,
                 ),
                 account_dialog_button(
                     locale::text(language, locale::Text::AddAccount),
                     true,
                     submit_enabled,
                     active_theme,
-                    Message::SubmitOpenRouterCredentials,
+                    Message::SubmitCredentials,
                 ),
             ]
             .spacing(8)
             .align_y(Alignment::Center)
             .width(Fill),
-        ]
+        )
         .spacing(10)
         .width(Fill),
     )

@@ -276,6 +276,7 @@ pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -
             decode_provider_logo(include_bytes!("../assets/providers/antigravity.png"), false),
             decode_provider_logo(include_bytes!("../assets/providers/opencode-go.png"), false),
             decode_provider_logo(include_bytes!("../assets/providers/openrouter.png"), false),
+            decode_provider_logo(include_bytes!("../assets/providers/deepseek.png"), false),
         ]
     });
 
@@ -285,6 +286,7 @@ pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -
         UsageProvider::Antigravity => 2,
         UsageProvider::OpenCodeGo => 3,
         UsageProvider::OpenRouter => 4,
+        UsageProvider::DeepSeek => 5,
     }]
     .clone()
 }

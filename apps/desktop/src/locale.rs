@@ -69,6 +69,7 @@ pub enum Text {
     AccountDeletionFailed,
     ChooseProvider,
     OpenRouterTitle,
+    DeepSeekTitle,
     OpenRouterApiKey,
     OpenRouterManagementKey,
     OpenRouterCredentialHint,
@@ -177,6 +178,7 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, AccountDeletionFailed) => "Could not delete this account",
         (English, ChooseProvider) => "Choose a provider",
         (English, OpenRouterTitle) => "Add OpenRouter account",
+        (English, DeepSeekTitle) => "Add DeepSeek account",
         (English, OpenRouterApiKey) => "API key",
         (English, OpenRouterManagementKey) => "Management key (optional)",
         (English, OpenRouterCredentialHint) => {
@@ -270,6 +272,7 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (Arabic, AccountDeletionFailed) => "تعذر حذف هذا الحساب",
         (Arabic, ChooseProvider) => "اختر مزودًا",
         (Arabic, OpenRouterTitle) => "إضافة حساب OpenRouter",
+        (Arabic, DeepSeekTitle) => "إضافة حساب DeepSeek",
         (Arabic, OpenRouterApiKey) => "مفتاح API",
         (Arabic, OpenRouterManagementKey) => "مفتاح الإدارة (اختياري)",
         (Arabic, OpenRouterCredentialHint) => "تُمرر المفاتيح بأمان ولا توضع ضمن معاملات سطر الأوامر.",

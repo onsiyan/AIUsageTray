@@ -23,6 +23,13 @@ All notable changes to this project are documented here. The format follows
 - "Save memory in tray" option in the palette menu: closes the popup window
   while it is hidden, freeing about 100 MB of GPU memory, at the cost of a
   slower next open. Off by default.
+- DeepSeek accounts, added from an API key (desktop dialog, or
+  `usage account add deepseek` with `DEEPSEEK_API_KEY` or stdin). The tab
+  shows the prepaid balance from DeepSeek's official `/user/balance`
+  endpoint, with paid and granted funds broken out when there are granted
+  funds, and a notice when the balance is empty or cannot be used.
+- Money amounts in usage rows read as `$7.25` or `¥8.50` instead of
+  `7.25 USD`.
 - `usage-monitor-cli` for people and agents, with stable account references
   and JSON output.
 

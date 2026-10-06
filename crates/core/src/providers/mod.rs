@@ -2,6 +2,7 @@ pub mod antigravity;
 pub mod claude;
 pub(crate) mod codex_reset;
 pub mod codex_workspace;
+pub mod deepseek;
 pub mod openai;
 pub mod opencode_go;
 pub mod openrouter;
