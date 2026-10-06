@@ -3,6 +3,7 @@ pub mod claude;
 pub(crate) mod codex_reset;
 pub mod codex_workspace;
 pub mod copilot;
+pub mod cursor;
 pub mod deepseek;
 pub mod openai;
 pub mod opencode_go;

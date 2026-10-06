@@ -62,12 +62,12 @@ pub(super) enum AccountCommand {
 
 #[derive(Debug, Args)]
 pub(super) struct AccountAddArgs {
-    /// Provider: codex, claude, openrouter, opencode-go, antigravity, deepseek, or copilot.
+    /// Provider: codex, claude, openrouter, opencode-go, antigravity, deepseek, copilot, or cursor.
     pub(super) provider: String,
     /// Optional display alias assigned after sign-in succeeds.
     #[arg(long)]
     pub(super) alias: Option<String>,
-    /// Read the API key (OpenRouter, DeepSeek) or GitHub token (Copilot) from stdin instead of a command-line argument.
+    /// Read the API key (OpenRouter, DeepSeek) GitHub token (Copilot), or Cursor session cookie from stdin instead of a command-line argument.
     #[arg(long, conflicts_with = "credentials_stdin")]
     pub(super) api_key_stdin: bool,
     /// Read the API key and, for OpenRouter, an optional management key from two stdin lines.

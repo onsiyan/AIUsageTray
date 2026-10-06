@@ -11,6 +11,7 @@ pub const OPENROUTER: &str = "openrouter";
 pub const ANTIGRAVITY: &str = "antigravity";
 pub const DEEPSEEK: &str = "deepseek";
 pub const COPILOT: &str = "copilot";
+pub const CURSOR: &str = "cursor";
 
 pub(crate) fn account_reference_prefix(provider_id: &str) -> &'static str {
     match provider_id {
@@ -21,6 +22,7 @@ pub(crate) fn account_reference_prefix(provider_id: &str) -> &'static str {
         "antigravity" => "ag",
         "deepseek" => "ds",
         "copilot" => "cp",
+        "cursor" => "cu",
         _ => "ac",
     }
 }

@@ -383,7 +383,12 @@ impl App {
                 if self.account_add_running {
                     return Task::none();
                 }
-                if provider.uses_api_key() {
+                // Cursor takes the signed-in Cursor app's session; without
+                // one, the user pastes a session cookie from cursor.com.
+                let needs_credentials = provider.uses_api_key()
+                    || (provider == UsageProvider::Cursor
+                        && usage_monitor_core::providers::cursor::local_app_session().is_none());
+                if needs_credentials {
                     self.api_key_input.clear();
                     self.management_key_input.clear();
                     self.credentials_provider = Some(provider);
@@ -439,6 +444,10 @@ impl App {
                     copy_to_clipboard(&code.user_code);
                     open_in_browser(&code.verification_uri);
                 }
+                Task::none()
+            }
+            Message::OpenCursorSite => {
+                open_in_browser("https://cursor.com/dashboard");
                 Task::none()
             }
             Message::CancelCredentials => {

@@ -114,7 +114,15 @@ pub(super) fn metric_row(
             language,
         ))
     } else if let Some(used) = metric.used_amount {
-        Some(format_amount(used, metric.unit.as_deref(), None, language))
+        let used = format_amount(used, metric.unit.as_deref(), None, language);
+        // Spend against a budget reads "$12.34 / $50.00".
+        Some(match metric.limit_amount {
+            Some(limit) => format!(
+                "{used} / {}",
+                format_amount(limit, metric.unit.as_deref(), None, language)
+            ),
+            None => used,
+        })
     } else {
         metric
             .reset_at_utc
@@ -151,6 +159,9 @@ pub(super) fn metric_display_name(metric: &UsageMetric, language: Language) -> S
         "quota.usage_billed" => locale::text(language, Text::BilledByUsage).to_owned(),
         "premium.over_quota" => over_quota(Text::PremiumRequests),
         "chat.over_quota" => over_quota(Text::Chat),
+        "on_demand" => locale::text(language, Text::OnDemand).to_owned(),
+        "on_demand.team" => locale::text(language, Text::TeamOnDemand).to_owned(),
+        "on_demand.yours" => locale::text(language, Text::YourOnDemand).to_owned(),
         _ => metric.name.clone(),
     }
 }
@@ -352,6 +363,8 @@ pub(super) fn display_window_name(name: &str, language: Language) -> String {
         "monthly" | "month" => locale::text(language, Text::Monthly).to_owned(),
         "premium requests" => locale::text(language, Text::PremiumRequests).to_owned(),
         "chat" => locale::text(language, Text::Chat).to_owned(),
+        "total" => locale::text(language, Text::Total).to_owned(),
+        "requests" => locale::text(language, Text::Requests).to_owned(),
         _ => name.to_owned(),
     }
 }

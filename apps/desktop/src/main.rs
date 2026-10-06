@@ -128,6 +128,7 @@ fn main() -> iced::Result {
                     Ok("add") => Some(Message::ToggleAccountAddMenu),
                     Ok("deepseek") => Some(Message::ChooseAccountProvider(UsageProvider::DeepSeek)),
                     Ok("copilot") => Some(Message::ChooseAccountProvider(UsageProvider::Copilot)),
+                    Ok("cursor") => Some(Message::ChooseAccountProvider(UsageProvider::Cursor)),
                     Ok("openrouter") => {
                         Some(Message::ChooseAccountProvider(UsageProvider::OpenRouter))
                     }
@@ -199,6 +200,7 @@ enum UsageProvider {
     OpenRouter,
     DeepSeek,
     Copilot,
+    Cursor,
 }
 
 impl UsageProvider {
@@ -211,6 +213,7 @@ impl UsageProvider {
             Self::OpenRouter => "openrouter",
             Self::DeepSeek => "deepseek",
             Self::Copilot => "copilot",
+            Self::Cursor => "cursor",
         }
     }
 
@@ -223,6 +226,7 @@ impl UsageProvider {
             Self::OpenRouter => "OpenRouter",
             Self::DeepSeek => "DeepSeek",
             Self::Copilot => "Copilot",
+            Self::Cursor => "Cursor",
         }
     }
 
@@ -322,10 +326,14 @@ const PROVIDER_TABS: &[ProviderTab] = &[
         provider: UsageProvider::Copilot,
         label: "Copilot",
     },
+    ProviderTab {
+        provider: UsageProvider::Cursor,
+        label: "Cursor",
+    },
 ];
 
-static PROVIDER_LOGOS: OnceLock<[image::Handle; 7]> = OnceLock::new();
-static LIGHT_THEME_PROVIDER_LOGOS: OnceLock<[image::Handle; 3]> = OnceLock::new();
+static PROVIDER_LOGOS: OnceLock<[image::Handle; 8]> = OnceLock::new();
+static LIGHT_THEME_PROVIDER_LOGOS: OnceLock<[image::Handle; 4]> = OnceLock::new();
 
 struct App {
     window_id: Option<window::Id>,
@@ -661,6 +669,7 @@ enum Message {
     CopilotCode(Option<usage_monitor_core::providers::copilot::DeviceCode>),
     OpenCopilotPage,
     CopyCopilotCode,
+    OpenCursorSite,
     CancelCredentials,
     AccountAddCompleted(UsageProvider, Result<(), String>),
     CancelAccountAdd,

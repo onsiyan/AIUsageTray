@@ -392,8 +392,16 @@ pub(super) fn api_key_dialog<'a>(
     language: locale::Language,
     active_theme: &'static ThemeDefinition,
 ) -> Element<'a, Message> {
+    let is_cursor = provider == UsageProvider::Cursor;
     let api_key_input = text_input(
-        locale::text(language, locale::Text::OpenRouterApiKey),
+        locale::text(
+            language,
+            if is_cursor {
+                locale::Text::CursorSession
+            } else {
+                locale::Text::OpenRouterApiKey
+            },
+        ),
         api_key,
     )
     .secure(true)
@@ -424,8 +432,24 @@ pub(super) fn api_key_dialog<'a>(
     });
     let title = match provider {
         UsageProvider::DeepSeek => locale::text(language, locale::Text::DeepSeekTitle),
+        UsageProvider::Cursor => locale::text(language, locale::Text::CursorTitle),
         _ => locale::text(language, locale::Text::OpenRouterTitle),
     };
+    let hint = if is_cursor {
+        locale::Text::CursorSessionHint
+    } else {
+        locale::Text::OpenRouterCredentialHint
+    };
+    // Cursor's cookie is copied from a signed-in cursor.com page.
+    let open_site = is_cursor.then(|| {
+        account_dialog_button(
+            locale::text(language, locale::Text::OpenCursor),
+            false,
+            true,
+            active_theme,
+            Message::OpenCursorSite,
+        )
+    });
 
     let submit_enabled = !api_key.trim().is_empty();
     container(
@@ -434,36 +458,33 @@ pub(super) fn api_key_dialog<'a>(
                 .size(typography::ACCOUNT_NAME_SIZE)
                 .font(typography::EMPHASIS)
                 .color(active_theme.colors.text()),
-            text(locale::text(
-                language,
-                locale::Text::OpenRouterCredentialHint
-            ))
-            .size(typography::METADATA_SIZE)
-            .font(typography::MEDIUM)
-            .color(active_theme.colors.muted_text()),
+            text(locale::text(language, hint))
+                .size(typography::METADATA_SIZE)
+                .font(typography::MEDIUM)
+                .color(active_theme.colors.muted_text()),
             api_key_input,
         ]
         .push(management_key_input)
         .push(
-            row![
-                account_dialog_button(
+            row![]
+                .push(open_site)
+                .push(account_dialog_button(
                     locale::text(language, locale::Text::Cancel),
                     false,
                     true,
                     active_theme,
                     Message::CancelCredentials,
-                ),
-                account_dialog_button(
+                ))
+                .push(account_dialog_button(
                     locale::text(language, locale::Text::AddAccount),
                     true,
                     submit_enabled,
                     active_theme,
                     Message::SubmitCredentials,
-                ),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .width(Fill),
+                ))
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .width(Fill),
         )
         .spacing(10)
         .width(Fill),

@@ -249,6 +249,7 @@ fn account_add_routes_each_provider_to_its_existing_login_flow() {
         ("antigravity", AccountAddProvider::Antigravity),
         ("deepseek", AccountAddProvider::DeepSeek),
         ("copilot", AccountAddProvider::Copilot),
+        ("cursor", AccountAddProvider::Cursor),
     ];
     let arguments = AccountAddArgs {
         provider: String::new(),
@@ -586,37 +587,34 @@ fn deepseek_add_takes_its_key_from_stdin_or_its_own_variable() {
 }
 
 #[test]
-fn copilot_add_signs_in_on_github_or_takes_a_token_from_stdin() {
-    let mut arguments = AccountAddArgs {
-        provider: "copilot".to_owned(),
-        alias: None,
-        api_key_stdin: false,
-        credentials_stdin: false,
-    };
-    let built = |arguments: &AccountAddArgs| {
-        build_account_add_arguments(
-            AccountAddProvider::Copilot,
-            Path::new("accounts.db"),
-            arguments,
-        )
-        .iter()
-        .map(|value| value.to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-    };
-    let device_flow = built(&arguments);
-    assert_eq!(device_flow[0], "copilot");
-    assert!(!device_flow.contains(&"--credentials-stdin".to_owned()));
-    assert!(!device_flow.contains(&"--new".to_owned()));
-    assert!(!account_add_uses_stdin(
-        AccountAddProvider::Copilot,
-        &arguments
-    ));
+fn copilot_and_cursor_sign_in_themselves_or_take_a_credential_from_stdin() {
+    // Copilot runs GitHub's device flow and Cursor takes the Cursor app's
+    // session; either can instead read a credential from stdin.
+    for (name, provider) in [
+        ("copilot", AccountAddProvider::Copilot),
+        ("cursor", AccountAddProvider::Cursor),
+    ] {
+        let mut arguments = AccountAddArgs {
+            provider: name.to_owned(),
+            alias: None,
+            api_key_stdin: false,
+            credentials_stdin: false,
+        };
+        let built = |arguments: &AccountAddArgs| {
+            build_account_add_arguments(provider, Path::new("accounts.db"), arguments)
+                .iter()
+                .map(|value| value.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        let own_sign_in = built(&arguments);
+        assert_eq!(own_sign_in[0], name);
+        assert!(!own_sign_in.contains(&"--credentials-stdin".to_owned()));
+        assert!(!own_sign_in.contains(&"--new".to_owned()));
+        assert!(!account_add_uses_stdin(provider, &arguments));
 
-    arguments.credentials_stdin = true;
-    assert!(built(&arguments).contains(&"--credentials-stdin".to_owned()));
-    assert!(account_add_uses_stdin(
-        AccountAddProvider::Copilot,
-        &arguments
-    ));
-    assert_eq!(AccountAddProvider::Copilot.api_key_environment(), None);
+        arguments.credentials_stdin = true;
+        assert!(built(&arguments).contains(&"--credentials-stdin".to_owned()));
+        assert!(account_add_uses_stdin(provider, &arguments));
+        assert_eq!(provider.api_key_environment(), None);
+    }
 }

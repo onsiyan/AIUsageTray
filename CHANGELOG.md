@@ -47,6 +47,13 @@ All notable changes to this project are documented here. The format follows
   quotas with their monthly reset, credits used, unlimited and billed-by-usage
   plans, and a note when a quota is exceeded. Accounts are matched by GitHub
   user, so signing in again refreshes the existing one.
+- Cursor accounts, taken from the Cursor app signed in on this computer, or
+  from a `WorkosCursorSessionToken` cookie pasted from cursor.com (or
+  `usage account add cursor`). The tab shows the included plan's total,
+  Auto + Composer and API usage for the billing cycle, the weekly Grok Bot
+  allowance, request quotas on legacy plans, and on-demand spend against its
+  budget. While the Cursor app stays signed in to the account, each refresh
+  uses its newer session.
 - `usage-monitor-cli` for people and agents, with stable account references
   and JSON output.
 

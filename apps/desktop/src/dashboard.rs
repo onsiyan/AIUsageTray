@@ -706,6 +706,7 @@ pub(crate) fn name_is_email(account: &AccountRecord) -> bool {
             UsageProvider::Codex,
             UsageProvider::Claude,
             UsageProvider::Antigravity,
+            UsageProvider::Cursor,
         ]
         .into_iter()
         .any(|provider| belongs_to_provider(&account.provider_id, provider))
@@ -720,6 +721,7 @@ pub(crate) fn belongs_to_provider(provider_id: &str, provider: UsageProvider) ->
         UsageProvider::OpenRouter => provider_id == "openrouter",
         UsageProvider::DeepSeek => provider_id == "deepseek",
         UsageProvider::Copilot => provider_id == "copilot",
+        UsageProvider::Cursor => provider_id == "cursor",
     }
 }
 

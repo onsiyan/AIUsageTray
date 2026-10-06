@@ -6,11 +6,12 @@ mod antigravity;
 mod claude;
 mod codex;
 mod copilot;
+mod cursor;
 mod deepseek;
 mod opencode_go;
 mod openrouter;
 
-const USAGE: &str = "Usage: usage-monitor-login <codex|claude|antigravity|opencode-go|openrouter|deepseek|copilot> [options]";
+const USAGE: &str = "Usage: usage-monitor-login <codex|claude|antigravity|opencode-go|openrouter|deepseek|copilot|cursor> [options]";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,6 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("openrouter") => openrouter::run().await,
         Some("deepseek") => deepseek::run().await,
         Some("copilot") => copilot::run().await,
+        Some("cursor") => cursor::run().await,
         Some("--help" | "-h") => {
             println!("{USAGE}");
             Ok(())

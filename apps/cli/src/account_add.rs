@@ -11,6 +11,7 @@ pub(super) enum AccountAddProvider {
     Antigravity,
     DeepSeek,
     Copilot,
+    Cursor,
 }
 
 impl AccountAddProvider {
@@ -23,6 +24,7 @@ impl AccountAddProvider {
             "antigravity" => Some(Self::Antigravity),
             "deepseek" => Some(Self::DeepSeek),
             "copilot" | "githubcopilot" => Some(Self::Copilot),
+            "cursor" => Some(Self::Cursor),
             _ => None,
         }
     }
@@ -36,6 +38,7 @@ impl AccountAddProvider {
             Self::Antigravity => ANTIGRAVITY,
             Self::DeepSeek => DEEPSEEK,
             Self::Copilot => COPILOT,
+            Self::Cursor => CURSOR,
         }
     }
 
@@ -49,6 +52,7 @@ impl AccountAddProvider {
             Self::Antigravity => "antigravity",
             Self::DeepSeek => "deepseek",
             Self::Copilot => "copilot",
+            Self::Cursor => "cursor",
         }
     }
 
@@ -63,9 +67,10 @@ impl AccountAddProvider {
     }
 
     /// Whether the credential may come from stdin: an API key, or the
-    /// GitHub token of a Copilot device-flow sign-in finished elsewhere.
+    /// GitHub token of a Copilot device-flow sign-in finished elsewhere, or
+    /// a Cursor session cookie copied from cursor.com.
     pub(super) fn accepts_stdin_credentials(self) -> bool {
-        self.api_key_environment().is_some() || self == Self::Copilot
+        self.api_key_environment().is_some() || matches!(self, Self::Copilot | Self::Cursor)
     }
 }
 
@@ -116,9 +121,10 @@ pub(super) fn build_account_add_arguments(
             }
         }
         AccountAddProvider::OpenCodeGo => {}
-        // Without a token on stdin, the helper runs GitHub's device flow in
-        // the terminal. Accounts are matched by GitHub user, never doubled.
-        AccountAddProvider::Copilot => {
+        // Without a credential on stdin, the Copilot helper runs GitHub's
+        // device flow in the terminal and the Cursor helper takes the signed-in
+        // Cursor app's session. Both match accounts by user, never doubling.
+        AccountAddProvider::Copilot | AccountAddProvider::Cursor => {
             if arguments.api_key_stdin || arguments.credentials_stdin {
                 result.push("--credentials-stdin".into());
             }
@@ -171,7 +177,7 @@ pub(super) async fn execute_account_add(
         return Err(CliFailure::new(
             "unsupported_provider",
             format!(
-                "Unsupported provider `{}`. Choose codex, claude, openrouter, opencode-go, antigravity, deepseek, or copilot.",
+                "Unsupported provider `{}`. Choose codex, claude, openrouter, opencode-go, antigravity, deepseek, copilot, or cursor.",
                 arguments.provider
             ),
             2,
@@ -195,7 +201,7 @@ pub(super) async fn execute_account_add(
     {
         return Err(CliFailure::new(
             "invalid_arguments",
-            "Stdin credential options can only be used with `account add openrouter`, `account add deepseek`, or `account add copilot`.",
+            "Stdin credential options can only be used with `account add openrouter`, `account add deepseek`, `account add copilot`, or `account add cursor`.",
             2,
         ));
     }
