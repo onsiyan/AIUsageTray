@@ -28,6 +28,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Resets within a day show their local clock time as well as the countdown
+  ("Resets at 7:25 PM · in 4h 41m", or "tomorrow at ...").
+- Emails and reset times use IBM Plex Sans Medium, and semibold text uses the
+  real SemiBold face instead of falling back to Bold.
 - The desktop app draws with the GPU, falling back to CPU drawing when no
   suitable graphics adapter is available. Scrolling is much smoother.
 - Continuous wheel input (precision touchpads, free-spinning wheels) scrolls

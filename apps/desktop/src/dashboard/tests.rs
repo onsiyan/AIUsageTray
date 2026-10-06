@@ -529,9 +529,34 @@ fn favorites_gather_starred_accounts_in_their_own_order() {
 #[test]
 fn reset_label_keeps_hour_format_at_exactly_24_hours() {
     let now = Utc.with_ymd_and_hms(2026, 9, 24, 10, 0, 0).unwrap();
-    let label = reset_label(now + Duration::hours(24), now, Language::English);
+    let reset_at = now + Duration::hours(24);
+    let label = reset_label(reset_at, now, Language::English);
 
-    assert_eq!(label, "Resets in 24h 0m");
+    let clock = reset_at.with_timezone(&Local).format("%-I:%M %p");
+    assert_eq!(label, format!("Resets tomorrow at {clock} · in 24h 0m"));
+}
+
+#[test]
+fn reset_within_a_day_shows_its_clock_time_and_countdown() {
+    // Midday local time keeps a 3h reset on the same day in any time zone.
+    let now = Local
+        .with_ymd_and_hms(2026, 9, 24, 12, 0, 0)
+        .unwrap()
+        .with_timezone(&Utc);
+    let reset_at = now + Duration::minutes(3 * 60 + 25);
+
+    assert_eq!(
+        reset_label(reset_at, now, Language::English),
+        "Resets at 3:25 PM · in 3h 25m"
+    );
+    assert_eq!(
+        reset_label(reset_at, now, Language::Arabic),
+        "يتجدد الساعة 15:25 · بعد 3 س و25 د"
+    );
+    assert_eq!(
+        countdown_label_parts("Resets at 3:25 PM · in 3h 25m", Language::English),
+        Some(("Resets at 3:25 PM · ", "in 3h 25m"))
+    );
 }
 
 #[test]

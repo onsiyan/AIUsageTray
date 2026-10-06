@@ -125,6 +125,12 @@ fn main() -> iced::Result {
         "../assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf"
     ))
     .font(include_bytes!(
+        "../assets/fonts/ibm-plex-sans/IBMPlexSans-Medium.ttf"
+    ))
+    .font(include_bytes!(
+        "../assets/fonts/ibm-plex-sans/IBMPlexSans-SemiBold.ttf"
+    ))
+    .font(include_bytes!(
         "../assets/fonts/ibm-plex-sans/IBMPlexSans-Bold.ttf"
     ))
     .subscription(App::subscription)

@@ -342,7 +342,7 @@ pub(super) fn reset_time_label(
             .color(reset_time_accent(theme)),
     ])
     .size(typography::RESET_TIME_SIZE)
-    .font(typography::BODY)
+    .font(typography::MEDIUM)
     .width(Fill)
     .into()
 }
@@ -404,11 +404,29 @@ pub(super) fn reset_label(
 
     let hours = seconds / 3600;
     let minutes = (seconds % 3600) / 60;
+    let countdown = match language {
+        Language::English if hours > 0 => format!("in {hours}h {minutes}m"),
+        Language::English => format!("in {}m", minutes.max(1)),
+        Language::Arabic if hours > 0 => format!("بعد {hours} س و{minutes} د"),
+        Language::Arabic => format!("بعد {} د", minutes.max(1)),
+    };
+    let local_reset = reset_at.with_timezone(&Local);
+    let tomorrow = local_reset.date_naive() != now.with_timezone(&Local).date_naive();
     match language {
-        Language::English if hours > 0 => format!("Resets in {hours}h {minutes}m"),
-        Language::English => format!("Resets in {}m", minutes.max(1)),
-        Language::Arabic if hours > 0 => format!("يتجدد بعد {hours} س و{minutes} د"),
-        Language::Arabic => format!("يتجدد بعد {} د", minutes.max(1)),
+        Language::English => {
+            let day = if tomorrow { "tomorrow " } else { "" };
+            format!(
+                "Resets {day}at {} · {countdown}",
+                local_reset.format("%-I:%M %p")
+            )
+        }
+        Language::Arabic => {
+            let day = if tomorrow { "غدًا " } else { "" };
+            format!(
+                "يتجدد {day}الساعة {} · {countdown}",
+                local_reset.format("%H:%M")
+            )
+        }
     }
 }
 

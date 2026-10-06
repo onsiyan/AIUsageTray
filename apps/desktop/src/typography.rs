@@ -3,6 +3,11 @@ use iced::{Font, font::Weight};
 const FAMILY: &str = "IBM Plex Sans";
 
 pub const BODY: Font = Font::with_name(FAMILY);
+/// Small secondary lines (email, reset times): Regular reads too thin there.
+pub const MEDIUM: Font = Font {
+    weight: Weight::Medium,
+    ..BODY
+};
 pub const EMPHASIS: Font = Font {
     weight: Weight::Semibold,
     ..BODY

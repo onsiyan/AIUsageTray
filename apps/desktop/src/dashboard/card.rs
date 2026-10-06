@@ -239,6 +239,7 @@ pub(super) fn account_card(
         let mut metadata = row![
             text(account.email.clone())
                 .size(typography::METADATA_SIZE)
+                .font(typography::MEDIUM)
                 .color(muted_text(theme)),
             space().width(Fill),
         ]
