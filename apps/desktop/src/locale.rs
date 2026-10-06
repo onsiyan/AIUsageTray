@@ -45,6 +45,9 @@ pub enum Text {
     PercentDisplayTitle,
     ShowRemaining,
     ShowUsed,
+    MemoryTitle,
+    MemorySaver,
+    MemorySaverTradeoff,
     GroupedQuotasUnavailable,
     NoModelsVisible,
     RefreshUsage,
@@ -139,6 +142,11 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, PercentDisplayTitle) => "Usage percentage",
         (English, ShowRemaining) => "Remaining",
         (English, ShowUsed) => "Used",
+        (English, MemoryTitle) => "Memory",
+        (English, MemorySaver) => "Save memory in tray",
+        (English, MemorySaverTradeoff) => {
+            "Frees about 100 MB while hidden, but the window takes about a second to open."
+        }
         (English, GroupedQuotasUnavailable) => "Grouped quotas are unavailable for this account",
         (English, NoModelsVisible) => "All quota models are hidden",
         (English, RefreshUsage) => "Refresh all providers · selected provider first",
@@ -224,6 +232,11 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (Arabic, PercentDisplayTitle) => "نسبة الاستخدام",
         (Arabic, ShowRemaining) => "المتبقي",
         (Arabic, ShowUsed) => "المستهلك",
+        (Arabic, MemoryTitle) => "الذاكرة",
+        (Arabic, MemorySaver) => "توفير الذاكرة في الخلفية",
+        (Arabic, MemorySaverTradeoff) => {
+            "يحرر حوالي 100 ميغابايت والنافذة مخفية، لكن فتحها يتأخر قرابة ثانية."
+        }
         (Arabic, GroupedQuotasUnavailable) => "ملخص الحصص المجمّع غير متاح لهذا الحساب",
         (Arabic, NoModelsVisible) => "كل نماذج الحصة مخفية",
         (Arabic, RefreshUsage) => "تحديث استخدام كل المزودين — المحدد أولًا",

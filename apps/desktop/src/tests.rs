@@ -58,8 +58,7 @@ fn account_add_uses_the_existing_cli_provider_names() {
 
 #[test]
 fn account_deletion_requires_selection_and_returns_to_picker_on_cancel() {
-    let (sender, _receiver) = async_channel::bounded(4);
-    let mut app = App::new(sender);
+    let mut app = App::new();
     let account = usage_monitor_core::accounts::AccountRecord::create(
         "Codex account",
         "codex@example.com",
@@ -97,8 +96,7 @@ fn account_deletion_requires_selection_and_returns_to_picker_on_cancel() {
 
 #[test]
 fn account_deletion_picker_can_open_while_usage_refreshes() {
-    let (sender, _receiver) = async_channel::bounded(4);
-    let mut app = App::new(sender);
+    let mut app = App::new();
     app.dashboard_refresh_running = true;
 
     let _ = app.update(Message::ToggleAccountDeleteDialog);
@@ -108,8 +106,7 @@ fn account_deletion_picker_can_open_while_usage_refreshes() {
 
 #[test]
 fn account_deletion_waits_for_usage_refresh_then_starts() {
-    let (sender, _receiver) = async_channel::bounded(4);
-    let mut app = App::new(sender);
+    let mut app = App::new();
     let account = usage_monitor_core::accounts::AccountRecord::create(
         "Codex account",
         "codex@example.com",
@@ -145,8 +142,7 @@ fn account_deletion_waits_for_usage_refresh_then_starts() {
 
 #[test]
 fn queued_account_deletion_can_be_canceled() {
-    let (sender, _receiver) = async_channel::bounded(4);
-    let mut app = App::new(sender);
+    let mut app = App::new();
     let account = usage_monitor_core::accounts::AccountRecord::create(
         "Codex account",
         "codex@example.com",
@@ -204,8 +200,7 @@ fn account_add_failure_extracts_cli_message_and_redacts_credentials() {
 
 #[test]
 fn tray_click_uses_the_actual_window_mode_when_cached_visibility_is_stale() {
-    let (sender, _receiver) = async_channel::bounded(4);
-    let mut app = App::new(sender);
+    let mut app = App::new();
     let tray_rect = tray_icon::Rect {
         position: PhysicalPosition::new(900.0, 700.0),
         size: PhysicalSize::new(24, 24),
@@ -289,4 +284,25 @@ fn popup_flips_below_top_taskbar_and_clamps_to_work_area() {
     assert!(position.x + WINDOW_WIDTH <= 1920.0 / 1.5);
     assert!(position.y >= 87.0 / 1.5);
     assert!(position.y + WINDOW_HEIGHT <= 1200.0 / 1.5);
+}
+
+#[test]
+fn memory_saver_closes_the_hidden_popup_window() {
+    let mut app = App::new();
+    app.memory_saver = false;
+    app.window_id = Some(window::Id::unique());
+    app.popup_visible = true;
+    let _ = app.hide_popup();
+    assert!(
+        app.window_id.is_some(),
+        "by default the window is kept for an instant reopen"
+    );
+
+    app.memory_saver = true;
+    app.popup_visible = true;
+    let _ = app.hide_popup();
+    assert!(
+        app.window_id.is_none(),
+        "the memory saver closes the window"
+    );
 }

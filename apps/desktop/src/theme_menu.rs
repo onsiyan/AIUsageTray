@@ -1,10 +1,11 @@
-//! The palette menu: theme choice and usage percentage display.
+//! The palette menu: theme choice, usage percentage display, and memory saver.
 
 use super::*;
 
 pub(super) fn theme_dropdown(
     current_theme: ThemeId,
     language: locale::Language,
+    memory_saver: bool,
 ) -> Element<'static, Message> {
     let mut items = THEME_MANIFEST
         .iter()
@@ -12,15 +13,10 @@ pub(super) fn theme_dropdown(
         .map(|theme| theme_choice_row(theme, current_theme))
         .collect::<Vec<_>>();
 
-    items.push(
-        container(
-            text(locale::text(language, locale::Text::PercentDisplayTitle))
-                .size(typography::METADATA_SIZE)
-                .color(Color::from_rgba(1.0, 1.0, 1.0, 0.6)),
-        )
-        .padding([6, 9])
-        .into(),
-    );
+    items.push(menu_section_title(locale::text(
+        language,
+        locale::Text::PercentDisplayTitle,
+    )));
     let current_display = percent_display::current();
     for (mode, label) in [
         (PercentDisplay::Remaining, locale::Text::ShowRemaining),
@@ -33,8 +29,27 @@ pub(super) fn theme_dropdown(
         ));
     }
 
+    items.push(menu_section_title(locale::text(
+        language,
+        locale::Text::MemoryTitle,
+    )));
+    items.push(choice_row(
+        locale::text(language, locale::Text::MemorySaver),
+        memory_saver,
+        Message::SetMemorySaver(!memory_saver),
+    ));
+    items.push(
+        container(
+            text(locale::text(language, locale::Text::MemorySaverTradeoff))
+                .size(typography::METADATA_SIZE)
+                .color(Color::from_rgba(1.0, 1.0, 1.0, 0.5)),
+        )
+        .padding([2, 9])
+        .into(),
+    );
+
     container(column(items).spacing(2))
-        .width(156)
+        .width(176)
         .padding(6)
         .style(theme_dropdown_surface_style)
         .into()
@@ -85,11 +100,25 @@ pub(super) fn theme_choice_row(
     .into()
 }
 
+fn menu_section_title(title: &'static str) -> Element<'static, Message> {
+    container(
+        text(title)
+            .size(typography::METADATA_SIZE)
+            .color(Color::from_rgba(1.0, 1.0, 1.0, 0.6)),
+    )
+    .padding([6, 9])
+    .into()
+}
+
 pub(super) fn percent_display_choice_row(
     mode: PercentDisplay,
     label: &'static str,
     selected: bool,
 ) -> Element<'static, Message> {
+    choice_row(label, selected, Message::SelectPercentDisplay(mode))
+}
+
+fn choice_row(label: &'static str, selected: bool, message: Message) -> Element<'static, Message> {
     let check: Element<'static, Message> = if selected {
         icon_check::<Theme>().size(15).color(Color::WHITE).into()
     } else {
@@ -107,7 +136,7 @@ pub(super) fn percent_display_choice_row(
         .spacing(8)
         .align_y(Alignment::Center),
     )
-    .on_press(Message::SelectPercentDisplay(mode))
+    .on_press(message)
     .width(Fill)
     .height(34)
     .padding([4, 9])

@@ -5,52 +5,6 @@ use super::*;
 impl App {
     pub(super) fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::InitializeTray => {
-                preview_log("initialize tray");
-                window::latest().then(|window_id| match window_id {
-                    Some(window_id) => {
-                        preview_log(format!("window available: {window_id:?}"));
-                        Task::done(Message::WindowReady(window_id))
-                    }
-                    None => {
-                        preview_log("window::latest returned None");
-                        Task::done(Message::TrayFailed(
-                            "The preview window was not created".to_owned(),
-                        ))
-                    }
-                })
-            }
-            Message::WindowReady(window_id) => {
-                preview_log(format!("install tray on window: {window_id:?}"));
-                self.window_id = Some(window_id);
-                let sender = self.tray_sender.clone();
-                window::run(window_id, move |_| {
-                    let result = install_tray(sender);
-                    preview_log(format!("install tray result: {result:?}"));
-                    result.err()
-                })
-                .map(|error| match error {
-                    Some(error) => Message::TrayFailed(error),
-                    None => Message::TrayReady,
-                })
-            }
-            Message::TrayReady => {
-                preview_log("tray ready");
-                if std::env::var_os("USAGE_UI_PREVIEW_OPEN_ON_START").is_some() {
-                    Task::perform(
-                        async {
-                            std::thread::sleep(Duration::from_millis(800));
-                        },
-                        |_| Message::OpenPreview,
-                    )
-                } else {
-                    Task::none()
-                }
-            }
-            Message::TrayFailed(error) => {
-                preview_log(format!("tray failed: {error}"));
-                Task::none()
-            }
             Message::DashboardLoaded(Ok(accounts)) => {
                 self.dashboard.set_accounts(accounts);
                 Task::none()
@@ -137,8 +91,7 @@ impl App {
             }) => {
                 preview_log(format!("tray left-click: {rect:?}"));
                 let Some(window_id) = self.window_id else {
-                    preview_log("tray click arrived before the window was ready");
-                    return Task::none();
+                    return self.show_window(Some(rect));
                 };
                 window::mode(window_id).map(move |mode| Message::TogglePopupFromTray(rect, mode))
             }
@@ -152,22 +105,8 @@ impl App {
             }
             Message::OpenPreview => {
                 preview_log("open preview requested");
-                let Some(window_id) = self.window_id else {
-                    return Task::none();
-                };
-
-                window::run(window_id, |_| {
-                    TRAY_ICON.with(|tray| tray.borrow().as_ref().and_then(TrayIcon::rect))
-                })
-                .map(Message::PreviewRect)
-            }
-            Message::PreviewRect(Some(rect)) => {
-                preview_log(format!("using tray rect: {rect:?}"));
+                let rect = TRAY_ICON.with(|tray| tray.borrow().as_ref().and_then(TrayIcon::rect));
                 self.show_window(rect)
-            }
-            Message::PreviewRect(None) => {
-                preview_log("tray rect unavailable; use taskbar-edge preview anchor");
-                self.preview_at_taskbar_edge()
             }
             Message::RuntimeEvent(Event::Window(event)) => match event {
                 window::Event::CloseRequested => {
@@ -519,6 +458,13 @@ impl App {
                     preview_log(format!("Codex desktop switch failed: {error}"));
                 }
                 self.dashboard.finish_codex_switch(account_id, result);
+                Task::none()
+            }
+            Message::SetMemorySaver(enabled) => {
+                self.memory_saver = enabled;
+                if let Err(error) = memory_saver::save(enabled) {
+                    preview_log(format!("memory saver preference save failed: {error}"));
+                }
                 Task::none()
             }
             Message::SelectPercentDisplay(mode) => {

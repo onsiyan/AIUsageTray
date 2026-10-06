@@ -17,6 +17,9 @@ All notable changes to this project are documented here. The format follows
 - Choice to show usage as remaining or used percentage.
 - Account reordering, cancelling an in-progress sign-in, and hiding the
   Antigravity Claude/GPT group.
+- "Save memory in tray" option in the palette menu: closes the popup window
+  while it is hidden, freeing about 100 MB of GPU memory, at the cost of a
+  slower next open. Off by default.
 - `usage-monitor-cli` for people and agents, with stable account references
   and JSON output.
 

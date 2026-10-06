@@ -38,6 +38,7 @@ mod dialogs;
 mod graphics;
 mod hint;
 mod locale;
+mod memory_saver;
 mod percent_display;
 mod smooth_scroll;
 mod spinner;
@@ -86,22 +87,32 @@ fn main() -> iced::Result {
     }
     let (tray_sender, tray_receiver) = async_channel::bounded::<TrayIconEvent>(32);
     let _ = TRAY_EVENT_RECEIVER.set(tray_receiver.clone());
-    let boot_sender = tray_sender.clone();
-    iced::application(
+    // The tray icon lives on this thread for the whole run, independent of
+    // the popup window, which the memory saver closes while it is hidden.
+    if let Err(error) = install_tray(tray_sender) {
+        preview_log(format!("tray failed: {error}"));
+    }
+    iced::daemon(
         move || {
-            (
-                App::new(boot_sender.clone()),
-                Task::batch([
-                    Task::done(Message::InitializeTray),
-                    Task::perform(dashboard::load_saved_accounts(), Message::DashboardLoaded),
-                ]),
-            )
+            let mut boot = vec![Task::perform(
+                dashboard::load_saved_accounts(),
+                Message::DashboardLoaded,
+            )];
+            let mut app = App::new();
+            if !app.memory_saver {
+                // Ready ahead of the first tray click so it opens instantly.
+                boot.push(app.open_popup_window().discard());
+            }
+            if std::env::var_os("USAGE_UI_PREVIEW_OPEN_ON_START").is_some() {
+                boot.push(Task::done(Message::OpenPreview));
+            }
+            (app, Task::batch(boot))
         },
         App::update,
-        App::view,
+        App::popup_view,
     )
     .title("Usage Monitor")
-    .theme(|_: &App| Theme::Dark)
+    .theme(|_: &App, _: window::Id| Theme::Dark)
     .style(|_, theme| {
         // Let the rounded frame reveal the desktop outside its opaque bounds.
         let mut style = iced::theme::default(theme);
@@ -116,7 +127,13 @@ fn main() -> iced::Result {
     .font(include_bytes!(
         "../assets/fonts/ibm-plex-sans/IBMPlexSans-Bold.ttf"
     ))
-    .window(window::Settings {
+    .subscription(App::subscription)
+    .run()
+}
+
+/// The popup opens hidden and is shown once it is placed next to the tray.
+fn popup_window_settings() -> window::Settings {
+    window::Settings {
         size: Size::new(WINDOW_WIDTH, WINDOW_HEIGHT),
         visible: false,
         min_size: Some(Size::new(WINDOW_WIDTH, WINDOW_HEIGHT)),
@@ -132,9 +149,7 @@ fn main() -> iced::Result {
             ..Default::default()
         },
         ..Default::default()
-    })
-    .subscription(App::subscription)
-    .run()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,7 +231,6 @@ static PROVIDER_LOGOS: OnceLock<[image::Handle; 5]> = OnceLock::new();
 static LIGHT_THEME_PROVIDER_LOGOS: OnceLock<[image::Handle; 2]> = OnceLock::new();
 
 struct App {
-    tray_sender: Sender<TrayIconEvent>,
     window_id: Option<window::Id>,
     theme_id: ThemeId,
     backdrop_image: Option<image::Handle>,
@@ -240,14 +254,14 @@ struct App {
     last_focus_lost: Option<Instant>,
     dashboard: dashboard::DashboardState,
     language: locale::Language,
+    memory_saver: bool,
 }
 
 impl App {
-    fn new(tray_sender: Sender<TrayIconEvent>) -> Self {
+    fn new() -> Self {
         let theme_id = load_saved_theme();
         percent_display::set_current(percent_display::load_saved());
         Self {
-            tray_sender,
             window_id: None,
             theme_id,
             backdrop_image: backdrop_image_handle(theme_id),
@@ -271,7 +285,13 @@ impl App {
             last_focus_lost: None,
             dashboard: dashboard::DashboardState::loading(),
             language: locale::default_language(),
+            memory_saver: memory_saver::load_saved(),
         }
+    }
+
+    /// The popup is the only window the app opens.
+    fn popup_view(&self, _: window::Id) -> Element<'_, Message> {
+        self.view()
     }
 
     fn subscription(app: &Self) -> Subscription<Message> {
@@ -311,7 +331,7 @@ impl App {
             preview_log("hide popup from tray");
             self.hide_popup()
         } else {
-            self.show_window(tray_rect)
+            self.show_window(Some(tray_rect))
         }
     }
 
@@ -343,32 +363,39 @@ impl App {
         })
     }
 
-    fn show_window(&mut self, tray_rect: tray_icon::Rect) -> Task<Message> {
+    /// Shows the popup next to the tray icon, opening its window first when
+    /// it was closed. Without a tray position it sits at the taskbar edge.
+    fn show_window(&mut self, tray_rect: Option<tray_icon::Rect>) -> Task<Message> {
         preview_log("show or restore window from tray");
         self.popup_visible = true;
-        let show_task = if let Some(window_id) = self.window_id {
-            window::scale_factor(window_id).then(move |scale_factor| {
-                window::monitor_size(window_id).then(move |monitor_size| {
-                    let monitor_size = monitor_size.unwrap_or(Size::new(1920.0, 1080.0));
-                    let work_area = monitor_work_area(tray_rect)
-                        .unwrap_or_else(|| full_monitor_work_area(monitor_size, scale_factor));
-                    let position = popup_position(tray_rect, scale_factor, work_area);
-                    preview_log(format!(
-                        "show popup: scale={scale_factor} work_area={work_area:?} position={position:?}"
-                    ));
-                    window::move_to::<Message>(window_id, position)
-                        .chain(window::set_mode::<Message>(
-                            window_id,
-                            window::Mode::Windowed,
-                        ))
-                        .chain(window::gain_focus::<Message>(window_id))
-                })
-            })
-        } else {
-            Task::none()
+        let (window_id, open_task) = match self.window_id {
+            Some(window_id) => (window_id, Task::none()),
+            None => {
+                let open_task = self.open_popup_window();
+                (self.window_id.expect("just opened"), open_task.discard())
+            }
         };
+        let show_task = window::scale_factor(window_id).then(move |scale_factor| {
+            window::monitor_size(window_id).then(move |monitor_size| {
+                let monitor_size = monitor_size.unwrap_or(Size::new(1920.0, 1080.0));
+                let tray_rect =
+                    tray_rect.unwrap_or_else(|| taskbar_edge_anchor(monitor_size, scale_factor));
+                let work_area = monitor_work_area(tray_rect)
+                    .unwrap_or_else(|| full_monitor_work_area(monitor_size, scale_factor));
+                let position = popup_position(tray_rect, scale_factor, work_area);
+                preview_log(format!(
+                    "show popup: scale={scale_factor} work_area={work_area:?} position={position:?}"
+                ));
+                window::move_to::<Message>(window_id, position)
+                    .chain(window::set_mode::<Message>(
+                        window_id,
+                        window::Mode::Windowed,
+                    ))
+                    .chain(window::gain_focus::<Message>(window_id))
+            })
+        });
 
-        Task::batch([show_task, self.start_usage_refresh()])
+        Task::batch([open_task.chain(show_task), self.start_usage_refresh()])
     }
 
     fn start_usage_refresh(&mut self) -> Task<Message> {
@@ -430,44 +457,36 @@ impl App {
         self.openrouter_management_key.clear();
     }
 
-    fn hide_popup(&mut self) -> Task<Message> {
-        self.popup_visible = false;
-        self.window_id
-            .map(|id| window::set_mode(id, window::Mode::Hidden))
-            .unwrap_or_else(Task::none)
+    /// Opens the popup window hidden; it is shown once placed by the tray.
+    fn open_popup_window(&mut self) -> Task<window::Id> {
+        let (window_id, open_task) = window::open(popup_window_settings());
+        self.window_id = Some(window_id);
+        open_task
     }
 
-    fn preview_at_taskbar_edge(&self) -> Task<Message> {
-        let Some(window_id) = self.window_id else {
-            return Task::none();
-        };
-
-        window::scale_factor(window_id).then(move |scale_factor| {
-            window::monitor_size(window_id).map(move |monitor_size| {
-                let monitor_size = monitor_size.unwrap_or(Size::new(1920.0, 1080.0));
-                let anchor = tray_icon::Rect {
-                    position: tray_icon::menu::dpi::PhysicalPosition::new(
-                        (monitor_size.width * scale_factor - 12.0) as f64,
-                        (monitor_size.height * scale_factor) as f64,
-                    ),
-                    size: tray_icon::menu::dpi::PhysicalSize::new(24, 0),
-                };
-                Message::PreviewRect(Some(anchor))
-            })
-        })
+    /// Hides the popup. With the memory saver on, its window is closed
+    /// instead: with no window left the renderer releases the GPU memory.
+    fn hide_popup(&mut self) -> Task<Message> {
+        self.popup_visible = false;
+        self.window_focused = false;
+        if self.memory_saver {
+            self.window_id
+                .take()
+                .map(window::close)
+                .unwrap_or_else(Task::none)
+        } else {
+            self.window_id
+                .map(|id| window::set_mode(id, window::Mode::Hidden))
+                .unwrap_or_else(Task::none)
+        }
     }
 }
 
 #[derive(Debug, Clone)]
 enum Message {
-    InitializeTray,
-    WindowReady(window::Id),
-    TrayReady,
-    TrayFailed(String),
     TrayEvent(TrayIconEvent),
     TogglePopupFromTray(tray_icon::Rect, window::Mode),
     OpenPreview,
-    PreviewRect(Option<tray_icon::Rect>),
     RuntimeEvent(Event),
     DragWindow,
     CloseButton,
@@ -493,6 +512,7 @@ enum Message {
     DismissAccountAddStatus,
     SelectTheme(ThemeId),
     SelectPercentDisplay(PercentDisplay),
+    SetMemorySaver(bool),
     SwitchCodexDesktopAccount(usage_monitor_core::accounts::AccountId),
     SwitchAntigravityAppAccount(usage_monitor_core::accounts::AccountId),
     CodexDesktopSwitchFinished(usage_monitor_core::accounts::AccountId, Result<(), String>),

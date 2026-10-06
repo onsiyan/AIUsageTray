@@ -201,12 +201,16 @@ impl App {
             .width(Fill)
             .height(Fill);
 
-            let theme_menu_layer = container(theme_dropdown(self.theme_id, self.language))
-                .width(Fill)
-                .height(Fill)
-                .align_x(Alignment::End)
-                .align_y(Alignment::Start)
-                .padding([44, 50]);
+            let theme_menu_layer = container(theme_dropdown(
+                self.theme_id,
+                self.language,
+                self.memory_saver,
+            ))
+            .width(Fill)
+            .height(Fill)
+            .align_x(Alignment::End)
+            .align_y(Alignment::Start)
+            .padding([44, 50]);
 
             stack![page, dismiss_area, theme_menu_layer]
                 .width(Fill)

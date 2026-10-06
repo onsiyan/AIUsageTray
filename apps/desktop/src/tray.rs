@@ -46,6 +46,18 @@ pub(super) fn install_tray(sender: Sender<TrayIconEvent>) -> Result<(), String> 
     Ok(())
 }
 
+/// A point at the bottom-right screen edge, used when the tray icon cannot
+/// report where it is.
+pub(super) fn taskbar_edge_anchor(monitor_size: Size, scale_factor: f32) -> tray_icon::Rect {
+    tray_icon::Rect {
+        position: tray_icon::menu::dpi::PhysicalPosition::new(
+            (monitor_size.width * scale_factor - 12.0) as f64,
+            (monitor_size.height * scale_factor) as f64,
+        ),
+        size: tray_icon::menu::dpi::PhysicalSize::new(24, 0),
+    }
+}
+
 pub(super) fn tray_event_stream() -> impl Stream<Item = Message> {
     let receiver = TRAY_EVENT_RECEIVER
         .get()
