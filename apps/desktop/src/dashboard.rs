@@ -92,6 +92,8 @@ pub struct DashboardState {
     account_order: Vec<AccountId>,
     /// Starred accounts, in the order the Favorites tab shows them.
     favorites: Vec<AccountId>,
+    /// Accounts each custom tab picked one by one, by tab id.
+    custom_tab_accounts: HashMap<u32, Vec<AccountId>>,
 }
 
 /// Which saved Codex account the Codex desktop app is signed in with, and
@@ -183,6 +185,7 @@ impl DashboardState {
             },
             account_order: load_account_ids(ACCOUNT_ORDER_FILE),
             favorites: load_account_ids(FAVORITE_ACCOUNTS_FILE),
+            custom_tab_accounts: HashMap::new(),
         }
         .with_loaded_display_preferences()
     }
@@ -219,20 +222,56 @@ impl DashboardState {
                 .iter()
                 .filter_map(|id| self.entries.iter().find(|entry| entry.account.id == *id))
                 .collect(),
-            DashboardTab::Custom { providers, .. } => {
+            DashboardTab::Custom { .. } => {
                 let mut accounts = self
                     .entries
                     .iter()
-                    .filter(|entry| {
-                        providers.providers().any(|provider| {
-                            belongs_to_provider(&entry.account.provider_id, provider)
-                        })
-                    })
+                    .filter(|entry| self.custom_tab_includes(tab, &entry.account))
                     .collect::<Vec<_>>();
                 accounts.sort_by_key(|entry| account_rank(&self.account_order, entry.account.id));
                 accounts
             }
         }
+    }
+
+    /// Whether a provider or custom tab lists `account`.
+    fn custom_tab_includes(&self, tab: DashboardTab, account: &AccountRecord) -> bool {
+        let picked = match tab {
+            DashboardTab::Custom { id, .. } => self
+                .custom_tab_accounts
+                .get(&id)
+                .is_some_and(|accounts| accounts.contains(&account.id)),
+            _ => false,
+        };
+        picked
+            || PROVIDER_TABS.iter().any(|provider_tab| {
+                tab.includes_provider(provider_tab.provider)
+                    && belongs_to_provider(&account.provider_id, provider_tab.provider)
+            })
+    }
+
+    /// Keeps the custom tabs' picked accounts in step with the tab layout.
+    pub fn set_custom_tab_accounts(&mut self, accounts: HashMap<u32, Vec<AccountId>>) {
+        self.custom_tab_accounts = accounts;
+    }
+
+    /// Every account with its provider and card name, in display order, for
+    /// picking accounts into a custom tab.
+    pub fn accounts_by_provider(&self) -> Vec<(UsageProvider, AccountId, String)> {
+        PROVIDER_TABS
+            .iter()
+            .flat_map(|provider_tab| {
+                self.ordered_entries(DashboardTab::Provider(provider_tab.provider))
+                    .into_iter()
+                    .map(|entry| {
+                        (
+                            provider_tab.provider,
+                            entry.account.id,
+                            account_name(&entry.account),
+                        )
+                    })
+            })
+            .collect()
     }
 
     /// The accounts a tab shows, in display order; refreshed first while the
@@ -309,11 +348,7 @@ impl DashboardState {
         self.account_order = all
             .iter()
             .map(|entry| {
-                let in_tab = PROVIDER_TABS.iter().any(|provider_tab| {
-                    tab.includes_provider(provider_tab.provider)
-                        && belongs_to_provider(&entry.account.provider_id, provider_tab.provider)
-                });
-                if in_tab {
+                if self.custom_tab_includes(tab, &entry.account) {
                     reordered.next().unwrap_or(entry.account.id)
                 } else {
                     entry.account.id

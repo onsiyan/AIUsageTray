@@ -217,6 +217,7 @@ impl App {
             | Message::DeleteCustomTab(_)
             | Message::TabEditorNameChanged(_)
             | Message::TabEditorToggleProvider(_)
+            | Message::TabEditorToggleAccount(..)
             | Message::SaveTabEditor
             | Message::CancelTabEditor
             | Message::ChooseTabIcon

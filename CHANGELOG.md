@@ -39,6 +39,8 @@ All notable changes to this project are documented here. The format follows
   hidden provider's tab comes back when an account is added for it.
 - Optional PNG or JPEG image for a custom tab, shown in the tab bar in place
   of its name.
+- Custom tabs can pick single accounts as well as whole providers; leaving
+  one account out of a whole provider keeps its other accounts picked.
 - `usage-monitor-cli` for people and agents, with stable account references
   and JSON output.
 

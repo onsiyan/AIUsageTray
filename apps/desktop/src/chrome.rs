@@ -256,7 +256,11 @@ fn custom_tab(
                 .height(24)
                 .content_fit(ContentFit::Contain)
                 .into(),
-            format!("{}: {providers}", custom.name),
+            if providers.is_empty() {
+                custom.name.clone()
+            } else {
+                format!("{}: {providers}", custom.name)
+            },
             Length::FillPortion(2),
         ),
         None => (

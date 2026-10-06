@@ -1090,3 +1090,38 @@ fn a_custom_tab_gathers_its_providers_and_reorders_within_them() {
         "the Claude account keeps its slot"
     );
 }
+
+#[test]
+fn a_custom_tab_lists_accounts_picked_one_by_one() {
+    let make = |provider: &str, email: &str| AccountUsageEntry {
+        account: AccountRecord::create(email, email, None, provider, None).unwrap(),
+        snapshot: None,
+    };
+    let entries = vec![
+        make(usage_monitor_core::accounts::OPENAI, "a@example.com"),
+        make(usage_monitor_core::accounts::OPENAI, "b@example.com"),
+        make(usage_monitor_core::accounts::DEEPSEEK, "d@example.com"),
+    ];
+    let ids = entries
+        .iter()
+        .map(|entry| entry.account.id)
+        .collect::<Vec<_>>();
+    let mut state = DashboardState::loading();
+    state.entries = entries;
+    state.account_order = Vec::new();
+    state.set_custom_tab_accounts([(7, vec![ids[1]])].into_iter().collect());
+
+    let tab = DashboardTab::Custom {
+        id: 7,
+        providers: crate::tabs::ProviderSet::from_providers([UsageProvider::DeepSeek]),
+    };
+    assert_eq!(state.tab_account_ids(tab), vec![ids[1], ids[2]]);
+
+    assert!(state.move_account(tab, ids[2], -1));
+    assert_eq!(state.tab_account_ids(tab), vec![ids[2], ids[1]]);
+    assert_eq!(
+        state.account_order,
+        vec![ids[0], ids[2], ids[1]],
+        "the unpicked Codex account keeps its slot"
+    );
+}

@@ -137,6 +137,7 @@ impl App {
                 &self.tab_layout,
                 &self.tab_icons,
                 self.tab_editor.as_ref(),
+                &self.dashboard.accounts_by_provider(),
                 self.language,
                 active_theme,
             ))

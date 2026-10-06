@@ -1,7 +1,9 @@
 //! The tab bar the user arranges: which tabs show, in what order, and the
 //! custom tabs that gather several providers' accounts under one name.
 
-use std::{fs, io};
+use std::{collections::HashMap, fs, io};
+
+use usage_monitor_core::accounts::AccountId;
 
 use crate::{DashboardTab, PROVIDER_TABS, UsageProvider, theme::preference_directory};
 
@@ -58,6 +60,8 @@ pub struct CustomTab {
     pub id: u32,
     pub name: String,
     pub providers: ProviderSet,
+    /// Accounts picked one by one, beyond the whole providers above.
+    pub accounts: Vec<AccountId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,7 +195,12 @@ impl TabLayout {
     }
 
     /// Adds a new shown custom tab at the end of the bar and returns it.
-    pub fn add_custom(&mut self, name: &str, providers: ProviderSet) -> DashboardTab {
+    pub fn add_custom(
+        &mut self,
+        name: &str,
+        providers: ProviderSet,
+        accounts: Vec<AccountId>,
+    ) -> DashboardTab {
         let id = self
             .entries
             .iter()
@@ -206,6 +215,7 @@ impl TabLayout {
                 id,
                 name: clean_name(name),
                 providers,
+                accounts,
             }),
             visible: true,
         };
@@ -214,15 +224,33 @@ impl TabLayout {
         tab
     }
 
-    pub fn update_custom(&mut self, id: u32, name: &str, providers: ProviderSet) {
+    pub fn update_custom(
+        &mut self,
+        id: u32,
+        name: &str,
+        providers: ProviderSet,
+        accounts: Vec<AccountId>,
+    ) {
         for entry in &mut self.entries {
             if let TabKind::Custom(custom) = &mut entry.kind
                 && custom.id == id
             {
                 custom.name = clean_name(name);
                 custom.providers = providers;
+                custom.accounts.clone_from(&accounts);
             }
         }
+    }
+
+    /// The accounts each custom tab picked one by one, by tab id.
+    pub fn custom_accounts(&self) -> HashMap<u32, Vec<AccountId>> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match &entry.kind {
+                TabKind::Custom(custom) => Some((custom.id, custom.accounts.clone())),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Deletes a custom tab, keeping at least one tab shown.
@@ -236,7 +264,8 @@ impl TabLayout {
         }
     }
 
-    /// One line per tab: kind, key, shown, providers, name; tab-separated.
+    /// One line per tab: kind, key, shown, providers, name, accounts;
+    /// tab-separated.
     fn to_text(&self) -> String {
         self.entries
             .iter()
@@ -248,7 +277,7 @@ impl TabLayout {
                     }
                     TabKind::Favorites => format!("favorites\t-\t{visible}"),
                     TabKind::Custom(custom) => format!(
-                        "custom\t{}\t{visible}\t{}\t{}",
+                        "custom\t{}\t{visible}\t{}\t{}\t{}",
                         custom.id,
                         custom
                             .providers
@@ -256,7 +285,13 @@ impl TabLayout {
                             .map(UsageProvider::cli_name)
                             .collect::<Vec<_>>()
                             .join(","),
-                        custom.name
+                        custom.name,
+                        custom
+                            .accounts
+                            .iter()
+                            .map(AccountId::to_string)
+                            .collect::<Vec<_>>()
+                            .join(","),
                     ),
                 }
             })
@@ -274,13 +309,19 @@ impl TabLayout {
             let kind = match fields.as_slice() {
                 ["provider", key, ..] => provider_from_cli_name(key).map(TabKind::Provider),
                 ["favorites", ..] => Some(TabKind::Favorites),
-                ["custom", id, _, providers, name, ..] => id.parse().ok().map(|id| {
+                ["custom", id, _, providers, name, rest @ ..] => id.parse().ok().map(|id| {
                     TabKind::Custom(CustomTab {
                         id,
                         name: clean_name(name),
                         providers: ProviderSet::from_providers(
                             providers.split(',').filter_map(provider_from_cli_name),
                         ),
+                        accounts: rest
+                            .first()
+                            .into_iter()
+                            .flat_map(|accounts| accounts.split(','))
+                            .filter_map(|account| account.parse().ok())
+                            .collect(),
                     })
                 }),
                 _ => None,
@@ -375,7 +416,8 @@ mod tests {
         let mut layout = TabLayout::default();
         let prepaid =
             ProviderSet::from_providers([UsageProvider::DeepSeek, UsageProvider::OpenRouter]);
-        layout.add_custom("  Prepaid   balance ", prepaid);
+        let picked = AccountId::new();
+        layout.add_custom("  Prepaid   balance ", prepaid, vec![picked]);
         assert!(layout.toggle_visible(0));
         assert!(layout.move_tab(1, 1));
 
@@ -385,6 +427,7 @@ mod tests {
         assert_eq!(custom.name, "Prepaid bala");
         assert!(custom.providers.contains(UsageProvider::DeepSeek));
         assert!(!custom.providers.contains(UsageProvider::Codex));
+        assert_eq!(custom.accounts, vec![picked]);
     }
 
     #[test]
@@ -416,7 +459,11 @@ mod tests {
         assert_ne!(layout.resolve(codex), codex);
         assert_eq!(layout.tab_showing(UsageProvider::Codex), None);
 
-        let mine = layout.add_custom("Mine", ProviderSet::from_providers([UsageProvider::Codex]));
+        let mine = layout.add_custom(
+            "Mine",
+            ProviderSet::from_providers([UsageProvider::Codex]),
+            Vec::new(),
+        );
         assert_eq!(layout.tab_showing(UsageProvider::Codex), Some(mine));
 
         let DashboardTab::Custom { id, .. } = mine else {

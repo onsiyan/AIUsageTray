@@ -364,6 +364,8 @@ impl App {
         percent_display::set_current(percent_display::load_saved());
         display_options::load_saved();
         let tab_layout = tabs::load_saved();
+        let mut dashboard = dashboard::DashboardState::loading();
+        dashboard.set_custom_tab_accounts(tab_layout.custom_accounts());
         Self {
             window_id: None,
             theme_id,
@@ -391,7 +393,7 @@ impl App {
             popup_visible: false,
             window_focused: false,
             last_focus_lost: None,
-            dashboard: dashboard::DashboardState::loading(),
+            dashboard,
             language: locale::default_language(),
             memory_saver: memory_saver::load_saved(),
             ui_zoom: 1.0,
@@ -653,6 +655,7 @@ enum Message {
     DeleteCustomTab(u32),
     TabEditorNameChanged(String),
     TabEditorToggleProvider(UsageProvider),
+    TabEditorToggleAccount(UsageProvider, usage_monitor_core::accounts::AccountId),
     SaveTabEditor,
     CancelTabEditor,
     ChooseTabIcon,

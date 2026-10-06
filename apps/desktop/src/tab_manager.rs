@@ -9,6 +9,7 @@ use lucide_icons::iced::{
     icon_panels_top_left, icon_pencil, icon_plus, icon_square, icon_square_check, icon_x,
 };
 use tabs::{ProviderSet, TabEntry, TabKind};
+use usage_monitor_core::accounts::AccountId;
 
 /// A custom tab being created (`id: None`) or edited.
 #[derive(Debug, Clone, Default)]
@@ -16,6 +17,8 @@ pub(super) struct TabEditor {
     pub id: Option<u32>,
     pub name: String,
     pub providers: ProviderSet,
+    /// Accounts picked one by one, outside the whole providers.
+    pub accounts: Vec<AccountId>,
     /// The image shown in the editor.
     pub icon: Option<image::Handle>,
     /// `None` keeps the saved image; `Some(None)` removes it.
@@ -25,12 +28,14 @@ pub(super) struct TabEditor {
 
 impl TabEditor {
     fn can_save(&self) -> bool {
-        !self.name.trim().is_empty() && !self.providers.is_empty()
+        !self.name.trim().is_empty() && (!self.providers.is_empty() || !self.accounts.is_empty())
     }
 }
 
 impl App {
-    pub(super) fn save_tab_layout(&self) {
+    pub(super) fn save_tab_layout(&mut self) {
+        self.dashboard
+            .set_custom_tab_accounts(self.tab_layout.custom_accounts());
         if let Err(error) = tabs::save(&self.tab_layout) {
             preview_log(format!("tab layout save failed: {error}"));
         }
@@ -89,6 +94,7 @@ impl App {
                     id: Some(id),
                     name: custom.name.clone(),
                     providers: custom.providers,
+                    accounts: custom.accounts.clone(),
                     icon: self.tab_icons.get(&id).cloned(),
                     ..TabEditor::default()
                 });
@@ -108,8 +114,32 @@ impl App {
                 }
             }
             Message::TabEditorToggleProvider(provider) => {
+                let provider_accounts = self
+                    .dashboard
+                    .tab_account_ids(DashboardTab::Provider(provider));
                 if let Some(editor) = &mut self.tab_editor {
+                    // The whole provider replaces, or clears, its picked accounts.
                     editor.providers.toggle(provider);
+                    editor.accounts.retain(|id| !provider_accounts.contains(id));
+                }
+            }
+            Message::TabEditorToggleAccount(provider, account_id) => {
+                let provider_accounts = self
+                    .dashboard
+                    .tab_account_ids(DashboardTab::Provider(provider));
+                if let Some(editor) = &mut self.tab_editor {
+                    if editor.providers.contains(provider) {
+                        // Leaving one account out of a whole provider keeps
+                        // the provider's other accounts.
+                        editor.providers.toggle(provider);
+                        editor
+                            .accounts
+                            .extend(provider_accounts.into_iter().filter(|id| *id != account_id));
+                    } else if editor.accounts.contains(&account_id) {
+                        editor.accounts.retain(|id| *id != account_id);
+                    } else {
+                        editor.accounts.push(account_id);
+                    }
                 }
             }
             Message::SaveTabEditor => {
@@ -118,14 +148,22 @@ impl App {
                 };
                 let tab = match editor.id {
                     Some(id) => {
-                        self.tab_layout
-                            .update_custom(id, &editor.name, editor.providers);
+                        self.tab_layout.update_custom(
+                            id,
+                            &editor.name,
+                            editor.providers,
+                            editor.accounts.clone(),
+                        );
                         DashboardTab::Custom {
                             id,
                             providers: editor.providers,
                         }
                     }
-                    None => self.tab_layout.add_custom(&editor.name, editor.providers),
+                    None => self.tab_layout.add_custom(
+                        &editor.name,
+                        editor.providers,
+                        editor.accounts.clone(),
+                    ),
                 };
                 self.save_tab_layout();
                 if let (DashboardTab::Custom { id, .. }, Some(change)) = (tab, editor.icon_change) {
@@ -210,11 +248,12 @@ pub(super) fn tab_manager_dialog(
     layout: &tabs::TabLayout,
     icons: &std::collections::HashMap<u32, image::Handle>,
     editor: Option<&TabEditor>,
+    accounts: &[(UsageProvider, AccountId, String)],
     language: locale::Language,
     active_theme: &'static ThemeDefinition,
 ) -> Element<'static, Message> {
     let content = match editor {
-        Some(editor) => tab_editor_content(editor, language, active_theme),
+        Some(editor) => tab_editor_content(editor, accounts, language, active_theme),
         None => tab_list_content(layout, icons, language, active_theme),
     };
     container(content)
@@ -390,6 +429,7 @@ fn tab_row(
 
 fn tab_editor_content(
     editor: &TabEditor,
+    accounts: &[(UsageProvider, AccountId, String)],
     language: locale::Language,
     active_theme: &'static ThemeDefinition,
 ) -> Element<'static, Message> {
@@ -412,24 +452,13 @@ fn tab_editor_content(
             account_key_input_style(framework_theme, status, active_theme)
         });
 
-    let providers = PROVIDER_TABS
-        .iter()
-        .map(|tab| {
-            let checked = editor.providers.contains(tab.provider);
-            let check: Element<'static, Message> = if checked {
-                icon_square_check::<Theme>()
-                    .size(17)
-                    .color(active_theme.colors.text())
-                    .into()
-            } else {
-                icon_square::<Theme>()
-                    .size(17)
-                    .color(active_theme.colors.muted_text())
-                    .into()
-            };
+    let mut providers = Vec::new();
+    for tab in PROVIDER_TABS.iter() {
+        let checked = editor.providers.contains(tab.provider);
+        providers.push(
             button(
                 row![
-                    check,
+                    check_box(checked, active_theme),
                     image(provider_logo_handle(
                         tab.provider,
                         active_theme.colors.is_light
@@ -439,7 +468,7 @@ fn tab_editor_content(
                     .content_fit(ContentFit::Contain),
                     text(tab.label)
                         .size(typography::LABEL_SIZE)
-                        .font(typography::MEDIUM)
+                        .font(typography::EMPHASIS)
                         .color(active_theme.colors.text())
                         .width(Fill),
                 ]
@@ -463,9 +492,60 @@ fn tab_editor_content(
                 style.shadow = Shadow::default();
                 style
             })
-            .into()
-        })
-        .collect::<Vec<_>>();
+            .into(),
+        );
+        // Each account can be picked on its own; a whole provider shows all
+        // of its accounts picked.
+        for (_, account_id, name) in accounts
+            .iter()
+            .filter(|(provider, ..)| *provider == tab.provider)
+        {
+            let picked = checked || editor.accounts.contains(account_id);
+            providers.push(
+                button(
+                    row![
+                        check_box(picked, active_theme),
+                        text(name.clone())
+                            .size(typography::METADATA_SIZE)
+                            .font(typography::MEDIUM)
+                            .color(if picked {
+                                active_theme.colors.text()
+                            } else {
+                                active_theme.colors.muted_text()
+                            })
+                            .wrapping(text::Wrapping::None)
+                            .width(Fill),
+                    ]
+                    .spacing(9)
+                    .align_y(Alignment::Center),
+                )
+                .on_press(Message::TabEditorToggleAccount(tab.provider, *account_id))
+                .width(Fill)
+                .height(28)
+                .padding(iced::Padding {
+                    top: 2.0,
+                    right: 8.0,
+                    bottom: 2.0,
+                    left: 37.0,
+                })
+                .style(move |framework_theme: &Theme, status| {
+                    let mut style = button::text(framework_theme, status);
+                    style.background =
+                        matches!(status, button::Status::Hovered | button::Status::Pressed)
+                            .then(|| Background::Color(active_theme.colors.hover()));
+                    style.text_color = active_theme.colors.text();
+                    style.border = Border {
+                        radius: 7.0.into(),
+                        ..Border::default()
+                    };
+                    style.shadow = Shadow::default();
+                    style
+                })
+                .into(),
+            );
+        }
+    }
+    let list_height = (providers.len() as f32 * 31.0).min(360.0);
 
     let mut image_row = row![
         container(custom_tab_icon(editor.icon.as_ref(), 22.0, active_theme))
@@ -520,7 +600,14 @@ fn tab_editor_content(
             locale::text(language, locale::Text::TabProviders),
             active_theme
         ),
-        column(providers).spacing(2),
+        crate::smooth_scroll::smooth_scroll(
+            "tab-editor",
+            scrollable(column(providers).spacing(2).width(Fill))
+                .direction(iced::widget::scrollable::Direction::Vertical(
+                    iced::widget::scrollable::Scrollbar::hidden(),
+                ))
+                .height(Length::Fixed(list_height)),
+        ),
         row![
             Space::new().width(Fill).height(1),
             account_dialog_button(
@@ -563,6 +650,20 @@ pub(super) fn custom_tab_icon(
             .size(size - 3.0)
             .color(active_theme.colors.text())
             .into(),
+    }
+}
+
+fn check_box(checked: bool, active_theme: &'static ThemeDefinition) -> Element<'static, Message> {
+    if checked {
+        icon_square_check::<Theme>()
+            .size(17)
+            .color(active_theme.colors.text())
+            .into()
+    } else {
+        icon_square::<Theme>()
+            .size(17)
+            .color(active_theme.colors.muted_text())
+            .into()
     }
 }
 
