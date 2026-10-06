@@ -63,6 +63,11 @@ All notable changes to this project are documented here. The format follows
   (api.z.ai or open.bigmodel.cn) is found when the account is added. The tab
   shows the 5-hour and weekly token quotas and the monthly MCP quota, and
   credit plans note whether peak hours apply.
+- xAI API accounts, added from a Management API key and team ID (desktop
+  dialog, or `usage account add xai` with `XAI_MANAGEMENT_API_KEY` and
+  `XAI_TEAM_ID`, or both on stdin). The tab shows the prepaid credit balance
+  with today's and the last 30 days' spend; the balance still shows when the
+  spend history is unavailable.
 - `usage-monitor-cli` for people and agents, with stable account references
   and JSON output.
 

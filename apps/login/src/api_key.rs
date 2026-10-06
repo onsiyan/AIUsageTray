@@ -17,12 +17,12 @@ use std::{
     time::Duration,
 };
 use usage_monitor_core::{
-    accounts::{AccountRecord, AccountStore, KIMI, ZAI},
+    accounts::{AccountRecord, AccountStore, KIMI, XAI, ZAI},
     auth::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
         StoredAuthMaterialProvider,
     },
-    providers::{registry::ProviderRegistryConfig, zai},
+    providers::{registry::ProviderRegistryConfig, xai, zai},
     refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
     runtime::UsageRuntime,
     storage::{SqliteStore, default_accounts_database_path},
@@ -47,6 +47,8 @@ pub struct ApiKeyProvider {
 pub struct SecondValue {
     pub variable: &'static str,
     pub name: &'static str,
+    /// Rejects a value that cannot be right before anything is saved.
+    pub is_valid: fn(&str) -> bool,
 }
 
 pub const KIMI_CODE: ApiKeyProvider = ApiKeyProvider {
@@ -65,6 +67,19 @@ pub const ZAI_CODING_PLAN: ApiKeyProvider = ApiKeyProvider {
     key_variable: "Z_AI_API_KEY",
     second: None,
     zai_region: true,
+};
+
+pub const XAI_MANAGEMENT: ApiKeyProvider = ApiKeyProvider {
+    command: "xai",
+    provider_id: XAI,
+    name: "xAI",
+    key_variable: "XAI_MANAGEMENT_API_KEY",
+    second: Some(SecondValue {
+        variable: "XAI_TEAM_ID",
+        name: "team ID",
+        is_valid: xai::valid_team_id,
+    }),
+    zai_region: false,
 };
 
 #[derive(Debug, Default)]
@@ -108,6 +123,12 @@ pub async fn run(provider: &ApiKeyProvider) -> Result<(), Box<dyn std::error::Er
             };
         (api_key, second)
     };
+
+    if let (Some(rule), Some(value)) = (&provider.second, &second)
+        && !(rule.is_valid)(value)
+    {
+        return Err(format!("The {} `{value}` is not valid", rule.name).into());
+    }
 
     let transport = Arc::new(ReqwestUsageHttpTransport::new(Duration::from_secs(45))?);
     if provider.zai_region {

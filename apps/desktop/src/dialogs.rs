@@ -393,11 +393,14 @@ pub(super) fn api_key_dialog<'a>(
     active_theme: &'static ThemeDefinition,
 ) -> Element<'a, Message> {
     let is_cursor = provider == UsageProvider::Cursor;
+    let is_xai = provider == UsageProvider::Xai;
     let api_key_input = text_input(
         locale::text(
             language,
             if is_cursor {
                 locale::Text::CursorSession
+            } else if is_xai {
+                locale::Text::XaiManagementKey
             } else {
                 locale::Text::OpenRouterApiKey
             },
@@ -414,13 +417,21 @@ pub(super) fn api_key_dialog<'a>(
         account_key_input_style(framework_theme, status, active_theme)
     });
 
-    // Only OpenRouter has a second, optional key (for Activity).
-    let management_key_input = (provider == UsageProvider::OpenRouter).then(|| {
+    // OpenRouter has a second, optional key (for Activity); xAI needs the
+    // team the Management key reads, which is not a secret.
+    let management_key_input = (provider == UsageProvider::OpenRouter || is_xai).then(|| {
         text_input(
-            locale::text(language, locale::Text::OpenRouterManagementKey),
+            locale::text(
+                language,
+                if is_xai {
+                    locale::Text::XaiTeamId
+                } else {
+                    locale::Text::OpenRouterManagementKey
+                },
+            ),
             management_key,
         )
-        .secure(true)
+        .secure(!is_xai)
         .size(typography::LABEL_SIZE)
         .font(typography::MEDIUM)
         .padding([8, 10])
@@ -435,10 +446,13 @@ pub(super) fn api_key_dialog<'a>(
         UsageProvider::Cursor => locale::text(language, locale::Text::CursorTitle),
         UsageProvider::Kimi => locale::text(language, locale::Text::KimiTitle),
         UsageProvider::Zai => locale::text(language, locale::Text::ZaiTitle),
+        UsageProvider::Xai => locale::text(language, locale::Text::XaiTitle),
         _ => locale::text(language, locale::Text::OpenRouterTitle),
     };
     let hint = if is_cursor {
         locale::Text::CursorSessionHint
+    } else if is_xai {
+        locale::Text::XaiHint
     } else {
         locale::Text::OpenRouterCredentialHint
     };
@@ -453,7 +467,8 @@ pub(super) fn api_key_dialog<'a>(
         )
     });
 
-    let submit_enabled = !api_key.trim().is_empty();
+    let submit_enabled =
+        !api_key.trim().is_empty() && (!is_xai || !management_key.trim().is_empty());
     container(
         column![
             text(title)

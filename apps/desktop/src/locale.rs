@@ -34,6 +34,14 @@ pub enum Text {
     ZaiTitle,
     PeakRate,
     OffPeakRate,
+    XaiTitle,
+    XaiHint,
+    XaiManagementKey,
+    XaiTeamId,
+    Balance,
+    Today,
+    Last30Days,
+    Last30DaysPartial,
     CursorSession,
     CursorSessionHint,
     OpenCursor,
@@ -182,6 +190,16 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, ZaiTitle) => "Add z.ai account",
         (English, PeakRate) => "Peak hours: quota used faster",
         (English, OffPeakRate) => "Off-peak hours: normal quota rate",
+        (English, XaiTitle) => "Add xAI account",
+        (English, XaiHint) => {
+            "Use a Management key from console.x.ai (Settings > Management Keys) and its team ID. Keys are passed securely and are never placed in command-line arguments."
+        }
+        (English, XaiManagementKey) => "Management API key",
+        (English, XaiTeamId) => "Team ID",
+        (English, Balance) => "Balance",
+        (English, Today) => "Today",
+        (English, Last30Days) => "Last 30 days",
+        (English, Last30DaysPartial) => "Last 30 days (partial)",
         (English, CursorSession) => "WorkosCursorSessionToken cookie",
         (English, CursorSessionHint) => {
             "The Cursor app is not signed in on this computer. Sign in to it and try again, or sign in at cursor.com and paste the WorkosCursorSessionToken cookie (browser developer tools → Application → Cookies)."
@@ -321,6 +339,16 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (Arabic, ZaiTitle) => "إضافة حساب z.ai",
         (Arabic, PeakRate) => "وقت الذروة: يُستهلك الحد أسرع",
         (Arabic, OffPeakRate) => "خارج الذروة: استهلاك الحد عادي",
+        (Arabic, XaiTitle) => "إضافة حساب xAI",
+        (Arabic, XaiHint) => {
+            "استخدم مفتاح إدارة من console.x.ai (Settings > Management Keys) مع معرّف الفريق. تُمرَّر المفاتيح بأمان ولا توضع في وسائط سطر الأوامر."
+        }
+        (Arabic, XaiManagementKey) => "مفتاح Management API",
+        (Arabic, XaiTeamId) => "معرّف الفريق (Team ID)",
+        (Arabic, Balance) => "الرصيد",
+        (Arabic, Today) => "اليوم",
+        (Arabic, Last30Days) => "آخر 30 يومًا",
+        (Arabic, Last30DaysPartial) => "آخر 30 يومًا (جزئي)",
         (Arabic, CursorSession) => "ملف تعريف الارتباط WorkosCursorSessionToken",
         (Arabic, CursorSessionHint) => {
             "تطبيق Cursor غير مسجل الدخول على هذا الجهاز. سجّل الدخول فيه وأعد المحاولة، أو سجّل الدخول في cursor.com والصق ملف تعريف الارتباط WorkosCursorSessionToken (أدوات المطور في المتصفح ← Application ← Cookies)."

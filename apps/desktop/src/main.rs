@@ -131,6 +131,7 @@ fn main() -> iced::Result {
                     Ok("cursor") => Some(Message::ChooseAccountProvider(UsageProvider::Cursor)),
                     Ok("kimi") => Some(Message::ChooseAccountProvider(UsageProvider::Kimi)),
                     Ok("zai") => Some(Message::ChooseAccountProvider(UsageProvider::Zai)),
+                    Ok("xai") => Some(Message::ChooseAccountProvider(UsageProvider::Xai)),
                     Ok("openrouter") => {
                         Some(Message::ChooseAccountProvider(UsageProvider::OpenRouter))
                     }
@@ -205,6 +206,7 @@ enum UsageProvider {
     Cursor,
     Kimi,
     Zai,
+    Xai,
 }
 
 impl UsageProvider {
@@ -220,6 +222,7 @@ impl UsageProvider {
             Self::Cursor => "cursor",
             Self::Kimi => "kimi",
             Self::Zai => "zai",
+            Self::Xai => "xai",
         }
     }
 
@@ -235,6 +238,7 @@ impl UsageProvider {
             Self::Cursor => "Cursor",
             Self::Kimi => "Kimi Code",
             Self::Zai => "z.ai",
+            Self::Xai => "xAI",
         }
     }
 
@@ -242,7 +246,7 @@ impl UsageProvider {
     const fn uses_api_key(self) -> bool {
         matches!(
             self,
-            Self::OpenRouter | Self::DeepSeek | Self::Kimi | Self::Zai
+            Self::OpenRouter | Self::DeepSeek | Self::Kimi | Self::Zai | Self::Xai
         )
     }
 }
@@ -349,10 +353,14 @@ const PROVIDER_TABS: &[ProviderTab] = &[
         provider: UsageProvider::Zai,
         label: "z.ai",
     },
+    ProviderTab {
+        provider: UsageProvider::Xai,
+        label: "xAI",
+    },
 ];
 
-static PROVIDER_LOGOS: OnceLock<[image::Handle; 10]> = OnceLock::new();
-static LIGHT_THEME_PROVIDER_LOGOS: OnceLock<[image::Handle; 5]> = OnceLock::new();
+static PROVIDER_LOGOS: OnceLock<[image::Handle; 11]> = OnceLock::new();
+static LIGHT_THEME_PROVIDER_LOGOS: OnceLock<[image::Handle; 6]> = OnceLock::new();
 
 struct App {
     window_id: Option<window::Id>,

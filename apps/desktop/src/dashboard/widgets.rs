@@ -164,6 +164,10 @@ pub(super) fn metric_display_name(metric: &UsageMetric, language: Language) -> S
         "on_demand.yours" => locale::text(language, Text::YourOnDemand).to_owned(),
         "rate.peak" => locale::text(language, Text::PeakRate).to_owned(),
         "rate.off_peak" => locale::text(language, Text::OffPeakRate).to_owned(),
+        "balance" => locale::text(language, Text::Balance).to_owned(),
+        "spend.today" => locale::text(language, Text::Today).to_owned(),
+        "spend.30d" => locale::text(language, Text::Last30Days).to_owned(),
+        "spend.30d.partial" => locale::text(language, Text::Last30DaysPartial).to_owned(),
         _ => metric.name.clone(),
     }
 }

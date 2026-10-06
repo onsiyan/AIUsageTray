@@ -415,6 +415,9 @@ impl App {
                     return Task::none();
                 };
                 let management_key = self.management_key_input.trim().to_owned();
+                if provider == UsageProvider::Xai && management_key.is_empty() {
+                    return Task::none();
+                }
                 self.api_key_input.clear();
                 self.management_key_input.clear();
                 self.credentials_provider = None;

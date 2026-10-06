@@ -14,6 +14,7 @@ pub(super) enum AccountAddProvider {
     Cursor,
     Kimi,
     Zai,
+    Xai,
 }
 
 impl AccountAddProvider {
@@ -29,6 +30,7 @@ impl AccountAddProvider {
             "cursor" => Some(Self::Cursor),
             "kimi" | "kimicode" => Some(Self::Kimi),
             "zai" | "z.ai" | "glm" => Some(Self::Zai),
+            "xai" | "x.ai" => Some(Self::Xai),
             _ => None,
         }
     }
@@ -45,6 +47,7 @@ impl AccountAddProvider {
             Self::Cursor => CURSOR,
             Self::Kimi => KIMI,
             Self::Zai => ZAI,
+            Self::Xai => XAI,
         }
     }
 
@@ -61,6 +64,7 @@ impl AccountAddProvider {
             Self::Cursor => "cursor",
             Self::Kimi => "kimi",
             Self::Zai => "zai",
+            Self::Xai => "xai",
         }
     }
 
@@ -72,6 +76,7 @@ impl AccountAddProvider {
             Self::DeepSeek => Some("DEEPSEEK_API_KEY"),
             Self::Kimi => Some("KIMI_CODE_API_KEY"),
             Self::Zai => Some("Z_AI_API_KEY"),
+            Self::Xai => Some("XAI_MANAGEMENT_API_KEY"),
             _ => None,
         }
     }
@@ -92,6 +97,8 @@ const API_KEY_ENVIRONMENT: &[&str] = &[
     "DEEPSEEK_API_KEY",
     "KIMI_CODE_API_KEY",
     "Z_AI_API_KEY",
+    "XAI_MANAGEMENT_API_KEY",
+    "XAI_TEAM_ID",
 ];
 
 /// The sign-in helper shipped next to the CLI.
@@ -124,7 +131,8 @@ pub(super) fn build_account_add_arguments(
         AccountAddProvider::OpenRouter
         | AccountAddProvider::DeepSeek
         | AccountAddProvider::Kimi
-        | AccountAddProvider::Zai => {
+        | AccountAddProvider::Zai
+        | AccountAddProvider::Xai => {
             // Each explicit add gets its own credential slot; a repeated label
             // must not silently replace another key.
             result.push("--new".into());
@@ -192,7 +200,7 @@ pub(super) async fn execute_account_add(
         return Err(CliFailure::new(
             "unsupported_provider",
             format!(
-                "Unsupported provider `{}`. Choose codex, claude, openrouter, opencode-go, antigravity, deepseek, copilot, cursor, kimi, or zai.",
+                "Unsupported provider `{}`. Choose codex, claude, openrouter, opencode-go, antigravity, deepseek, copilot, cursor, kimi, zai, or xai.",
                 arguments.provider
             ),
             2,
@@ -216,7 +224,7 @@ pub(super) async fn execute_account_add(
     {
         return Err(CliFailure::new(
             "invalid_arguments",
-            "Stdin credential options can only be used with `account add openrouter`, `account add deepseek`, `account add kimi`, `account add zai`, `account add copilot`, or `account add cursor`.",
+            "Stdin credential options can only be used with `account add openrouter`, `account add deepseek`, `account add kimi`, `account add zai`, `account add xai`, `account add copilot`, or `account add cursor`.",
             2,
         ));
     }
@@ -268,6 +276,7 @@ pub(super) async fn execute_account_add(
             AccountAddProvider::DeepSeek => variable.starts_with("DEEPSEEK_"),
             AccountAddProvider::Kimi => variable.starts_with("KIMI_"),
             AccountAddProvider::Zai => variable.starts_with("Z_AI_"),
+            AccountAddProvider::Xai => variable.starts_with("XAI_"),
             _ => false,
         };
         if !belongs_to_provider {

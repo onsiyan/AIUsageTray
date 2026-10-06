@@ -14,6 +14,7 @@ use super::{
     openai::WhamUsageAdapter,
     opencode_go::{OpenCodeGoSourceMode, OpenCodeGoUsageAdapter},
     openrouter::OpenRouterUsageAdapter,
+    xai::XaiUsageAdapter,
     zai::ZaiUsageAdapter,
 };
 use crate::{
@@ -170,6 +171,11 @@ impl ProviderRegistry {
             Arc::clone(&auth),
         )?) as Arc<dyn UsageAdapter>;
 
+        let xai = Arc::new(XaiUsageAdapter::new(
+            Arc::clone(&transport),
+            Arc::clone(&auth),
+        )?) as Arc<dyn UsageAdapter>;
+
         Self::from_adapters([
             openai,
             claude,
@@ -181,6 +187,7 @@ impl ProviderRegistry {
             cursor,
             kimi,
             zai,
+            xai,
         ])
     }
 
@@ -240,7 +247,7 @@ mod tests {
     use crate::{
         accounts::{
             ANTIGRAVITY, AccountRecord, CLAUDE, COPILOT, CURSOR, DEEPSEEK, KIMI, OPENCODE_GO,
-            OPENROUTER, ZAI,
+            OPENROUTER, XAI, ZAI,
         },
         transport::TransportError,
         usage::{UsageAdapter, UsageProbeResult},
@@ -304,9 +311,10 @@ mod tests {
         let registry =
             ProviderRegistry::from_dependencies(transport, auth, ProviderRegistryConfig::default())
                 .unwrap();
-        assert_eq!(registry.len(), 10);
+        assert_eq!(registry.len(), 11);
         assert!(registry.contains(KIMI));
         assert!(registry.contains(ZAI));
+        assert!(registry.contains(XAI));
         assert!(registry.contains(COPILOT));
         assert!(registry.contains(CURSOR));
         assert!(registry.contains(DEEPSEEK));
