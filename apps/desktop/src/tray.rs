@@ -237,9 +237,62 @@ pub(super) fn monitor_work_area(_: tray_icon::Rect) -> Option<PhysicalWorkArea> 
     None
 }
 
+/// The display scaling (1.0 = 100%) of the screen the tray icon is on.
+#[cfg(target_os = "windows")]
+pub(super) fn monitor_scale_factor(rect: tray_icon::Rect) -> Option<f32> {
+    use windows_sys::Win32::{
+        Foundation::POINT,
+        Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromPoint},
+        UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
+    };
+
+    let center = POINT {
+        x: (rect.position.x + f64::from(rect.size.width) / 2.0).round() as i32,
+        y: (rect.position.y + f64::from(rect.size.height) / 2.0).round() as i32,
+    };
+    let monitor = unsafe { MonitorFromPoint(center, MONITOR_DEFAULTTONEAREST) };
+    if monitor.is_null() {
+        return None;
+    }
+    let (mut dpi_x, mut dpi_y) = (0u32, 0u32);
+    let result = unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) };
+    (result == 0 && dpi_y > 0).then(|| dpi_y as f32 / 96.0)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(super) fn monitor_scale_factor(_: tray_icon::Rect) -> Option<f32> {
+    None
+}
+
+/// Share of the screen's usable height the popup aims to fill. A laptop
+/// screen stays at the designed size; large screens enlarge it.
+const POPUP_HEIGHT_SHARE: f32 = 0.72;
+const MAX_POPUP_ZOOM: f32 = 2.0;
+
+/// How much to enlarge the popup on a screen whose usable height is
+/// `work_area_height` (in Windows' scaled units). Never shrinks it below the
+/// designed size, and keeps steps of 1/20 so text renders crisply.
+pub(super) fn popup_zoom(work_area_height: f32) -> f32 {
+    if !work_area_height.is_finite() || work_area_height <= 0.0 {
+        return 1.0;
+    }
+    let zoom = (work_area_height * POPUP_HEIGHT_SHARE / WINDOW_HEIGHT).clamp(1.0, MAX_POPUP_ZOOM);
+    (zoom * 20.0).floor() / 20.0
+}
+
+/// A fixed zoom for previewing other screen sizes during development.
+pub(super) fn preview_zoom() -> Option<f32> {
+    std::env::var("USAGE_UI_PREVIEW_ZOOM")
+        .ok()?
+        .parse::<f32>()
+        .ok()
+        .filter(|zoom| (1.0..=MAX_POPUP_ZOOM).contains(zoom))
+}
+
 pub(super) fn popup_position(
     rect: tray_icon::Rect,
     scale_factor: f32,
+    zoom: f32,
     work_area: PhysicalWorkArea,
 ) -> Point {
     let scale_factor = scale_factor.max(1.0);
@@ -247,8 +300,8 @@ pub(super) fn popup_position(
     let icon_top = rect.position.y as f32;
     let icon_width = rect.size.width as f32;
     let icon_height = rect.size.height as f32;
-    let width = WINDOW_WIDTH * scale_factor;
-    let height = WINDOW_HEIGHT * scale_factor;
+    let width = WINDOW_WIDTH * zoom * scale_factor;
+    let height = WINDOW_HEIGHT * zoom * scale_factor;
     let x = (icon_left + icon_width / 2.0 - width / 2.0).clamp(
         work_area.left,
         (work_area.right - width).max(work_area.left),

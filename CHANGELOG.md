@@ -28,6 +28,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The popup scales with the screen it opens on: on large screens it grows to
+  about 72% of the usable height (at most double size), while laptop screens
+  keep the designed size.
 - Resets within a day show their local clock time as well as the countdown
   ("Resets at 7:25 PM · in 4h 41m", or "tomorrow at ...").
 - Emails, reset times, and reset-credit expiry times use IBM Plex Sans Medium,

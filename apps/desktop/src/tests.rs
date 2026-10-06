@@ -234,6 +234,7 @@ fn popup_stays_inside_work_area_above_bottom_taskbar() {
             size: PhysicalSize::new(48, 87),
         },
         1.5,
+        1.0,
         PhysicalWorkArea {
             left: 0.0,
             top: 0.0,
@@ -246,6 +247,44 @@ fn popup_stays_inside_work_area_above_bottom_taskbar() {
     assert!((position.y - (1102.0 - WINDOW_HEIGHT * 1.5) / 1.5).abs() < 0.01);
     assert!(position.x + WINDOW_WIDTH <= 1920.0 / 1.5);
     assert!(position.y + WINDOW_HEIGHT <= 1102.0 / 1.5);
+}
+
+#[test]
+fn popup_grows_on_large_screens_and_keeps_its_size_on_a_laptop() {
+    // 14" laptop, 1920x1200 at 150%: 735 units of usable height.
+    assert_eq!(popup_zoom(735.0), 1.0);
+    // 27" 1440p at 100%.
+    assert_eq!(popup_zoom(1392.0), 1.45);
+    // 27" 1080p at 100%.
+    assert_eq!(popup_zoom(1032.0), 1.05);
+    // 4K at 100% would be huge; capped.
+    assert_eq!(popup_zoom(2112.0), 2.0);
+    assert_eq!(popup_zoom(0.0), 1.0);
+    assert_eq!(popup_zoom(f32::NAN), 1.0);
+}
+
+#[test]
+fn enlarged_popup_still_fits_its_screen() {
+    let work_area = PhysicalWorkArea {
+        left: 0.0,
+        top: 0.0,
+        right: 2560.0,
+        bottom: 1392.0,
+    };
+    let zoom = popup_zoom(1392.0);
+    let position = popup_position(
+        tray_icon::Rect {
+            position: PhysicalPosition::new(2400.0, 1400.0),
+            size: PhysicalSize::new(24, 40),
+        },
+        1.0,
+        zoom,
+        work_area,
+    );
+
+    assert!(position.x + WINDOW_WIDTH * zoom <= 2560.0);
+    assert!(position.y >= 0.0);
+    assert!(position.y + WINDOW_HEIGHT * zoom <= 1392.0);
 }
 
 #[test]
@@ -273,6 +312,7 @@ fn popup_flips_below_top_taskbar_and_clamps_to_work_area() {
             size: PhysicalSize::new(24, 24),
         },
         1.5,
+        1.0,
         PhysicalWorkArea {
             left: 0.0,
             top: 87.0,

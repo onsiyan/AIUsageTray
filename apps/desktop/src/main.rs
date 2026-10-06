@@ -113,6 +113,7 @@ fn main() -> iced::Result {
     )
     .title("Usage Monitor")
     .theme(|_: &App, _: window::Id| Theme::Dark)
+    .scale_factor(|app: &App, _: window::Id| app.ui_zoom)
     .style(|_, theme| {
         // Let the rounded frame reveal the desktop outside its opaque bounds.
         let mut style = iced::theme::default(theme);
@@ -282,6 +283,8 @@ struct App {
     dashboard: dashboard::DashboardState,
     language: locale::Language,
     memory_saver: bool,
+    /// How much the popup is enlarged on the screen it is shown on.
+    ui_zoom: f32,
 }
 
 impl App {
@@ -313,6 +316,7 @@ impl App {
             dashboard: dashboard::DashboardState::loading(),
             language: locale::default_language(),
             memory_saver: memory_saver::load_saved(),
+            ui_zoom: 1.0,
         }
     }
 
@@ -409,11 +413,19 @@ impl App {
                     tray_rect.unwrap_or_else(|| taskbar_edge_anchor(monitor_size, scale_factor));
                 let work_area = monitor_work_area(tray_rect)
                     .unwrap_or_else(|| full_monitor_work_area(monitor_size, scale_factor));
-                let position = popup_position(tray_rect, scale_factor, work_area);
+                let monitor_scale = monitor_scale_factor(tray_rect).unwrap_or(scale_factor);
+                let zoom = preview_zoom()
+                    .unwrap_or_else(|| popup_zoom((work_area.bottom - work_area.top) / monitor_scale));
+                let position = popup_position(tray_rect, scale_factor, zoom, work_area);
                 preview_log(format!(
-                    "show popup: scale={scale_factor} work_area={work_area:?} position={position:?}"
+                    "show popup: scale={scale_factor} zoom={zoom} work_area={work_area:?} position={position:?}"
                 ));
-                window::move_to::<Message>(window_id, position)
+                Task::done(Message::SetUiZoom(zoom))
+                    .chain(window::resize::<Message>(
+                        window_id,
+                        Size::new(WINDOW_WIDTH * zoom, WINDOW_HEIGHT * zoom),
+                    ))
+                    .chain(window::move_to::<Message>(window_id, position))
                     .chain(window::set_mode::<Message>(
                         window_id,
                         window::Mode::Windowed,
@@ -545,6 +557,7 @@ enum Message {
     SelectTheme(ThemeId),
     SelectPercentDisplay(PercentDisplay),
     SetMemorySaver(bool),
+    SetUiZoom(f32),
     SwitchCodexDesktopAccount(usage_monitor_core::accounts::AccountId),
     SwitchAntigravityAppAccount(usage_monitor_core::accounts::AccountId),
     CodexDesktopSwitchFinished(usage_monitor_core::accounts::AccountId, Result<(), String>),

@@ -471,6 +471,10 @@ impl App {
                 self.dashboard.finish_codex_switch(account_id, result);
                 Task::none()
             }
+            Message::SetUiZoom(zoom) => {
+                self.ui_zoom = zoom;
+                Task::none()
+            }
             Message::SetMemorySaver(enabled) => {
                 self.memory_saver = enabled;
                 if let Err(error) = memory_saver::save(enabled) {
