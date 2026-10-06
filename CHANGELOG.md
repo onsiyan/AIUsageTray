@@ -70,6 +70,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Opening the popup repeatedly no longer gets accounts rate limited (HTTP 429,
+  seen with Claude): automatic refreshes skip accounts read in the last 45
+  seconds, and an account answered with 429 is left alone for at least 3
+  minutes, or as long as the provider asks.
+- A reading that could not be updated says so and shows when it was taken,
+  instead of only "This usage reading is stale".
 - Desktop tests no longer overwrite the saved account order.
 - Scrolling stuttered while a refresh ran: the spinning refresh icon rebuilt
   the whole window 20 times a second. The icon now spins by redrawing only

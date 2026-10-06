@@ -14,7 +14,7 @@ pub(super) fn append_snapshot_rows(
 ) {
     if snapshot.is_stale {
         rows.push(warning_line(
-            locale::text(language, Text::StaleUsage),
+            &stale_label(snapshot.observed_at_utc, Utc::now(), language),
             theme,
         ));
     }

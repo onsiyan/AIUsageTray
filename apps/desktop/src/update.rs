@@ -206,7 +206,9 @@ impl App {
                 self.dashboard.clear_any_hovered_account_name();
                 Task::none()
             }
-            Message::RefreshAllUsage => self.start_usage_refresh(),
+            Message::RefreshAllUsage => {
+                self.start_usage_refresh(usage_refresh::RefreshTrigger::Manual)
+            }
             Message::UsageAnimationTick => {
                 self.dashboard.advance_usage_animation(Instant::now());
                 Task::none()
@@ -215,7 +217,7 @@ impl App {
                 // A window reset while the popup was open: show it as unused
                 // right away and fetch the provider's new reading.
                 if self.dashboard.clear_elapsed_resets() {
-                    self.start_usage_refresh()
+                    self.start_usage_refresh(usage_refresh::RefreshTrigger::Automatic)
                 } else {
                     Task::none()
                 }

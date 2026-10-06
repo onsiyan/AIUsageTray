@@ -1,5 +1,83 @@
+use std::{
+    collections::HashMap,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
+
 use crate::{UsageProvider, dashboard::AccountUsageEntry};
 use usage_monitor_core::accounts::{AccountId, AccountRecord};
+
+/// Why a refresh runs. Opening the popup refreshes on its own and is paced;
+/// the refresh button is the user asking, so it skips the pacing interval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshTrigger {
+    Automatic,
+    Manual,
+}
+
+/// An account read this recently is not contacted again by an automatic
+/// refresh; its last reading is shown instead.
+const MIN_AUTOMATIC_INTERVAL: Duration = Duration::from_secs(45);
+/// How long an account is left alone after its provider answers 429, unless
+/// the provider asks for longer.
+const RATE_LIMIT_PAUSE: Duration = Duration::from_secs(3 * 60);
+
+/// When each account may be contacted again. Providers such as Claude rate
+/// limit their usage endpoint; opening the popup a few times in a row used to
+/// send a request per account each time and get answered with 429.
+#[derive(Debug, Default, Clone, Copy)]
+struct AccountPace {
+    last_attempt: Option<Instant>,
+    paused_until: Option<Instant>,
+}
+
+impl AccountPace {
+    fn may_refresh(&self, trigger: RefreshTrigger, now: Instant) -> bool {
+        let paused = self.paused_until.is_some_and(|until| now < until);
+        let recent = trigger == RefreshTrigger::Automatic
+            && self
+                .last_attempt
+                .is_some_and(|last| now.saturating_duration_since(last) < MIN_AUTOMATIC_INTERVAL);
+        !paused && !recent
+    }
+
+    /// Records a request; `rate_limited` holds the provider's requested wait
+    /// when it answered 429.
+    fn record(&mut self, now: Instant, rate_limited: Option<Option<Duration>>) {
+        self.last_attempt = Some(now);
+        self.paused_until = rate_limited.map(|retry_after| {
+            now + retry_after.map_or(RATE_LIMIT_PAUSE, |wait| wait.max(RATE_LIMIT_PAUSE))
+        });
+    }
+}
+
+static ACCOUNT_PACE: Mutex<Option<HashMap<AccountId, AccountPace>>> = Mutex::new(None);
+
+/// Claims a request slot for the account, or returns false to show its last
+/// reading without contacting the provider.
+fn claim_refresh(account_id: AccountId, trigger: RefreshTrigger) -> bool {
+    let now = Instant::now();
+    let mut paces = ACCOUNT_PACE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let pace = paces.get_or_insert_default().entry(account_id).or_default();
+    if !pace.may_refresh(trigger, now) {
+        return false;
+    }
+    pace.record(now, None);
+    true
+}
+
+fn record_rate_limit(account_id: AccountId, retry_after: Option<Duration>) {
+    let mut paces = ACCOUNT_PACE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    paces
+        .get_or_insert_default()
+        .entry(account_id)
+        .or_default()
+        .record(Instant::now(), Some(retry_after));
+}
 
 /// The accounts a refresh reads first: those of the tab on screen.
 #[derive(Debug, Clone)]
@@ -38,7 +116,10 @@ pub enum RefreshEvent {
 
 #[cfg(target_os = "windows")]
 mod windows {
-    use super::{RefreshEvent, RefreshFirst, RefreshSummary};
+    use super::{
+        RefreshEvent, RefreshFirst, RefreshSummary, RefreshTrigger, claim_refresh,
+        record_rate_limit,
+    };
     use crate::dashboard::AccountUsageEntry;
     use std::{
         sync::{Arc, OnceLock},
@@ -58,7 +139,7 @@ mod windows {
         runtime::UsageRuntime,
         storage::{SqliteStore, default_accounts_database_path},
         transport::{ReqwestUsageHttpTransport, UsageHttpTransport},
-        usage::UsageSnapshotStore,
+        usage::{UsageAdapterErrorCode, UsageSnapshotStore},
     };
     use usage_monitor_windows::{
         WindowsCredentialManagerAuthMaterialStore, WindowsCredentialManagerStore,
@@ -125,7 +206,10 @@ mod windows {
         })
     }
 
-    pub fn refresh_accounts(first: RefreshFirst) -> async_channel::Receiver<RefreshEvent> {
+    pub fn refresh_accounts(
+        first: RefreshFirst,
+        trigger: RefreshTrigger,
+    ) -> async_channel::Receiver<RefreshEvent> {
         let (sender, receiver) = async_channel::bounded(8);
         let context = match refresh_context() {
             Ok(context) => context,
@@ -134,9 +218,12 @@ mod windows {
                 return receiver;
             }
         };
-        let worker = context
-            .runtime
-            .spawn(refresh_accounts_inner(context, first, sender.clone()));
+        let worker = context.runtime.spawn(refresh_accounts_inner(
+            context,
+            first,
+            trigger,
+            sender.clone(),
+        ));
         // Report the outcome, including a panic, so the dashboard never
         // waits forever for a refresh to finish.
         context.runtime.spawn(async move {
@@ -155,6 +242,7 @@ mod windows {
     async fn refresh_accounts_inner(
         context: &'static RefreshContext,
         first: RefreshFirst,
+        trigger: RefreshTrigger,
         sender: async_channel::Sender<RefreshEvent>,
     ) -> Result<RefreshSummary, String> {
         let accounts = context
@@ -163,7 +251,10 @@ mod windows {
             .await
             .map_err(|error| format!("could not load saved accounts: {error}"))?;
         let targets = prioritize_accounts(accounts, &first);
-        refresh_targets(targets, sender, |account| refresh_account(context, account)).await
+        refresh_targets(targets, sender, |account| {
+            refresh_account(context, account, trigger)
+        })
+        .await
     }
 
     async fn refresh_targets<F, Fut>(
@@ -229,8 +320,13 @@ mod windows {
     async fn refresh_account(
         context: &'static RefreshContext,
         account: AccountRecord,
+        trigger: RefreshTrigger,
     ) -> Result<(AccountUsageEntry, bool, bool), String> {
         let snapshot_store = &context.snapshot_store;
+        if !claim_refresh(account.id, trigger) {
+            let entry = account_usage_entry(account, snapshot_store.as_ref()).await?;
+            return Ok((entry, false, false));
+        }
         let material = match context.auth_store.get(account.id).await {
             Ok(material) => material,
             Err(_) => {
@@ -260,6 +356,16 @@ mod windows {
         let outcome = runtime
             .refresh_account(account.clone(), RefreshReason::Manual)
             .await;
+        if let Some(error) = outcome
+            .error
+            .as_ref()
+            .filter(|error| error.code == UsageAdapterErrorCode::RateLimited)
+        {
+            record_rate_limit(
+                account.id,
+                error.retry_after_seconds.map(Duration::from_secs),
+            );
+        }
         let (account_updated, account_not_updated) = match outcome.status {
             RefreshStatus::Updated => (true, false),
             RefreshStatus::Failed | RefreshStatus::RetainedStale | RefreshStatus::Invalidated => {
@@ -372,8 +478,10 @@ mod windows {
             for pass in ["cold", "warm"] {
                 let started = std::time::Instant::now();
                 {
-                    let receiver =
-                        refresh_accounts(RefreshFirst::Provider(crate::UsageProvider::Codex));
+                    let receiver = refresh_accounts(
+                        RefreshFirst::Provider(crate::UsageProvider::Codex),
+                        RefreshTrigger::Manual,
+                    );
                     while let Ok(event) = receiver.recv_blocking() {
                         match event {
                             RefreshEvent::AccountUpdated(entry) => println!(
@@ -522,10 +630,55 @@ mod windows {
 pub use windows::refresh_accounts;
 
 #[cfg(not(target_os = "windows"))]
-pub fn refresh_accounts(_first: RefreshFirst) -> async_channel::Receiver<RefreshEvent> {
+pub fn refresh_accounts(
+    _first: RefreshFirst,
+    _trigger: RefreshTrigger,
+) -> async_channel::Receiver<RefreshEvent> {
     let (sender, receiver) = async_channel::bounded(1);
     let _ = sender.send_blocking(RefreshEvent::Failed(
         "live usage refresh is only available on Windows".to_owned(),
     ));
     receiver
+}
+
+#[cfg(test)]
+mod pace_tests {
+    use super::*;
+
+    #[test]
+    fn automatic_refreshes_wait_between_requests_but_the_button_does_not() {
+        let start = Instant::now();
+        let mut pace = AccountPace::default();
+        assert!(pace.may_refresh(RefreshTrigger::Automatic, start));
+        pace.record(start, None);
+
+        let soon = start + Duration::from_secs(10);
+        assert!(!pace.may_refresh(RefreshTrigger::Automatic, soon));
+        assert!(pace.may_refresh(RefreshTrigger::Manual, soon));
+
+        let later = start + MIN_AUTOMATIC_INTERVAL;
+        assert!(pace.may_refresh(RefreshTrigger::Automatic, later));
+    }
+
+    #[test]
+    fn a_rate_limited_account_is_left_alone_even_by_the_button() {
+        let start = Instant::now();
+        let mut pace = AccountPace::default();
+        pace.record(start, Some(None));
+
+        let minute = start + Duration::from_secs(60);
+        assert!(!pace.may_refresh(RefreshTrigger::Manual, minute));
+        assert!(pace.may_refresh(RefreshTrigger::Manual, start + RATE_LIMIT_PAUSE));
+
+        // A longer wait asked by the provider is honored; a shorter one is not.
+        pace.record(start, Some(Some(Duration::from_secs(600))));
+        assert!(!pace.may_refresh(RefreshTrigger::Manual, start + RATE_LIMIT_PAUSE));
+        assert!(pace.may_refresh(RefreshTrigger::Manual, start + Duration::from_secs(600)));
+        pace.record(start, Some(Some(Duration::ZERO)));
+        assert!(!pace.may_refresh(RefreshTrigger::Manual, minute));
+
+        // A normal answer ends the pause.
+        pace.record(start, None);
+        assert!(pace.may_refresh(RefreshTrigger::Manual, minute));
+    }
 }

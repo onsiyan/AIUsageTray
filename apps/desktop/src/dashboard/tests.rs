@@ -537,6 +537,26 @@ fn reset_label_keeps_hour_format_at_exactly_24_hours() {
 }
 
 #[test]
+fn stale_label_says_when_the_shown_reading_was_taken() {
+    let now = Local
+        .with_ymd_and_hms(2026, 9, 24, 15, 0, 0)
+        .unwrap()
+        .with_timezone(&Utc);
+    assert_eq!(
+        stale_label(now - Duration::minutes(11), now, Language::English),
+        "Couldn't update · showing the reading from 2:49 PM"
+    );
+    assert_eq!(
+        stale_label(now - Duration::minutes(11), now, Language::Arabic),
+        "تعذّر التحديث · هذه القراءة من 14:49"
+    );
+    assert_eq!(
+        stale_label(now - Duration::days(2), now, Language::English),
+        "Couldn't update · showing the reading from Sep 22, 2026 at 3:00 PM"
+    );
+}
+
+#[test]
 fn reset_within_a_day_shows_its_clock_time_and_countdown() {
     // Midday local time keeps a 3h reset on the same day in any time zone.
     let now = Local

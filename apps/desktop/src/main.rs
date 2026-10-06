@@ -434,10 +434,13 @@ impl App {
             })
         });
 
-        Task::batch([open_task.chain(show_task), self.start_usage_refresh()])
+        Task::batch([
+            open_task.chain(show_task),
+            self.start_usage_refresh(usage_refresh::RefreshTrigger::Automatic),
+        ])
     }
 
-    fn start_usage_refresh(&mut self) -> Task<Message> {
+    fn start_usage_refresh(&mut self, trigger: usage_refresh::RefreshTrigger) -> Task<Message> {
         if self.dashboard_refresh_running {
             return Task::none();
         }
@@ -450,7 +453,7 @@ impl App {
             }
         };
         Task::run(
-            usage_refresh::refresh_accounts(first),
+            usage_refresh::refresh_accounts(first, trigger),
             Message::UsageRefreshEvent,
         )
     }

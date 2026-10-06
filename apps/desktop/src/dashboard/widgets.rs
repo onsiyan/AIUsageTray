@@ -378,6 +378,25 @@ pub(super) fn reset_time_accent(theme: &'static crate::theme::ThemeDefinition) -
     }
 }
 
+/// Says the reading could not be updated and when it was taken.
+pub(super) fn stale_label(
+    observed_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+    language: Language,
+) -> String {
+    let observed = observed_at.with_timezone(&Local);
+    let today = observed.date_naive() == now.with_timezone(&Local).date_naive();
+    let when = match (language, today) {
+        (Language::English, true) => observed.format("%-I:%M %p").to_string(),
+        (Language::Arabic, true) => observed.format("%H:%M").to_string(),
+        _ => format_local_reset(observed, language),
+    };
+    match language {
+        Language::English => format!("Couldn't update · showing the reading from {when}"),
+        Language::Arabic => format!("تعذّر التحديث · هذه القراءة من {when}"),
+    }
+}
+
 pub(super) fn reset_label(
     reset_at: DateTime<Utc>,
     now: DateTime<Utc>,
