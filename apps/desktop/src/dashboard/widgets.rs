@@ -188,7 +188,7 @@ pub(super) fn warning_line(
 ) -> Element<'static, Message> {
     let (text_color, background_color, border_color) = if theme.colors.is_light {
         (
-            Color::from_rgb8(108, 64, 0),
+            Color::from_rgb8(146, 64, 14),
             Color::from_rgb8(255, 248, 230),
             Color::from_rgb8(224, 190, 127),
         )
@@ -259,7 +259,7 @@ pub(super) fn usage_color(remaining: f64, theme: &'static crate::theme::ThemeDef
         if remaining <= 15.0 {
             Color::from_rgb8(176, 48, 43)
         } else if remaining <= 40.0 {
-            Color::from_rgb8(118, 68, 0)
+            Color::from_rgb8(180, 83, 9)
         } else {
             Color::from_rgb8(27, 116, 69)
         }
@@ -388,7 +388,7 @@ pub(super) fn countdown_label_parts(label: &str, language: Language) -> Option<(
 
 pub(super) fn reset_time_accent(theme: &'static crate::theme::ThemeDefinition) -> Color {
     if theme.colors.is_light {
-        Color::from_rgb8(108, 62, 0)
+        Color::from_rgb8(194, 82, 0)
     } else {
         Color::from_rgb8(246, 183, 83)
     }
