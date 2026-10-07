@@ -566,7 +566,7 @@ fn local_day(timestamp: &str) -> Option<NaiveDate> {
         .map(|time| time.with_timezone(&Local).date_naive())
 }
 
-fn add_usage(
+pub(super) fn add_usage(
     rows: &mut Vec<UsageRow>,
     day: NaiveDate,
     model: &str,

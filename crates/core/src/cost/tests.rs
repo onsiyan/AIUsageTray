@@ -271,3 +271,49 @@ fn bundled_prices_cover_the_current_models() {
         assert!(table.cost(tool, model, &tokens, false).is_some(), "{model}");
     }
 }
+
+#[test]
+fn other_machines_join_the_report_on_this_pcs_calendar() {
+    let home = tempfile::tempdir().unwrap();
+    write_lines(
+        &home.path().join("claude").join("p").join("a.jsonl"),
+        &[claude_line(&stamp(0), "m1", "r1", 50)],
+    );
+    let noon = DateTime::parse_from_rfc3339(&stamp(1)).unwrap().timestamp();
+    let row = |slot: i64, output: u64| remote::RemoteRow {
+        tool: CostTool::Codex,
+        slot,
+        model: "gpt-5.5".to_owned(),
+        long_context: false,
+        tokens: TokenCounts {
+            input: 1_000,
+            output,
+            ..TokenCounts::default()
+        },
+    };
+    let reading = remote::RemoteUsage {
+        found: vec![CostTool::Codex],
+        // Yesterday's noon, and a day past the report.
+        rows: vec![row(noon - noon % 1800, 10), row(noon - 40 * 86_400, 99)],
+        synced_at: Utc::now(),
+    };
+    let report = scan_report_with(
+        &roots(home.path()),
+        &home.path().join("cache"),
+        &[("vps".to_owned(), reading)],
+    );
+
+    assert_eq!(report.machines.len(), 2);
+    assert_eq!(report.machines[0].name, None);
+    assert_eq!(report.machines[1].name.as_deref(), Some("vps"));
+    let codex = report.tool(CostTool::Codex).unwrap();
+    assert!(codex.logs_found);
+    assert_eq!(codex.last(2).tokens.output, 10);
+    assert_eq!(codex.last(1).tokens.output, 0);
+    let remote_codex = &report.machines[1].tools[0];
+    assert_eq!(remote_codex.last(30).tokens.input, 1_000);
+    assert!(report.machines[1].cost_over(30) > 0.0);
+    assert_eq!(report.machines[0].tools[0].last(30).tokens.total(), 0);
+    // Only this PC: no machine list.
+    assert!(scan_report(&roots(home.path()), &home.path().join("cache")).machines.is_empty());
+}

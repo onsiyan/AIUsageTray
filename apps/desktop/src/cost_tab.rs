@@ -1,11 +1,15 @@
-//! The Cost tab: what Codex and Claude Code usage on this PC would cost at
-//! API list prices, read from the tools' local logs.
+//! The Cost page: what Codex and Claude Code usage would cost at API list
+//! prices, read from this PC's logs and from other machines' over SSH.
 //!
 //! The page leads with what the user gets from their subscriptions: the API
 //! value of the period against what their plans cost for it. Below come each
-//! tool's share, the days, the token classes, and a table by model or day.
+//! tool's share, the machines, the days, the token classes, and a table by
+//! model.
 
+mod machines;
 mod plans;
+
+pub(super) use machines::{MachineChange, SyncResults};
 
 use std::collections::BTreeMap;
 
@@ -51,6 +55,7 @@ pub(super) enum CostView {
     EditPlan(Option<(String, String)>),
     PlanDraft(String),
     SavePlan,
+    Machine(machines::MachineChange),
 }
 
 /// The price field, focused when editing starts.
@@ -68,13 +73,41 @@ pub(super) struct CostTab {
     plan_prices: BTreeMap<String, f64>,
     /// The plan whose price is being typed, and the text so far.
     editing_plan: Option<(String, String)>,
+    /// A read was asked for while one was running: read again after it.
+    rescan: bool,
+    machines: machines::Machines,
 }
 
 impl CostTab {
     pub(super) fn load() -> Self {
         Self {
             plan_prices: plans::load_prices(),
+            machines: machines::Machines::load(),
             ..Self::default()
+        }
+    }
+
+    /// Reads the other machines if they were last read `every` ago.
+    pub(super) fn sync_machines_if_due(&mut self, open: bool) -> Task<Message> {
+        self.machines.sync_if_due(if open {
+            machines::LIVE_SYNC
+        } else {
+            machines::BACKGROUND_SYNC
+        })
+    }
+
+    pub(super) fn sync_machines(&mut self) -> Task<Message> {
+        self.machines.sync()
+    }
+
+    /// Notes the machines' readings and builds the report again with them.
+    pub(super) fn finish_machine_sync(&mut self, results: SyncResults) -> Task<Message> {
+        let again = self.machines.finish_sync(results);
+        let scan = self.scan();
+        if again {
+            Task::batch([scan, self.machines.sync()])
+        } else {
+            scan
         }
     }
 
@@ -92,13 +125,15 @@ impl CostTab {
     /// Reads the logs now, unless a read is already running.
     pub(super) fn scan(&mut self) -> Task<Message> {
         if self.scanning {
+            self.rescan = true;
             return Task::none();
         }
         self.scanning = true;
         self.last_started = Some(Instant::now());
+        let machines = self.machines.names();
         let (sender, receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
-            let _ = sender.send_blocking(read_report());
+            let _ = sender.send_blocking(read_report(&machines));
         });
         Task::perform(
             async move {
@@ -111,7 +146,7 @@ impl CostTab {
         )
     }
 
-    pub(super) fn finish(&mut self, result: Result<CostReport, String>) {
+    pub(super) fn finish(&mut self, result: Result<CostReport, String>) -> Task<Message> {
         self.scanning = false;
         match result {
             Ok(report) => {
@@ -122,6 +157,11 @@ impl CostTab {
                 preview_log(format!("cost scan failed: {error}"));
                 self.error = Some(error);
             }
+        }
+        if std::mem::take(&mut self.rescan) {
+            self.scan()
+        } else {
+            Task::none()
         }
     }
 
@@ -160,14 +200,22 @@ impl CostTab {
                     }
                 }
             }
+            CostView::Machine(change) => {
+                let (task, rescan) = self.machines.change(change);
+                if rescan {
+                    return Task::batch([task, self.scan()]);
+                }
+                return task;
+            }
         }
         Task::none()
     }
 }
 
-/// Updates prices once a day, then reads what is new in the logs. Runs on
-/// its own thread: the first read of large logs takes a few seconds.
-fn read_report() -> Result<CostReport, String> {
+/// Updates prices once a day, then reads what is new in the logs and adds
+/// the machines' last readings. Runs on its own thread: the first read of
+/// large logs takes a few seconds.
+fn read_report(machines: &[String]) -> Result<CostReport, String> {
     let cache_directory = cost::default_cache_directory();
     if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -176,9 +224,16 @@ fn read_report() -> Result<CostReport, String> {
     {
         preview_log(format!("price update failed: {error}"));
     }
-    Ok(cost::scan_report(
+    let readings = machines
+        .iter()
+        .filter_map(|name| {
+            cost::remote::stored(&cache_directory, name).map(|reading| (name.clone(), reading))
+        })
+        .collect::<Vec<_>>();
+    Ok(cost::scan_report_with(
         &LogRoots::from_environment(),
         &cache_directory,
+        &readings,
     ))
 }
 
@@ -253,6 +308,7 @@ pub(super) fn view(
     }
     sections.extend([
         tool_split(report, state, theme, language),
+        machines::section(&state.machines, report, days, theme, language),
         daily_chart(report, state, theme, language),
         token_metrics(report, days, theme, language),
         breakdown(report, state, theme, language),

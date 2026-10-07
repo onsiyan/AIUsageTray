@@ -24,6 +24,11 @@ All notable changes to this project are documented here. The format follows
   when its last reading was taken, with a "Sign in again" button.
 - Image themes put a deeper shade over the whole window, so the figures stand
   off the picture.
+- The Cost page counts other machines too: add a Linux, macOS or Windows
+  machine reached over SSH (with your keys; no password is asked or kept)
+  and its Codex and Claude Code logs are read every minute while the page
+  is open and every 15 minutes otherwise. A small script is sent each time
+  (python3, or Windows PowerShell); nothing is installed there.
 - Cost page, opened from the $ button at the top left: what Codex and
   Claude Code use on this PC would cost at API list
   prices, read from their local session logs, weighed against what the

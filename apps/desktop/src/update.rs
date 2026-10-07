@@ -322,7 +322,10 @@ impl App {
                 self.dashboard.close_any_model_visibility_menu();
                 self.dashboard.clear_any_hovered_account_name();
                 if tab == DashboardTab::Cost {
-                    self.cost.scan_if_due()
+                    Task::batch([
+                        self.cost.scan_if_due(),
+                        self.cost.sync_machines_if_due(true),
+                    ])
                 } else {
                     Task::none()
                 }
@@ -336,15 +339,13 @@ impl App {
                 };
                 self.update(Message::SelectTab(tab))
             }
-            Message::CostScanned(result) => {
-                self.cost.finish(*result);
-                Task::none()
-            }
+            Message::CostScanned(result) => self.cost.finish(*result),
+            Message::CostMachinesSynced(results) => self.cost.finish_machine_sync(results),
             Message::CostView(change) => self.cost.change(change),
             Message::RefreshAllUsage => {
                 let usage = self.start_usage_refresh(usage_refresh::RefreshTrigger::Manual);
                 if self.selected_tab == DashboardTab::Cost {
-                    Task::batch([usage, self.cost.scan()])
+                    Task::batch([usage, self.cost.scan(), self.cost.sync_machines()])
                 } else {
                     usage
                 }
@@ -361,11 +362,16 @@ impl App {
                 } else {
                     Task::none()
                 };
-                // An open Cost tab keeps up with the logs.
+                // An open Cost page keeps up with the logs and the other
+                // machines; a closed one still reads the machines now and then.
                 if self.selected_tab == DashboardTab::Cost {
-                    Task::batch([usage, self.cost.scan_if_due()])
+                    Task::batch([
+                        usage,
+                        self.cost.scan_if_due(),
+                        self.cost.sync_machines_if_due(true),
+                    ])
                 } else {
-                    usage
+                    Task::batch([usage, self.cost.sync_machines_if_due(false)])
                 }
             }
             Message::ToggleThemeMenu => {

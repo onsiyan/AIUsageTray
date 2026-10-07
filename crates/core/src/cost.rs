@@ -6,9 +6,11 @@
 //! logs belong to the PC rather than to one account, so every account that
 //! signed in here is counted together. Each file is read once and then only
 //! from where the last scan stopped, so later scans cost little even when the
-//! logs run to gigabytes.
+//! logs run to gigabytes. Other machines' logs can be counted too, read over
+//! SSH (see [`remote`]).
 
 mod pricing;
+pub mod remote;
 mod scan;
 #[cfg(test)]
 mod tests;
@@ -93,14 +95,34 @@ struct UsageRow {
     records: u64,
 }
 
-/// What the logs on this PC add up to.
+/// What the logs on this PC, and on any machines read over SSH, add up to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CostReport {
     pub generated_at: DateTime<Utc>,
     pub today: NaiveDate,
+    /// Every machine together.
     pub tools: Vec<ToolCost>,
     pub prices: PriceSource,
     pub scan_ms: u64,
+    /// Each machine on its own, this PC first; empty when only this PC
+    /// counts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub machines: Vec<MachineCost>,
+}
+
+/// One machine's share of a report.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineCost {
+    /// `None` for this PC.
+    pub name: Option<String>,
+    pub tools: Vec<ToolCost>,
+}
+
+impl MachineCost {
+    /// The machine's cost over the last `days` days.
+    pub fn cost_over(&self, days: usize) -> f64 {
+        self.tools.iter().map(|tool| tool.last(days).cost_usd).sum()
+    }
 }
 
 impl CostReport {
@@ -217,6 +239,16 @@ pub fn default_cache_directory() -> PathBuf {
 /// Reads what is new in the logs and reports the last [`REPORT_DAYS`] days.
 /// Blocking: logs can be large, so hosts run it off the UI thread.
 pub fn scan_report(roots: &LogRoots, cache_directory: &std::path::Path) -> CostReport {
+    scan_report_with(roots, cache_directory, &[])
+}
+
+/// [`scan_report`], with other machines' last readings (by name) added to
+/// this PC's.
+pub fn scan_report_with(
+    roots: &LogRoots,
+    cache_directory: &std::path::Path,
+    remotes: &[(String, remote::RemoteUsage)],
+) -> CostReport {
     let started = std::time::Instant::now();
     let now = Local::now();
     let today = now.date_naive();
@@ -225,26 +257,59 @@ pub fn scan_report(roots: &LogRoots, cache_directory: &std::path::Path) -> CostR
         .unwrap_or(today);
     let usage = scan::scan(roots, cache_directory, today);
     let prices = PriceTable::load(cache_directory);
-    let tools = CostTool::ALL
-        .into_iter()
-        .map(|tool| {
-            let rows = usage.rows.get(&tool).map(Vec::as_slice).unwrap_or_default();
-            build_tool_cost(
-                tool,
-                usage.found.contains(&tool),
-                rows,
-                first_day,
-                today,
-                &prices,
-            )
-        })
-        .collect();
+    let tools_of = |rows: &BTreeMap<CostTool, Vec<UsageRow>>, found: &dyn Fn(CostTool) -> bool| {
+        CostTool::ALL
+            .into_iter()
+            .map(|tool| {
+                let rows = rows.get(&tool).map(Vec::as_slice).unwrap_or_default();
+                build_tool_cost(tool, found(tool), rows, first_day, today, &prices)
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let mut machines = Vec::new();
+    let mut all_rows = usage.rows.clone();
+    let mut all_found = usage.found.clone();
+    if !remotes.is_empty() {
+        machines.push(MachineCost {
+            name: None,
+            tools: tools_of(&usage.rows, &|tool| usage.found.contains(&tool)),
+        });
+    }
+    for (name, reading) in remotes {
+        let mut rows: BTreeMap<CostTool, Vec<UsageRow>> = BTreeMap::new();
+        for row in &reading.rows {
+            // Half hours line up with every whole and half-hour time zone,
+            // so the start alone places the row on this PC's calendar.
+            let Some(day) = DateTime::from_timestamp(row.slot, 0)
+                .map(|start| start.with_timezone(&Local).date_naive())
+            else {
+                continue;
+            };
+            if day < first_day {
+                continue;
+            }
+            for target in [
+                rows.entry(row.tool).or_default(),
+                all_rows.entry(row.tool).or_default(),
+            ] {
+                scan::add_usage(target, day, &row.model, row.long_context, &row.tokens);
+            }
+        }
+        all_found.extend(reading.found.iter().copied());
+        machines.push(MachineCost {
+            name: Some(name.clone()),
+            tools: tools_of(&rows, &|tool| reading.found.contains(&tool)),
+        });
+    }
+    let tools = tools_of(&all_rows, &|tool| all_found.contains(&tool));
     CostReport {
         generated_at: now.with_timezone(&Utc),
         today,
         tools,
         prices: prices.source.clone(),
         scan_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        machines,
     }
 }
 

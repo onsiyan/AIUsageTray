@@ -25,8 +25,8 @@ use iced::{
 use lucide_icons::{
     LUCIDE_FONT_BYTES,
     iced::{
-        icon_check, icon_circle_dollar_sign, icon_palette, icon_star, icon_trash_2,
-        icon_user_round_plus, icon_x,
+        icon_check, icon_circle_dollar_sign, icon_monitor, icon_palette, icon_server, icon_star,
+        icon_trash_2, icon_user_round_plus, icon_x,
     },
 };
 use tokio::{io::AsyncWriteExt, process::Command as TokioCommand};
@@ -137,6 +137,12 @@ fn main() -> iced::Result {
                     ))),
                     Ok("add") => Some(Message::ToggleAccountAddMenu),
                     Ok("cost-tab") => Some(Message::SelectTab(DashboardTab::Cost)),
+                    Ok("cost-machine") => {
+                        boot.push(Task::done(Message::SelectTab(DashboardTab::Cost)));
+                        Some(Message::CostView(cost_tab::CostView::Machine(
+                            cost_tab::MachineChange::OpenForm,
+                        )))
+                    }
                     Ok("cost-detail") => {
                         boot.push(Task::done(Message::SelectTab(DashboardTab::Cost)));
                         Some(Message::CostView(cost_tab::CostView::Period(
@@ -813,6 +819,8 @@ enum Message {
     /// Opens the Cost page, or goes back to the tab it was opened from.
     ToggleCostPage,
     CostScanned(Box<Result<usage_monitor_core::cost::CostReport, String>>),
+    /// Other machines were read over SSH.
+    CostMachinesSynced(cost_tab::SyncResults),
     CostView(cost_tab::CostView),
     ToggleTabManager,
     DismissTabManager,
