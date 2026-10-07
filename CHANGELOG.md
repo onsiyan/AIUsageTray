@@ -15,7 +15,8 @@ All notable changes to this project are documented here. The format follows
 - "Use in Codex" and "Use in Antigravity" to switch those desktop apps to a
   saved account.
 - Choice to show usage as remaining or used percentage; each bar's number
-  says which ("left" or "used").
+  says which (Left or Used), and each tab can read its own way from the tab
+  manager.
 - Account reordering, cancelling an in-progress sign-in, and hiding the
   Antigravity Claude/GPT group.
 - Favorites tab, third in the tab bar, gathering accounts starred from any
