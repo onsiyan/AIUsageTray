@@ -217,6 +217,7 @@ impl DashboardState {
                 accounts.sort_by_key(|entry| account_rank(&self.account_order, entry.account.id));
                 accounts
             }
+            DashboardTab::Cost => Vec::new(),
             DashboardTab::Favorites => self
                 .favorites
                 .iter()
@@ -627,7 +628,7 @@ pub fn view(
         )
     } else if accounts.is_empty() {
         match tab {
-            DashboardTab::Favorites => {
+            DashboardTab::Favorites | DashboardTab::Cost => {
                 centered_note(locale::text(language, Text::NoFavoriteAccounts), theme)
             }
             // A provider's own tab adds to that provider; a custom tab

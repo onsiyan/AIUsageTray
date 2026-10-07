@@ -22,6 +22,11 @@ All notable changes to this project are documented here. The format follows
 - An account whose saved sign-in the provider refused says "Sign-in
   expired" with the provider's reason (such as `refresh_token_reused`) and
   when its last reading was taken, with a "Sign in again" button.
+- Cost tab: what Codex and Claude Code use on this PC would cost at API list
+  prices, read from their local session logs: today, 7 and 30 days, tokens,
+  a daily chart, and the costliest models. Logs are read once and then only
+  where they grew; prices come from models.dev, updated daily, with a
+  built-in table for offline use. `usage-monitor-cli cost` prints the same.
 - Favorites tab, third in the tab bar, gathering accounts starred from any
   provider. The star sits with the rename and move controls on each account;
   favorites keep their own order and are refreshed first while shown.

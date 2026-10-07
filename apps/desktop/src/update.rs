@@ -321,10 +321,23 @@ impl App {
                 self.dismiss_account_delete_dialog();
                 self.dashboard.close_any_model_visibility_menu();
                 self.dashboard.clear_any_hovered_account_name();
+                if tab == DashboardTab::Cost {
+                    self.cost.scan_if_due()
+                } else {
+                    Task::none()
+                }
+            }
+            Message::CostScanned(result) => {
+                self.cost.finish(*result);
                 Task::none()
             }
             Message::RefreshAllUsage => {
-                self.start_usage_refresh(usage_refresh::RefreshTrigger::Manual)
+                let usage = self.start_usage_refresh(usage_refresh::RefreshTrigger::Manual);
+                if self.selected_tab == DashboardTab::Cost {
+                    Task::batch([usage, self.cost.scan()])
+                } else {
+                    usage
+                }
             }
             Message::UsageAnimationTick => {
                 self.dashboard.advance_usage_animation(Instant::now());
@@ -333,10 +346,16 @@ impl App {
             Message::ResetClockTick => {
                 // A window reset while the popup was open: show it as unused
                 // right away and fetch the provider's new reading.
-                if self.dashboard.clear_elapsed_resets() {
+                let usage = if self.dashboard.clear_elapsed_resets() {
                     self.start_usage_refresh(usage_refresh::RefreshTrigger::Automatic)
                 } else {
                     Task::none()
+                };
+                // An open Cost tab keeps up with the logs.
+                if self.selected_tab == DashboardTab::Cost {
+                    Task::batch([usage, self.cost.scan_if_due()])
+                } else {
+                    usage
                 }
             }
             Message::ToggleThemeMenu => {

@@ -81,12 +81,16 @@ impl App {
                 title_bar_separator,
                 provider_tab_bar,
                 account_add_status,
-                dashboard::view(
-                    &self.dashboard,
-                    self.selected_tab,
-                    active_theme,
-                    self.language,
-                )
+                if self.selected_tab == DashboardTab::Cost {
+                    cost_tab::view(&self.cost, active_theme, self.language)
+                } else {
+                    dashboard::view(
+                        &self.dashboard,
+                        self.selected_tab,
+                        active_theme,
+                        self.language,
+                    )
+                }
             ]
             .spacing(0)
             .width(Fill)

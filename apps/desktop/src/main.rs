@@ -24,7 +24,10 @@ use iced::{
 };
 use lucide_icons::{
     LUCIDE_FONT_BYTES,
-    iced::{icon_check, icon_palette, icon_star, icon_trash_2, icon_user_round_plus, icon_x},
+    iced::{
+        icon_check, icon_circle_dollar_sign, icon_palette, icon_star, icon_trash_2,
+        icon_user_round_plus, icon_x,
+    },
 };
 use tokio::{io::AsyncWriteExt, process::Command as TokioCommand};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -32,6 +35,7 @@ use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, 
 mod account_add;
 mod chrome;
 mod codex_switch;
+mod cost_tab;
 mod custom_theme;
 mod custom_theme_dialog;
 mod dashboard;
@@ -132,6 +136,7 @@ fn main() -> iced::Result {
                         UsageProvider::OpenRouter,
                     ))),
                     Ok("add") => Some(Message::ToggleAccountAddMenu),
+                    Ok("cost-tab") => Some(Message::SelectTab(DashboardTab::Cost)),
                     Ok("welcome") => Some(Message::WelcomePreview(false)),
                     Ok("custom-theme") => Some(Message::OpenCustomTheme),
                     Ok("welcome-accounts") => Some(Message::WelcomePreview(true)),
@@ -279,6 +284,8 @@ impl UsageProvider {
 enum DashboardTab {
     Provider(UsageProvider),
     Favorites,
+    /// What Codex and Claude Code usage on this PC would cost.
+    Cost,
     Custom {
         id: u32,
         providers: tabs::ProviderSet,
@@ -291,6 +298,7 @@ impl DashboardTab {
         match self {
             Self::Provider(provider) => provider.cli_name().to_owned(),
             Self::Favorites => "favorites".to_owned(),
+            Self::Cost => "cost".to_owned(),
             Self::Custom { id, .. } => format!("custom-{id}"),
         }
     }
@@ -307,7 +315,7 @@ impl DashboardTab {
     fn includes_provider(self, provider: UsageProvider) -> bool {
         match self {
             Self::Provider(own) => own == provider,
-            Self::Favorites => false,
+            Self::Favorites | Self::Cost => false,
             Self::Custom { providers, .. } => providers.contains(provider),
         }
     }
@@ -425,6 +433,7 @@ struct App {
     window_focused: bool,
     last_focus_lost: Option<Instant>,
     dashboard: dashboard::DashboardState,
+    cost: cost_tab::CostTab,
     language: locale::Language,
     memory_saver: bool,
     /// How much the popup is enlarged on the screen it is shown on.
@@ -478,6 +487,7 @@ impl App {
             window_focused: false,
             last_focus_lost: None,
             dashboard,
+            cost: cost_tab::CostTab::default(),
             language: locale::default_language(),
             memory_saver: memory_saver::load_saved(),
             ui_zoom: 1.0,
@@ -791,6 +801,7 @@ enum Message {
     SwitchAntigravityAppAccount(usage_monitor_core::accounts::AccountId),
     CodexDesktopSwitchFinished(usage_monitor_core::accounts::AccountId, Result<(), String>),
     SelectTab(DashboardTab),
+    CostScanned(Box<Result<usage_monitor_core::cost::CostReport, String>>),
     ToggleTabManager,
     DismissTabManager,
     ToggleTabVisible(usize),

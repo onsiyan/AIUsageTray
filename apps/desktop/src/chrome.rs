@@ -168,6 +168,7 @@ pub(super) fn provider_tab_bar(
                 provider_tab(tab, selected_tab, active_theme)
             }
             tabs::TabKind::Favorites => favorites_tab(selected_tab, active_theme, language),
+            tabs::TabKind::Cost => cost_tab_button(selected_tab, active_theme, language),
             tabs::TabKind::Custom(custom) => custom_tab(
                 custom,
                 icons.get(&custom.id),
@@ -229,6 +230,25 @@ fn favorites_tab(
         DashboardTab::Favorites,
         selected_tab,
         locale::text(language, locale::Text::Favorites),
+        Length::FillPortion(2),
+        active_theme,
+    )
+}
+
+/// The tab of what local Codex and Claude Code usage would cost.
+fn cost_tab_button(
+    selected_tab: DashboardTab,
+    active_theme: &'static ThemeDefinition,
+    language: locale::Language,
+) -> Element<'static, Message> {
+    let icon = icon_circle_dollar_sign::<Theme>()
+        .size(20)
+        .color(active_theme.colors.text());
+    tab_button(
+        icon.into(),
+        DashboardTab::Cost,
+        selected_tab,
+        locale::text(language, locale::Text::CostTab),
         Length::FillPortion(2),
         active_theme,
     )
