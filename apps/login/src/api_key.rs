@@ -18,12 +18,12 @@ use std::{
     time::Duration,
 };
 use usage_monitor_core::{
-    accounts::{AccountRecord, AccountStore, KIMI, XAI, ZAI},
+    accounts::{AccountRecord, AccountStore, KIMI, MINIMAX, XAI, ZAI},
     auth::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
         StoredAuthMaterialProvider,
     },
-    providers::{kimi, registry::ProviderRegistryConfig, xai, zai},
+    providers::{kimi, minimax, registry::ProviderRegistryConfig, xai, zai},
     refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
     runtime::UsageRuntime,
     storage::{SqliteStore, default_accounts_database_path},
@@ -48,6 +48,7 @@ pub struct ApiKeyProvider {
 #[derive(Clone, Copy)]
 pub enum Region {
     Kimi,
+    MiniMax,
     Zai,
 }
 
@@ -74,6 +75,15 @@ pub const ZAI_CODING_PLAN: ApiKeyProvider = ApiKeyProvider {
     key_variable: "Z_AI_API_KEY",
     second: None,
     region: Some(Region::Zai),
+};
+
+pub const MINIMAX_CODING_PLAN: ApiKeyProvider = ApiKeyProvider {
+    command: "minimax",
+    provider_id: MINIMAX,
+    name: "MiniMax",
+    key_variable: "MINIMAX_CODING_API_KEY",
+    second: None,
+    region: Some(Region::MiniMax),
 };
 
 pub const XAI_MANAGEMENT: ApiKeyProvider = ApiKeyProvider {
@@ -141,6 +151,10 @@ pub async fn run(provider: &ApiKeyProvider) -> Result<(), Box<dyn std::error::Er
     match provider.region {
         Some(Region::Kimi) => {
             let region = kimi::detect_region(transport.as_ref(), &api_key).await?;
+            second = region.stored().map(str::to_owned);
+        }
+        Some(Region::MiniMax) => {
+            let region = minimax::detect_region(transport.as_ref(), &api_key).await?;
             second = region.stored().map(str::to_owned);
         }
         Some(Region::Zai) => {

@@ -168,6 +168,7 @@ pub(super) fn metric_display_name(metric: &UsageMetric, language: Language) -> S
         "spend.today" => locale::text(language, Text::Today).to_owned(),
         "spend.30d" => locale::text(language, Text::Last30Days).to_owned(),
         "spend.30d.partial" => locale::text(language, Text::Last30DaysPartial).to_owned(),
+        "balance.points" => locale::text(language, Text::PointsBalance).to_owned(),
         _ => metric.name.clone(),
     }
 }
@@ -342,6 +343,7 @@ pub(super) fn format_amount(
     match unit {
         Some("tokens") => format!("{amount} token"),
         Some("credits") => format!("{} credits", amount.trim_end_matches(".00")),
+        Some("points") => amount.trim_end_matches(".00").to_owned(),
         Some(unit) => format!("{amount} {unit}"),
         None => amount,
     }

@@ -42,6 +42,8 @@ pub enum Text {
     Today,
     Last30Days,
     Last30DaysPartial,
+    MiniMaxTitle,
+    PointsBalance,
     CursorSession,
     CursorSessionHint,
     OpenCursor,
@@ -200,6 +202,8 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, Today) => "Today",
         (English, Last30Days) => "Last 30 days",
         (English, Last30DaysPartial) => "Last 30 days (partial)",
+        (English, MiniMaxTitle) => "Add MiniMax account",
+        (English, PointsBalance) => "Points balance",
         (English, CursorSession) => "WorkosCursorSessionToken cookie",
         (English, CursorSessionHint) => {
             "The Cursor app is not signed in on this computer. Sign in to it and try again, or sign in at cursor.com and paste the WorkosCursorSessionToken cookie (browser developer tools → Application → Cookies)."
@@ -349,6 +353,8 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (Arabic, Today) => "اليوم",
         (Arabic, Last30Days) => "آخر 30 يومًا",
         (Arabic, Last30DaysPartial) => "آخر 30 يومًا (جزئي)",
+        (Arabic, MiniMaxTitle) => "إضافة حساب MiniMax",
+        (Arabic, PointsBalance) => "رصيد النقاط",
         (Arabic, CursorSession) => "ملف تعريف الارتباط WorkosCursorSessionToken",
         (Arabic, CursorSessionHint) => {
             "تطبيق Cursor غير مسجل الدخول على هذا الجهاز. سجّل الدخول فيه وأعد المحاولة، أو سجّل الدخول في cursor.com والصق ملف تعريف الارتباط WorkosCursorSessionToken (أدوات المطور في المتصفح ← Application ← Cookies)."

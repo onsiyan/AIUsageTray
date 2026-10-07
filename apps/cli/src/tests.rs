@@ -253,6 +253,7 @@ fn account_add_routes_each_provider_to_its_existing_login_flow() {
         ("kimi", AccountAddProvider::Kimi),
         ("zai", AccountAddProvider::Zai),
         ("xai", AccountAddProvider::Xai),
+        ("minimax", AccountAddProvider::MiniMax),
     ];
     let arguments = AccountAddArgs {
         provider: String::new(),

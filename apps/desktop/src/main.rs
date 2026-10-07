@@ -132,6 +132,7 @@ fn main() -> iced::Result {
                     Ok("kimi") => Some(Message::ChooseAccountProvider(UsageProvider::Kimi)),
                     Ok("zai") => Some(Message::ChooseAccountProvider(UsageProvider::Zai)),
                     Ok("xai") => Some(Message::ChooseAccountProvider(UsageProvider::Xai)),
+                    Ok("minimax") => Some(Message::ChooseAccountProvider(UsageProvider::MiniMax)),
                     Ok("openrouter") => {
                         Some(Message::ChooseAccountProvider(UsageProvider::OpenRouter))
                     }
@@ -207,6 +208,7 @@ enum UsageProvider {
     Kimi,
     Zai,
     Xai,
+    MiniMax,
 }
 
 impl UsageProvider {
@@ -223,6 +225,7 @@ impl UsageProvider {
             Self::Kimi => "kimi",
             Self::Zai => "zai",
             Self::Xai => "xai",
+            Self::MiniMax => "minimax",
         }
     }
 
@@ -239,6 +242,7 @@ impl UsageProvider {
             Self::Kimi => "Kimi Code",
             Self::Zai => "z.ai",
             Self::Xai => "xAI",
+            Self::MiniMax => "MiniMax",
         }
     }
 
@@ -246,7 +250,7 @@ impl UsageProvider {
     const fn uses_api_key(self) -> bool {
         matches!(
             self,
-            Self::OpenRouter | Self::DeepSeek | Self::Kimi | Self::Zai | Self::Xai
+            Self::OpenRouter | Self::DeepSeek | Self::Kimi | Self::Zai | Self::Xai | Self::MiniMax
         )
     }
 }
@@ -357,9 +361,13 @@ const PROVIDER_TABS: &[ProviderTab] = &[
         provider: UsageProvider::Xai,
         label: "xAI",
     },
+    ProviderTab {
+        provider: UsageProvider::MiniMax,
+        label: "MiniMax",
+    },
 ];
 
-static PROVIDER_LOGOS: OnceLock<[image::Handle; 11]> = OnceLock::new();
+static PROVIDER_LOGOS: OnceLock<[image::Handle; 12]> = OnceLock::new();
 static LIGHT_THEME_PROVIDER_LOGOS: OnceLock<[image::Handle; 6]> = OnceLock::new();
 
 struct App {

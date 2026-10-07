@@ -350,6 +350,7 @@ pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -
             decode_provider_logo(include_bytes!("../assets/providers/kimi.png"), false),
             decode_provider_logo(include_bytes!("../assets/providers/zai.png"), false),
             decode_provider_logo(include_bytes!("../assets/providers/xai.png"), false),
+            decode_provider_logo(include_bytes!("../assets/providers/minimax.png"), false),
         ]
     });
 
@@ -365,6 +366,7 @@ pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -
         UsageProvider::Kimi => 8,
         UsageProvider::Zai => 9,
         UsageProvider::Xai => 10,
+        UsageProvider::MiniMax => 11,
     }]
     .clone()
 }

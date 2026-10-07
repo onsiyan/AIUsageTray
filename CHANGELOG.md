@@ -70,6 +70,11 @@ All notable changes to this project are documented here. The format follows
   `XAI_TEAM_ID`, or both on stdin). The tab shows the prepaid credit balance
   with today's and the last 30 days' spend; the balance still shows when the
   spend history is unavailable.
+- MiniMax Coding Plan accounts, added from a Coding Plan API key (desktop
+  dialog, or `usage account add minimax` with `MINIMAX_CODING_API_KEY` or
+  stdin). The key's region (api.minimax.io or api.minimaxi.com) is found when
+  the account is added. The tab shows the 5-hour and weekly text quotas, the
+  other model quotas the plan includes, and the points balance.
 - `usage-monitor-cli` for people and agents, with stable account references
   and JSON output.
 

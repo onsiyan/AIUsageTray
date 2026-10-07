@@ -725,6 +725,7 @@ pub(crate) fn belongs_to_provider(provider_id: &str, provider: UsageProvider) ->
         UsageProvider::Kimi => provider_id == "kimi",
         UsageProvider::Zai => provider_id == "zai",
         UsageProvider::Xai => provider_id == "xai",
+        UsageProvider::MiniMax => provider_id == "minimax",
     }
 }
 

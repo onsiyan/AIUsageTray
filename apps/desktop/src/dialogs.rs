@@ -447,6 +447,7 @@ pub(super) fn api_key_dialog<'a>(
         UsageProvider::Kimi => locale::text(language, locale::Text::KimiTitle),
         UsageProvider::Zai => locale::text(language, locale::Text::ZaiTitle),
         UsageProvider::Xai => locale::text(language, locale::Text::XaiTitle),
+        UsageProvider::MiniMax => locale::text(language, locale::Text::MiniMaxTitle),
         _ => locale::text(language, locale::Text::OpenRouterTitle),
     };
     let hint = if is_cursor {
