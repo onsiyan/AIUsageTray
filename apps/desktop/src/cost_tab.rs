@@ -47,8 +47,6 @@ impl Period {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum CostView {
     Period(Period),
-    /// Show tokens instead of dollars.
-    Tokens(bool),
     /// The table lists days instead of models.
     ByDay(bool),
     /// The chart day under the pointer, counted from the chart's first day.
@@ -69,7 +67,6 @@ pub(super) struct CostTab {
     last_started: Option<Instant>,
     error: Option<String>,
     period: Period,
-    tokens: bool,
     by_day: bool,
     hovered_day: Option<usize>,
     /// Monthly prices the user set, by plan key.
@@ -139,7 +136,6 @@ impl CostTab {
                 self.period = period;
                 self.hovered_day = None;
             }
-            CostView::Tokens(tokens) => self.tokens = tokens,
             CostView::ByDay(by_day) => self.by_day = by_day,
             CostView::HoverDay(day) => self.hovered_day = day,
             CostView::EditPlan(editing) => {
@@ -258,7 +254,7 @@ pub(super) fn view(
         controls(state, theme, language),
         headline(report, state, &plans, theme, language),
     ];
-    if !state.tokens && !plans.is_empty() {
+    if !plans.is_empty() {
         sections.push(plan_list(state, &plans, theme, language));
     }
     sections.extend([
@@ -361,29 +357,12 @@ fn controls(
         )
     })
     .collect();
-    let units = vec![
-        (
-            tr(language, "Cost", "التكلفة"),
-            !state.tokens,
-            Message::CostView(CostView::Tokens(false)),
-        ),
-        (
-            tr(language, "Tokens", "الرموز"),
-            state.tokens,
-            Message::CostView(CostView::Tokens(true)),
-        ),
-    ];
-    row![
-        segmented(periods, theme),
-        Space::new().width(Fill),
-        segmented(units, theme),
-    ]
-    .align_y(Alignment::Center)
-    .into()
+    row![segmented(periods, theme), Space::new().width(Fill)]
+        .align_y(Alignment::Center)
+        .into()
 }
 
-/// The period's API value against what the plans cost for it, or the
-/// period's tokens.
+/// The period's API value against what the plans cost for it.
 fn headline(
     report: &CostReport,
     state: &CostTab,
@@ -392,10 +371,11 @@ fn headline(
     language: locale::Language,
 ) -> Element<'static, Message> {
     let days = state.period.days();
-    let (value, tokens) = report.tools.iter().fold((0.0, 0), |(cost, tokens), tool| {
-        let total = tool.last(days);
-        (cost + total.cost_usd, tokens + total.tokens.total())
-    });
+    let value = report
+        .tools
+        .iter()
+        .map(|tool| tool.last(days).cost_usd)
+        .sum::<f64>();
     let english = language == locale::Language::English;
     let label = |english_label: &'static str, arabic_label: &'static str| {
         text(tr(language, english_label, arabic_label))
@@ -409,23 +389,6 @@ fn headline(
             .font(typography::STRONG)
             .color(theme.colors.text())
     };
-
-    if state.tokens {
-        return column![
-            label("ALL TOKENS", "كل الرموز"),
-            big(format_tokens(tokens)),
-            muted_line(
-                tr(
-                    language,
-                    "Input, cache reads and output from every account on this PC.",
-                    "الإدخال وقراءات الكاش والإخراج من كل الحسابات على هذا الجهاز.",
-                ),
-                theme,
-            ),
-        ]
-        .spacing(2)
-        .into();
-    }
 
     let paid = plans
         .iter()
@@ -751,13 +714,7 @@ fn tool_split(
     language: locale::Language,
 ) -> Element<'static, Message> {
     let days = state.period.days();
-    let measure = |total: &DayCost| {
-        if state.tokens {
-            total.tokens.total() as f64
-        } else {
-            total.cost_usd
-        }
-    };
+    let measure = |total: &DayCost| total.cost_usd;
     let mut totals = report
         .tools
         .iter()
@@ -772,26 +729,9 @@ fn tool_split(
         } else {
             0.0
         };
-        let amount = if state.tokens {
-            format_tokens(total.tokens.total())
-        } else {
-            format_dollars(total.cost_usd)
-        };
+        let amount = format_dollars(total.cost_usd);
         let detail = if !tool.logs_found {
             tr(language, "No logs on this PC", "لا توجد سجلات على هذا الجهاز").to_owned()
-        } else if state.tokens {
-            match language {
-                locale::Language::English => format!(
-                    "{} of tokens · {}",
-                    format_percent(share),
-                    format_dollars(total.cost_usd)
-                ),
-                locale::Language::Arabic => format!(
-                    "{} من الرموز · {}",
-                    format_percent(share),
-                    format_dollars(total.cost_usd)
-                ),
-            }
         } else {
             match language {
                 locale::Language::English => format!(
@@ -879,13 +819,7 @@ fn daily_chart(
     language: locale::Language,
 ) -> Element<'static, Message> {
     let count = chart_days(report, state.period);
-    let value = |day: &DayCost| {
-        if state.tokens {
-            day.tokens.total() as f64
-        } else {
-            day.cost_usd
-        }
-    };
+    let value = |day: &DayCost| day.cost_usd;
     let series = report
         .tools
         .iter()
@@ -972,12 +906,7 @@ fn daily_chart(
                 .iter()
                 .filter_map(|(tool, days)| {
                     days.get(index).map(|day| {
-                        let amount = if state.tokens {
-                            format_tokens(day.tokens.total())
-                        } else {
-                            format_dollars(day.cost_usd)
-                        };
-                        format!("{} {amount}", tool.label())
+                        format!("{} {}", tool.label(), format_dollars(day.cost_usd))
                     })
                 })
                 .collect::<Vec<_>>()
@@ -988,11 +917,7 @@ fn daily_chart(
                 .color(theme.colors.text())
                 .into()
         }
-        None => text(if state.tokens {
-            tr(language, "Tokens by day", "الرموز يومًا بيوم")
-        } else {
-            tr(language, "API value by day", "القيمة يومًا بيوم")
-        })
+        None => text(tr(language, "API value by day", "القيمة يومًا بيوم"))
         .size(typography::LABEL_SIZE)
         .font(typography::EMPHASIS)
         .color(theme.colors.text())

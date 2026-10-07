@@ -142,9 +142,6 @@ fn main() -> iced::Result {
                         boot.push(Task::done(Message::CostView(cost_tab::CostView::Period(
                             cost_tab::Period::Week,
                         ))));
-                        boot.push(Task::done(Message::CostView(cost_tab::CostView::Tokens(
-                            true,
-                        ))));
                         Some(Message::CostView(cost_tab::CostView::ByDay(true)))
                     }
                     Ok("welcome") => Some(Message::WelcomePreview(false)),

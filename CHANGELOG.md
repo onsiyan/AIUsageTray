@@ -26,7 +26,7 @@ All notable changes to this project are documented here. The format follows
   prices, read from their local session logs, weighed against what the
   saved accounts' plans cost for the same days ("22× your plans' worth").
   Plan prices start at the list price and can be changed in the tab. Also:
-  today, 7 or 30 days, by cost or by tokens, each tool's share, the days,
+  today, 7 or 30 days, each tool's share, the days,
   cache reads and fresh input, thinking, what the cache saved, and where the
   use went by model or by day. Logs are read once and then only
   where they grew; prices come from models.dev, updated daily, with a
