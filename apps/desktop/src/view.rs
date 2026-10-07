@@ -240,7 +240,7 @@ impl App {
                 .height(Fill)
                 .align_x(Alignment::End)
                 .align_y(Alignment::Start)
-                .padding([44, 110]);
+                .padding([44, 12]);
 
             stack![page, dismiss_area, account_menu_layer]
                 .width(Fill)

@@ -8,10 +8,19 @@ pub(super) fn account_add_dropdown(
     language: locale::Language,
     active_theme: &'static ThemeDefinition,
 ) -> Element<'static, Message> {
-    let providers = PROVIDER_TABS
-        .iter()
-        .copied()
-        .map(|provider| account_provider_choice(provider, active_theme));
+    // Two columns side by side, like the palette menu, so the list is wide
+    // rather than tall.
+    let half = PROVIDER_TABS.len().div_ceil(2);
+    let provider_column = |providers: &[ProviderTab]| {
+        column(
+            providers
+                .iter()
+                .copied()
+                .map(|provider| account_provider_choice(provider, active_theme)),
+        )
+        .spacing(2)
+        .width(Fill)
+    };
 
     container(
         column![
@@ -19,11 +28,15 @@ pub(super) fn account_add_dropdown(
                 .size(typography::METADATA_SIZE)
                 .font(typography::EMPHASIS)
                 .color(active_theme.colors.muted_text()),
-            column(providers).spacing(2),
+            row![
+                provider_column(&PROVIDER_TABS[..half]),
+                provider_column(&PROVIDER_TABS[half..]),
+            ]
+            .spacing(6),
         ]
         .spacing(6),
     )
-    .width(204)
+    .width(400)
     .padding(8)
     .style(move |_| account_menu_surface_style(active_theme))
     .into()
