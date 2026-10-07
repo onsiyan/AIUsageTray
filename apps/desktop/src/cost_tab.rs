@@ -9,7 +9,7 @@
 mod machines;
 mod plans;
 
-pub(super) use machines::{MachineChange, SyncResults};
+pub(super) use machines::{MachineChange, Scope, SyncResults};
 
 use std::collections::BTreeMap;
 
@@ -56,6 +56,10 @@ pub(super) enum CostView {
     PlanDraft(String),
     SavePlan,
     Machine(machines::MachineChange),
+    /// Count only this machine, or every machine.
+    Scope(Scope),
+    /// The machine row under the pointer.
+    HoverMachine(Option<Scope>),
 }
 
 /// The price field, focused when editing starts.
@@ -76,6 +80,10 @@ pub(super) struct CostTab {
     /// A read was asked for while one was running: read again after it.
     rescan: bool,
     machines: machines::Machines,
+    scope: Scope,
+    /// The report narrowed to `scope`; `None` while every machine counts.
+    shown: Option<CostReport>,
+    hovered_machine: Option<Scope>,
 }
 
 impl CostTab {
@@ -152,6 +160,7 @@ impl CostTab {
             Ok(report) => {
                 self.report = Some(report);
                 self.error = None;
+                self.rescope();
             }
             Err(error) => {
                 preview_log(format!("cost scan failed: {error}"));
@@ -162,6 +171,27 @@ impl CostTab {
             self.scan()
         } else {
             Task::none()
+        }
+    }
+
+    /// Narrows the report to the scope, or goes back to every machine when
+    /// the scope's machine is no longer in it.
+    fn rescope(&mut self) {
+        self.shown = None;
+        let (Some(report), Some(name)) = (&self.report, self.scope.machine()) else {
+            return;
+        };
+        match report
+            .machines
+            .iter()
+            .find(|machine| machine.name.as_deref() == name)
+        {
+            Some(machine) => {
+                let mut shown = report.clone();
+                shown.tools = machine.tools.clone();
+                self.shown = Some(shown);
+            }
+            None => self.scope = Scope::All,
         }
     }
 
@@ -200,7 +230,19 @@ impl CostTab {
                     }
                 }
             }
+            CostView::Scope(scope) => {
+                self.scope = scope;
+                self.hovered_day = None;
+                self.rescope();
+            }
+            CostView::HoverMachine(scope) => self.hovered_machine = scope,
             CostView::Machine(change) => {
+                if let MachineChange::Remove(name) = &change
+                    && self.scope == Scope::Machine(name.clone())
+                {
+                    self.scope = Scope::All;
+                    self.rescope();
+                }
                 let (task, rescan) = self.machines.change(change);
                 if rescan {
                     return Task::batch([task, self.scan()]);
@@ -276,7 +318,7 @@ pub(super) fn view(
     theme: &'static ThemeDefinition,
     language: locale::Language,
 ) -> Element<'static, Message> {
-    let Some(report) = &state.report else {
+    let Some(full) = &state.report else {
         let note = if state.error.is_some() && !state.scanning {
             tr(
                 language,
@@ -297,18 +339,28 @@ pub(super) fn view(
         .into();
     };
 
+    let report = state.shown.as_ref().unwrap_or(full);
     let days = state.period.days();
     let plans = plans::plans(entries, &state.plan_prices);
     let mut sections = vec![
-        controls(state, theme, language),
+        controls(state, full, theme, language),
         headline(report, state, &plans, theme, language),
     ];
-    if !plans.is_empty() {
+    // The plans pay for every machine, so they are weighed only against all.
+    if !plans.is_empty() && state.scope == Scope::All {
         sections.push(plan_list(state, &plans, theme, language));
     }
     sections.extend([
         tool_split(report, state, theme, language),
-        machines::section(&state.machines, report, days, theme, language),
+        machines::section(
+            &state.machines,
+            full,
+            days,
+            &state.scope,
+            state.hovered_machine.as_ref(),
+            theme,
+            language,
+        ),
         daily_chart(report, state, theme, language),
         token_metrics(report, days, theme, language),
         breakdown(report, state, theme, language),
@@ -382,6 +434,7 @@ fn segmented(
 
 fn controls(
     state: &CostTab,
+    full: &CostReport,
     theme: &'static ThemeDefinition,
     language: locale::Language,
 ) -> Element<'static, Message> {
@@ -399,9 +452,12 @@ fn controls(
         )
     })
     .collect();
-    row![segmented(periods, theme), Space::new().width(Fill)]
-        .align_y(Alignment::Center)
-        .into()
+    let mut line =
+        row![segmented(periods, theme), Space::new().width(Fill)].align_y(Alignment::Center);
+    if let Some(picker) = machines::picker(full, &state.scope, theme, language) {
+        line = line.push(picker);
+    }
+    line.into()
 }
 
 /// The period's API value against what the plans cost for it.
@@ -419,12 +475,6 @@ fn headline(
         .map(|tool| tool.last(days).cost_usd)
         .sum::<f64>();
     let english = language == locale::Language::English;
-    let label = |english_label: &'static str, arabic_label: &'static str| {
-        text(tr(language, english_label, arabic_label))
-            .size(typography::METADATA_SIZE)
-            .font(typography::EMPHASIS)
-            .color(theme.colors.muted_text())
-    };
     let big = |figure: String| {
         text(figure)
             .size(30)
@@ -432,10 +482,14 @@ fn headline(
             .color(theme.colors.text())
     };
 
-    let paid = plans
-        .iter()
-        .filter_map(|plan| plan.paid_over(days))
-        .sum::<f64>();
+    let paid = if state.scope == Scope::All {
+        plans
+            .iter()
+            .filter_map(|plan| plan.paid_over(days))
+            .sum::<f64>()
+    } else {
+        0.0
+    };
     let unpriced = plans.iter().any(|plan| plan.monthly_usd.is_none());
     let mut figure =
         row![big(format_dollars(value)), Space::new().width(Fill)].align_y(Alignment::Center);
@@ -443,7 +497,14 @@ fn headline(
         figure = figure.push(return_badge(value / paid, theme, language));
     }
 
-    let note = if plans.is_empty() {
+    let note = if state.scope != Scope::All {
+        let name = state.scope.label(language);
+        if english {
+            format!("What the use on {name} would cost at API prices.")
+        } else {
+            format!("ما يكلّفه الاستخدام على {name} بأسعار API.")
+        }
+    } else if plans.is_empty() {
         tr(
             language,
             "What this PC's use would cost at API prices. Add your Codex or Claude account to weigh it against what you pay.",
@@ -488,8 +549,17 @@ fn headline(
         note
     };
 
+    let title = match (&state.scope, english) {
+        (Scope::All, true) => "API VALUE OF YOUR USE".to_owned(),
+        (Scope::All, false) => "قيمة استخدامك بأسعار API".to_owned(),
+        (scope, true) => format!("API VALUE ON {}", scope.label(language).to_uppercase()),
+        (scope, false) => format!("قيمة الاستخدام على {} بأسعار API", scope.label(language)),
+    };
     let mut lines = column![
-        label("API VALUE OF YOUR USE", "قيمة استخدامك بأسعار API"),
+        text(title)
+            .size(typography::METADATA_SIZE)
+            .font(typography::EMPHASIS)
+            .color(theme.colors.muted_text()),
         figure,
     ]
     .spacing(2);
@@ -775,7 +845,12 @@ fn tool_split(
         };
         let amount = format_dollars(total.cost_usd);
         let detail = if !tool.logs_found {
-            tr(language, "No logs on this PC", "لا توجد سجلات على هذا الجهاز").to_owned()
+            tr(
+                language,
+                "No logs on this machine",
+                "لا توجد سجلات على هذا الجهاز",
+            )
+            .to_owned()
         } else {
             match language {
                 locale::Language::English => format!(
@@ -1300,11 +1375,19 @@ fn footer(
     };
     let mut lines = vec![
         muted_line(
-            tr(
-                language,
-                "Read from this PC's Codex and Claude Code logs, all accounts together.",
-                "مقروءة من سجلات Codex وClaude Code على هذا الجهاز، لكل الحسابات معًا.",
-            ),
+            if report.machines.is_empty() {
+                tr(
+                    language,
+                    "Read from this PC's Codex and Claude Code logs, all accounts together.",
+                    "مقروءة من سجلات Codex وClaude Code على هذا الجهاز، لكل الحسابات معًا.",
+                )
+            } else {
+                tr(
+                    language,
+                    "Read from the Codex and Claude Code logs of this PC and your machines, all accounts together.",
+                    "مقروءة من سجلات Codex وClaude Code على هذا الجهاز وأجهزتك، لكل الحسابات معًا.",
+                )
+            },
             theme,
         ),
         muted_line(&prices, theme),

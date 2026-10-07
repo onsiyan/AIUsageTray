@@ -143,6 +143,12 @@ fn main() -> iced::Result {
                             cost_tab::MachineChange::OpenForm,
                         )))
                     }
+                    Ok("cost-vps") => {
+                        boot.push(Task::done(Message::SelectTab(DashboardTab::Cost)));
+                        Some(Message::CostView(cost_tab::CostView::Scope(
+                            cost_tab::Scope::Machine("vps".to_owned()),
+                        )))
+                    }
                     Ok("cost-detail") => {
                         boot.push(Task::done(Message::SelectTab(DashboardTab::Cost)));
                         Some(Message::CostView(cost_tab::CostView::Period(

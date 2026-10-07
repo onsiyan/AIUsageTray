@@ -11,7 +11,7 @@ use usage_monitor_core::cost::{
 
 use super::*;
 // Explicit, so it is not confused with the built-in column! macro.
-use iced::widget::column;
+use iced::widget::{column, pick_list};
 
 /// How often an open Cost page reads the machines again.
 pub(super) const LIVE_SYNC: Duration = Duration::from_secs(60);
@@ -45,6 +45,127 @@ struct HostForm {
     target: String,
     os: RemoteOs,
     problem: Option<HostProblem>,
+}
+
+/// Which machines the page counts.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum Scope {
+    #[default]
+    All,
+    ThisPc,
+    Machine(String),
+}
+
+impl Scope {
+    /// The scope of one machine of a report (`None` is this PC).
+    pub(super) fn of(name: Option<&str>) -> Self {
+        name.map_or(Self::ThisPc, |name| Self::Machine(name.to_owned()))
+    }
+
+    /// The machine's name in a report, or `None` for every machine.
+    pub(super) fn machine(&self) -> Option<Option<&str>> {
+        match self {
+            Self::All => None,
+            Self::ThisPc => Some(None),
+            Self::Machine(name) => Some(Some(name)),
+        }
+    }
+
+    pub(super) fn label(&self, language: locale::Language) -> String {
+        match self {
+            Self::All => tr(language, "All machines", "كل الأجهزة").to_owned(),
+            Self::ThisPc => tr(language, "This PC", "هذا الجهاز").to_owned(),
+            Self::Machine(name) => name.clone(),
+        }
+    }
+}
+
+/// A choice in the machine picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScopeChoice {
+    scope: Scope,
+    label: String,
+}
+
+impl std::fmt::Display for ScopeChoice {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.label)
+    }
+}
+
+/// The machine picker beside the period, once there is more than this PC.
+pub(super) fn picker(
+    report: &CostReport,
+    scope: &Scope,
+    theme: &'static ThemeDefinition,
+    language: locale::Language,
+) -> Option<Element<'static, Message>> {
+    if report.machines.is_empty() {
+        return None;
+    }
+    let choices = std::iter::once(Scope::All)
+        .chain(
+            report
+                .machines
+                .iter()
+                .map(|machine| Scope::of(machine.name.as_deref())),
+        )
+        .map(|scope| ScopeChoice {
+            label: scope.label(language),
+            scope,
+        })
+        .collect::<Vec<_>>();
+    let selected = choices
+        .iter()
+        .find(|choice| choice.scope == *scope)
+        .cloned();
+    let picked = scope != &Scope::All;
+    Some(
+        pick_list(choices, selected, |choice: ScopeChoice| {
+            Message::CostView(CostView::Scope(choice.scope))
+        })
+        .text_size(typography::METADATA_SIZE)
+        .font(if picked {
+            typography::EMPHASIS
+        } else {
+            typography::MEDIUM
+        })
+        .padding([4, 10])
+        .style(move |_: &Theme, status| {
+            let hovered = matches!(
+                status,
+                pick_list::Status::Hovered | pick_list::Status::Opened { .. }
+            );
+            pick_list::Style {
+                text_color: theme.colors.text(),
+                placeholder_color: theme.colors.muted_text(),
+                handle_color: theme.colors.muted_text(),
+                background: Background::Color(if picked || hovered {
+                    theme.colors.hover()
+                } else {
+                    Color::TRANSPARENT
+                }),
+                border: Border {
+                    color: theme.colors.border(0.45),
+                    width: 1.0,
+                    radius: 7.0.into(),
+                },
+            }
+        })
+        .menu_style(move |_: &Theme| iced::overlay::menu::Style {
+            background: Background::Color(theme.colors.control_surface()),
+            border: Border {
+                color: theme.colors.border(0.35),
+                width: 1.0,
+                radius: 7.0.into(),
+            },
+            text_color: theme.colors.text(),
+            selected_text_color: theme.colors.text(),
+            selected_background: Background::Color(theme.colors.hover()),
+            shadow: Shadow::default(),
+        })
+        .into(),
+    )
 }
 
 /// What a machine read returned, by machine name.
@@ -256,11 +377,14 @@ fn change(change: MachineChange) -> Message {
     Message::CostView(CostView::Machine(change))
 }
 
-/// The machines and what each one's use came to over `days` days.
+/// The machines and what each one's use came to over `days` days. A machine
+/// is picked by clicking it, like in the picker.
 pub(super) fn section(
     machines: &Machines,
     report: &CostReport,
     days: usize,
+    scope: &Scope,
+    hovered: Option<&Scope>,
     theme: &'static ThemeDefinition,
     language: locale::Language,
 ) -> Element<'static, Message> {
@@ -297,15 +421,22 @@ pub(super) fn section(
             },
             |machine| machine.cost_over(days),
         );
+    // Picking needs another machine to pick from.
+    let pickable = !report.machines.is_empty();
     rows = rows.push(machine_row(
-        icon_monitor::<Theme>()
-            .size(15)
-            .color(theme.colors.text())
-            .into(),
-        tr(language, "This PC", "هذا الجهاز").to_owned(),
-        None,
-        Some(this_pc),
-        None,
+        MachineRow {
+            icon: icon_monitor::<Theme>()
+                .size(15)
+                .color(theme.colors.text())
+                .into(),
+            name: Scope::ThisPc.label(language),
+            status: None,
+            amount: Some(this_pc),
+            scope: Scope::ThisPc,
+            removable: false,
+        },
+        pickable.then_some(scope),
+        hovered,
         theme,
     ));
 
@@ -319,14 +450,19 @@ pub(super) fn section(
             .map(|machine| machine.cost_over(days));
         let (line, failed) = status_line(&status, now, language);
         rows = rows.push(machine_row(
-            icon_server::<Theme>()
-                .size(15)
-                .color(theme.colors.text())
-                .into(),
-            host.name.clone(),
-            Some((line, failed)),
-            amount,
-            Some(host.name.clone()),
+            MachineRow {
+                icon: icon_server::<Theme>()
+                    .size(15)
+                    .color(theme.colors.text())
+                    .into(),
+                name: host.name.clone(),
+                status: Some((line, failed)),
+                amount,
+                scope: Scope::Machine(host.name.clone()),
+                removable: true,
+            },
+            (pickable && amount.is_some()).then_some(scope),
+            hovered,
             theme,
         ));
     }
@@ -346,18 +482,46 @@ pub(super) fn section(
     rows.into()
 }
 
-fn machine_row(
+struct MachineRow {
     icon: Element<'static, Message>,
     name: String,
     status: Option<(String, bool)>,
     amount: Option<f64>,
-    removable: Option<String>,
+    scope: Scope,
+    removable: bool,
+}
+
+/// Width kept before every row's amount for the remove button, so a name
+/// does not move when the button shows.
+const REMOVE_SLOT: f32 = 22.0;
+
+/// One machine: its name and state, its amount, and, under the pointer, a
+/// remove button. `picked` is the page's scope when rows can be picked.
+fn machine_row(
+    machine: MachineRow,
+    picked: Option<&Scope>,
+    hovered: Option<&Scope>,
     theme: &'static ThemeDefinition,
 ) -> Element<'static, Message> {
+    let MachineRow {
+        icon,
+        name,
+        status,
+        amount,
+        scope,
+        removable,
+    } = machine;
+    let is_hovered = hovered == Some(&scope);
+    let is_picked = picked == Some(&scope);
+    let pickable = picked.is_some();
     let mut label = column![
-        text(name)
+        text(name.clone())
             .size(typography::LABEL_SIZE)
-            .font(typography::MEDIUM)
+            .font(if is_picked {
+                typography::EMPHASIS
+            } else {
+                typography::MEDIUM
+            })
             .color(theme.colors.text())
     ];
     if let Some((line, failed)) = status {
@@ -372,24 +536,11 @@ fn machine_row(
                 }),
         );
     }
-    let mut line = row![
-        container(icon).width(18).center_x(18),
-        label.width(Fill),
-        text(amount.map_or_else(|| "–".to_owned(), format_dollars))
-            .size(typography::LABEL_SIZE)
-            .font(typography::EMPHASIS)
-            .color(theme.colors.text()),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-    if let Some(name) = removable {
-        line = line.push(
-            button(
-                container(icon_x::<Theme>().size(13).color(theme.colors.muted_text())).center(Fill),
-            )
+    let remove: Element<'static, Message> = if removable && is_hovered {
+        button(container(icon_x::<Theme>().size(13).color(theme.colors.muted_text())).center(Fill))
             .on_press(change(MachineChange::Remove(name)))
-            .width(22)
-            .height(22)
+            .width(REMOVE_SLOT)
+            .height(REMOVE_SLOT)
             .padding(0)
             .style(move |framework_theme: &Theme, status| {
                 let mut style = button::text(framework_theme, status);
@@ -401,10 +552,53 @@ fn machine_row(
                     ..Border::default()
                 };
                 style
+            })
+            .into()
+    } else {
+        Space::new().width(REMOVE_SLOT).height(REMOVE_SLOT).into()
+    };
+    let line = row![
+        container(icon).width(18).center_x(18),
+        label.width(Fill),
+        remove,
+        text(amount.map_or_else(|| "–".to_owned(), format_dollars))
+            .size(typography::LABEL_SIZE)
+            .font(typography::EMPHASIS)
+            .color(theme.colors.text()),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    let area = container(line)
+        .padding([4, 6])
+        .width(Fill)
+        .style(move |_| container::Style {
+            background: (is_picked || (is_hovered && pickable)).then(|| {
+                let hover = theme.colors.hover();
+                Background::Color(if is_picked {
+                    hover
+                } else {
+                    hover.scale_alpha(0.5)
+                })
             }),
-        );
+            border: Border {
+                radius: 7.0.into(),
+                ..Border::default()
+            },
+            ..Default::default()
+        });
+    let mut area = mouse_area(area)
+        .on_enter(Message::CostView(CostView::HoverMachine(Some(
+            scope.clone(),
+        ))))
+        .on_exit(Message::CostView(CostView::HoverMachine(None)));
+    if pickable {
+        // Clicking the picked machine shows every machine again.
+        let next = if is_picked { Scope::All } else { scope };
+        area = area
+            .on_press(Message::CostView(CostView::Scope(next)))
+            .interaction(iced::mouse::Interaction::Pointer);
     }
-    line.into()
+    area.into()
 }
 
 /// When the machine was last read, or why it could not be.
