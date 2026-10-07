@@ -15,6 +15,32 @@ pub(super) fn theme_dropdown(
         .copied()
         .map(|theme| theme_choice_row(theme, current_theme, active_theme))
         .collect::<Vec<_>>();
+    let custom = ThemeDefinition {
+        label: locale::text(language, locale::Text::CustomThemeName),
+        ..*ThemeId::Custom.definition()
+    };
+    items.push(theme_choice_row(custom, current_theme, active_theme));
+    items.push(
+        button(
+            text(locale::text(language, locale::Text::CustomThemeEdit))
+                .size(typography::LABEL_SIZE)
+                .font(typography::MEDIUM)
+                .color(active_theme.colors.muted_text()),
+        )
+        .on_press(Message::OpenCustomTheme)
+        .width(Fill)
+        .height(MENU_ROW_HEIGHT)
+        .padding(iced::Padding {
+            top: 4.0,
+            right: 9.0,
+            bottom: 4.0,
+            left: 33.0,
+        })
+        .style(move |theme: &Theme, status| {
+            theme_menu_item_style(theme, false, status, active_theme)
+        })
+        .into(),
+    );
 
     items.push(menu_section_title(
         locale::text(language, locale::Text::PercentDisplayTitle),

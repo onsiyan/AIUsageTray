@@ -2,18 +2,18 @@
 
 use super::*;
 
+/// The refresh icon in the theme's text color, drawn once per color.
 pub(super) fn refresh_icon_handle(theme: &'static ThemeDefinition) -> image::Handle {
-    let handles = REFRESH_ICON_HANDLES.get_or_init(|| {
-        THEME_MANIFEST
-            .iter()
-            .map(|theme| (theme.id, render_refresh_icon(theme.colors.text)))
-            .collect()
-    });
-    handles
-        .iter()
-        .find(|(theme_id, _)| *theme_id == theme.id)
-        .map(|(_, handle)| handle.clone())
-        .expect("every active theme must exist in the theme manifest")
+    let color = theme.colors.text;
+    let mut handles = REFRESH_ICON_HANDLES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some((_, handle)) = handles.iter().find(|(drawn, _)| *drawn == color) {
+        return handle.clone();
+    }
+    let handle = render_refresh_icon(color);
+    handles.push((color, handle.clone()));
+    handle
 }
 
 pub(super) fn render_refresh_icon(color: [u8; 3]) -> image::Handle {
@@ -182,8 +182,16 @@ pub(super) fn icon_pixels() -> Vec<u8> {
 
 pub(super) fn backdrop_image_handle(theme_id: ThemeId) -> Option<image::Handle> {
     let backdrop = theme_id.definition().backdrop?;
+    // The custom theme's picture is the one the user saved.
+    let custom_bytes;
+    let bytes = if theme_id == ThemeId::Custom {
+        custom_bytes = custom_theme::image_bytes()?;
+        custom_bytes.as_slice()
+    } else {
+        backdrop.image_bytes
+    };
 
-    match rounded_backdrop_image(backdrop) {
+    match rounded_backdrop_image(bytes, backdrop.image_scale) {
         Ok(image) => Some(image),
         Err(error) => {
             preview_log(format!("theme backdrop preparation failed: {error}"));
@@ -193,14 +201,15 @@ pub(super) fn backdrop_image_handle(theme_id: ThemeId) -> Option<image::Handle> 
 }
 
 pub(super) fn rounded_backdrop_image(
-    backdrop: theme::ThemeBackdrop,
+    image_bytes: &[u8],
+    image_scale: f32,
 ) -> Result<image::Handle, String> {
-    let decoded = ::image::load_from_memory(backdrop.image_bytes)
+    let decoded = ::image::load_from_memory(image_bytes)
         .map_err(|error| format!("could not decode image: {error}"))?
         .to_rgba8();
     let cover_scale =
         (WINDOW_WIDTH / decoded.width() as f32).max(WINDOW_HEIGHT / decoded.height() as f32);
-    let image_scale = backdrop.image_scale.max(0.01);
+    let image_scale = image_scale.max(0.01);
     let crop_width = (WINDOW_WIDTH / (cover_scale * image_scale))
         .round()
         .clamp(1.0, decoded.width() as f32) as u32;

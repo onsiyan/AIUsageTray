@@ -82,7 +82,7 @@ fn icon_path(id: u32) -> io::Result<PathBuf> {
 }
 
 #[cfg(windows)]
-fn pick_image_file() -> Option<PathBuf> {
+pub(crate) fn pick_image_file() -> Option<PathBuf> {
     use std::{ffi::OsString, os::windows::ffi::OsStringExt};
     use windows_sys::Win32::UI::Controls::Dialogs::{
         GetOpenFileNameW, OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR, OFN_PATHMUSTEXIST,
@@ -115,7 +115,7 @@ fn pick_image_file() -> Option<PathBuf> {
 }
 
 #[cfg(not(windows))]
-fn pick_image_file() -> Option<PathBuf> {
+pub(crate) fn pick_image_file() -> Option<PathBuf> {
     None
 }
 

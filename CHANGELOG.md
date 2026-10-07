@@ -79,6 +79,10 @@ All notable changes to this project are documented here. The format follows
 - Xiaomi MiMo provider support (balance and monthly token plan, read with a
   pasted platform.xiaomimimo.com console cookie). Hidden for now: the desktop
   app does not offer it and the CLI does not list it.
+- Custom theme in the palette menu ("Customize…"): a dark or light base, a
+  background and an accent color (presets or a hex code), and an optional
+  background picture of your own, cropped to the window and dimmed lightly,
+  medium, or strongly so text stays readable. Changes apply as you make them.
 - First-run welcome: pick the services you use (each says how its account is
   added; Cursor only from the Cursor app signed in on this computer), then add
   accounts to each in turn or skip it. Only the chosen services' tabs show

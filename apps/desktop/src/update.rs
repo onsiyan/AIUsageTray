@@ -287,6 +287,17 @@ impl App {
                 self.dashboard.close_any_model_visibility_menu();
                 self.hide_popup()
             }
+            message @ (Message::OpenCustomTheme
+            | Message::CloseCustomTheme
+            | Message::CustomThemeLight(_)
+            | Message::CustomThemeBackground(_)
+            | Message::CustomThemeAccent(_)
+            | Message::CustomThemeBackgroundInput(_)
+            | Message::CustomThemeAccentInput(_)
+            | Message::CustomThemeDim(_)
+            | Message::ChooseCustomImage
+            | Message::CustomImageChosen(_)
+            | Message::RemoveCustomImage) => self.update_custom_theme(message),
             message @ (Message::ToggleTabManager
             | Message::DismissTabManager
             | Message::ToggleTabVisible(_)

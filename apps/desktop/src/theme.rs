@@ -8,6 +8,8 @@ pub enum ThemeId {
     GreySpace,
     LanternStreet,
     White,
+    /// The user's own colors and picture; see `custom_theme`.
+    Custom,
 }
 
 impl ThemeId {
@@ -17,6 +19,7 @@ impl ThemeId {
             Self::GreySpace => "grey-space",
             Self::LanternStreet => "lantern-street",
             Self::White => "white",
+            Self::Custom => "custom",
         }
     }
 
@@ -26,11 +29,15 @@ impl ThemeId {
             "grey-space" => Some(Self::GreySpace),
             "lantern-street" => Some(Self::LanternStreet),
             "white" => Some(Self::White),
+            "custom" => Some(Self::Custom),
             _ => None,
         }
     }
 
     pub fn definition(self) -> &'static ThemeDefinition {
+        if self == Self::Custom {
+            return crate::custom_theme::definition();
+        }
         THEME_MANIFEST
             .iter()
             .find(|theme| theme.id == self)

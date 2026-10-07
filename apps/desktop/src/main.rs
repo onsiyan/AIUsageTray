@@ -33,6 +33,8 @@ use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, 
 mod account_add;
 mod chrome;
 mod codex_switch;
+mod custom_theme;
+mod custom_theme_dialog;
 mod dashboard;
 mod dialogs;
 mod display_options;
@@ -81,7 +83,8 @@ thread_local! {
 }
 
 static TRAY_EVENT_RECEIVER: OnceLock<Receiver<TrayIconEvent>> = OnceLock::new();
-static REFRESH_ICON_HANDLES: OnceLock<Vec<(ThemeId, image::Handle)>> = OnceLock::new();
+static REFRESH_ICON_HANDLES: std::sync::Mutex<Vec<([u8; 3], image::Handle)>> =
+    std::sync::Mutex::new(Vec::new());
 
 const USAGE_ANIMATION_TICK: Duration = Duration::from_millis(50);
 /// How often an open popup updates countdowns and checks for passed resets.
@@ -128,6 +131,7 @@ fn main() -> iced::Result {
                     ))),
                     Ok("add") => Some(Message::ToggleAccountAddMenu),
                     Ok("welcome") => Some(Message::WelcomePreview(false)),
+                    Ok("custom-theme") => Some(Message::OpenCustomTheme),
                     Ok("welcome-accounts") => Some(Message::WelcomePreview(true)),
                     Ok("deepseek") => Some(Message::ChooseAccountProvider(UsageProvider::DeepSeek)),
                     Ok("copilot") => Some(Message::ChooseAccountProvider(UsageProvider::Copilot)),
@@ -427,6 +431,12 @@ struct App {
     welcome: Option<welcome::Welcome>,
     /// Whether the first account load decided about the welcome yet.
     welcome_checked: bool,
+    custom_theme_open: bool,
+    custom_background_input: String,
+    custom_accent_input: String,
+    /// The image file dialog for the custom theme is open.
+    custom_image_picking: bool,
+    custom_image_error: Option<String>,
 }
 
 impl App {
@@ -471,6 +481,11 @@ impl App {
             ui_zoom: 1.0,
             welcome: None,
             welcome_checked: false,
+            custom_theme_open: false,
+            custom_background_input: String::new(),
+            custom_accent_input: String::new(),
+            custom_image_picking: false,
+            custom_image_error: None,
         }
     }
 
@@ -488,7 +503,8 @@ impl App {
         let blocking_dialog_open = app.credentials_provider.is_some()
             || app.copilot_code.is_some()
             || app.account_delete_dialog_open
-            || app.tab_manager_open;
+            || app.tab_manager_open
+            || app.custom_theme_open;
         if should_run_popup_animation_ticks(
             app.popup_visible,
             blocking_dialog_open,
@@ -735,6 +751,17 @@ enum Message {
     SetMemorySaver(bool),
     SetShowAccountDetails(bool),
     SetShowTeamBudgets(bool),
+    OpenCustomTheme,
+    CloseCustomTheme,
+    CustomThemeLight(bool),
+    CustomThemeBackground([u8; 3]),
+    CustomThemeAccent([u8; 3]),
+    CustomThemeBackgroundInput(String),
+    CustomThemeAccentInput(String),
+    CustomThemeDim(custom_theme::Dim),
+    ChooseCustomImage,
+    CustomImageChosen(Result<bool, String>),
+    RemoveCustomImage,
     WelcomeToggleProvider(UsageProvider),
     WelcomeOpenStep(usize),
     WelcomeBack,

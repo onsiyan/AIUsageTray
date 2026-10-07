@@ -113,12 +113,15 @@ impl App {
                 .width(Fill)
                 .height(Fill)
                 .style(move |_| container::Style {
-                    background: Some(Background::Color(Color::from_rgba(
-                        0.0,
-                        0.0,
-                        0.0,
-                        backdrop.shade_opacity,
-                    ))),
+                    // Dark text needs a pale veil over the picture.
+                    background: Some(Background::Color(if active_theme.colors.is_light {
+                        active_theme
+                            .colors
+                            .window_surface()
+                            .scale_alpha(backdrop.shade_opacity)
+                    } else {
+                        Color::from_rgba(0.0, 0.0, 0.0, backdrop.shade_opacity)
+                    })),
                     border: Border {
                         radius: WINDOW_FRAME_RADIUS.into(),
                         ..Border::default()
@@ -135,7 +138,19 @@ impl App {
             .height(Fill)
             .into();
 
-        let content = if self.tab_manager_open {
+        let content = if self.custom_theme_open {
+            // Light scrim, so the theme being edited stays visible behind.
+            let dismiss_area = mouse_area(Space::new().width(Fill).height(Fill))
+                .on_press(Message::CloseCustomTheme);
+            let dialog = container(self.custom_theme_dialog())
+                .width(Fill)
+                .height(Fill)
+                .center(Fill);
+            stack![page, dismiss_area, dialog]
+                .width(Fill)
+                .height(Fill)
+                .into()
+        } else if self.tab_manager_open {
             let dismiss_area = mouse_area(Space::new().width(Fill).height(Fill))
                 .on_press(Message::DismissTabManager);
             let dialog = container(tab_manager_dialog(
