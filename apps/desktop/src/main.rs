@@ -18,8 +18,7 @@ use iced::{
     futures::{SinkExt, Stream},
     keyboard,
     widget::{
-        Space, button, column, container, image, mouse_area, row, scrollable, stack, text,
-        text_input,
+        Space, button, container, image, mouse_area, row, scrollable, stack, text, text_input,
     },
     window,
 };
@@ -128,6 +127,9 @@ fn main() -> iced::Result {
                     }
                     Ok("deepseek-tab") => Some(Message::SelectTab(DashboardTab::Provider(
                         UsageProvider::DeepSeek,
+                    ))),
+                    Ok("openrouter-tab") => Some(Message::SelectTab(DashboardTab::Provider(
+                        UsageProvider::OpenRouter,
                     ))),
                     Ok("add") => Some(Message::ToggleAccountAddMenu),
                     Ok("welcome") => Some(Message::WelcomePreview(false)),

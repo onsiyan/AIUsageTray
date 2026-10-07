@@ -3,6 +3,8 @@
 
 use super::*;
 use display_options::ResetCreditVisibility;
+// Explicit, so it is not confused with the built-in column! macro.
+use iced::widget::column;
 
 pub(super) fn theme_dropdown(
     current_theme: ThemeId,
@@ -10,11 +12,18 @@ pub(super) fn theme_dropdown(
     memory_saver: bool,
     active_theme: &'static ThemeDefinition,
 ) -> Element<'static, Message> {
-    let mut items = THEME_MANIFEST
-        .iter()
-        .copied()
-        .map(|theme| theme_choice_row(theme, current_theme, active_theme))
-        .collect::<Vec<_>>();
+    // Themes and memory on the left, how usage reads on the right: a wide
+    // menu across the window instead of a tall one.
+    let mut items = vec![menu_section_title(
+        locale::text(language, locale::Text::ThemeTitle),
+        active_theme,
+    )];
+    items.extend(
+        THEME_MANIFEST
+            .iter()
+            .copied()
+            .map(|theme| theme_choice_row(theme, current_theme, active_theme)),
+    );
     let custom = ThemeDefinition {
         label: locale::text(language, locale::Text::CustomThemeName),
         ..*ThemeId::Custom.definition()
@@ -41,6 +50,8 @@ pub(super) fn theme_dropdown(
         })
         .into(),
     );
+
+    let themes = column(std::mem::take(&mut items)).spacing(1).width(Fill);
 
     items.push(menu_section_title(
         locale::text(language, locale::Text::PercentDisplayTitle),
@@ -78,6 +89,8 @@ pub(super) fn theme_dropdown(
         active_theme,
     ));
 
+    let display = column(std::mem::take(&mut items)).spacing(1).width(Fill);
+
     items.push(menu_section_title(
         locale::text(language, locale::Text::ResetCreditsTitle),
         active_theme,
@@ -99,6 +112,11 @@ pub(super) fn theme_dropdown(
         ));
     }
 
+    let display = column![display, column(std::mem::take(&mut items)).spacing(1)]
+        .spacing(1)
+        .width(Fill);
+
+    // Memory sits under the themes, where the shorter column has room.
     items.push(menu_section_title(
         locale::text(language, locale::Text::MemoryTitle),
         active_theme,
@@ -120,11 +138,23 @@ pub(super) fn theme_dropdown(
         .into(),
     );
 
-    container(column(items).spacing(1))
-        .width(200)
-        .padding(6)
-        .style(move |_| theme_dropdown_surface_style(active_theme))
-        .into()
+    let themes = column![themes, column(items).spacing(1)]
+        .spacing(1)
+        .width(176);
+    let divider = container(Space::new().width(1).height(Fill)).style(move |_| container::Style {
+        background: Some(Background::Color(active_theme.colors.border(0.14))),
+        ..Default::default()
+    });
+
+    container(
+        row![themes, divider, display]
+            .spacing(6)
+            .height(Length::Shrink),
+    )
+    .width(400)
+    .padding(6)
+    .style(move |_| theme_dropdown_surface_style(active_theme))
+    .into()
 }
 
 const MENU_ROW_HEIGHT: f32 = 30.0;

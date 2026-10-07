@@ -265,7 +265,7 @@ impl App {
             .height(Fill)
             .align_x(Alignment::End)
             .align_y(Alignment::Start)
-            .padding([44, 50]);
+            .padding([44, 12]);
 
             stack![page, dismiss_area, theme_menu_layer]
                 .width(Fill)

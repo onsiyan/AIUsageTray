@@ -626,17 +626,19 @@ pub fn view(
             theme,
         )
     } else if accounts.is_empty() {
-        centered_note(
-            locale::text(
-                language,
-                if tab == DashboardTab::Favorites {
-                    Text::NoFavoriteAccounts
-                } else {
-                    Text::NoAccountsForProvider
-                },
-            ),
-            theme,
-        )
+        match tab {
+            DashboardTab::Favorites => {
+                centered_note(locale::text(language, Text::NoFavoriteAccounts), theme)
+            }
+            // A provider's own tab adds to that provider; a custom tab
+            // offers the providers to choose from.
+            DashboardTab::Provider(provider) => {
+                empty_tab_with_add(Message::ChooseAccountProvider(provider), theme, language)
+            }
+            DashboardTab::Custom { .. } => {
+                empty_tab_with_add(Message::ToggleAccountAddMenu, theme, language)
+            }
+        }
     } else {
         let mut account_sections = Vec::with_capacity(accounts.len() * 2);
         for (index, entry) in accounts.into_iter().enumerate() {

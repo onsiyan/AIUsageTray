@@ -116,6 +116,7 @@ pub enum Text {
     MemoryTitle,
     MemorySaver,
     MemorySaverTradeoff,
+    ThemeTitle,
     GroupedQuotasUnavailable,
     NoModelsVisible,
     RefreshUsage,
@@ -336,6 +337,7 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, ResetCreditsNone) => "Hide all",
         (English, MemoryTitle) => "Memory",
         (English, MemorySaver) => "Save memory in tray",
+        (English, ThemeTitle) => "Theme",
         (English, MemorySaverTradeoff) => {
             "Frees about 100 MB while hidden, but the window takes about a second to open."
         }
@@ -564,6 +566,7 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (Arabic, ResetCreditsNone) => "إخفاء الكل",
         (Arabic, MemoryTitle) => "الذاكرة",
         (Arabic, MemorySaver) => "توفير الذاكرة في الخلفية",
+        (Arabic, ThemeTitle) => "المظهر",
         (Arabic, MemorySaverTradeoff) => {
             "يحرر حوالي 100 ميغابايت والنافذة مخفية، لكن فتحها يتأخر قرابة ثانية."
         }

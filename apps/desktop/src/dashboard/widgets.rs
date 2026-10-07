@@ -300,6 +300,34 @@ pub(super) fn centered_note(
     .into()
 }
 
+/// The note of an empty tab with a button that adds an account.
+pub(super) fn empty_tab_with_add(
+    add: Message,
+    theme: &'static crate::theme::ThemeDefinition,
+    language: Language,
+) -> Element<'static, Message> {
+    container(
+        column![
+            text(locale::text(language, Text::NoAccountsForProvider))
+                .size(typography::BODY_SIZE)
+                .color(muted_text(theme)),
+            crate::account_dialog_button(
+                locale::text(language, Text::AddAccount),
+                true,
+                true,
+                theme,
+                add,
+            ),
+        ]
+        .spacing(12)
+        .align_x(Alignment::Center),
+    )
+    .width(Fill)
+    .height(Fill)
+    .center(Fill)
+    .into()
+}
+
 pub(super) fn muted_text(theme: &'static crate::theme::ThemeDefinition) -> Color {
     theme.colors.muted_text()
 }
