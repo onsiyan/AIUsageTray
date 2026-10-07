@@ -388,7 +388,7 @@ const PROVIDER_TABS: &[ProviderTab] = &[
 ];
 
 static PROVIDER_LOGOS: OnceLock<[image::Handle; 13]> = OnceLock::new();
-static LIGHT_THEME_PROVIDER_LOGOS: OnceLock<[image::Handle; 7]> = OnceLock::new();
+static LIGHT_THEME_PROVIDER_LOGOS: OnceLock<[image::Handle; 8]> = OnceLock::new();
 
 struct App {
     window_id: Option<window::Id>,

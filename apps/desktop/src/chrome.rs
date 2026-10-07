@@ -318,6 +318,7 @@ pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -
             UsageProvider::Zai => Some(4),
             UsageProvider::Xai => Some(5),
             UsageProvider::MiMo => Some(6),
+            UsageProvider::Kimi => Some(7),
             _ => None,
         };
         if let Some(logo_index) = logo_index {
@@ -333,6 +334,11 @@ pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -
                     decode_provider_logo(include_bytes!("../assets/providers/zai.png"), true),
                     decode_provider_logo(include_bytes!("../assets/providers/xai.png"), true),
                     decode_provider_logo(include_bytes!("../assets/providers/mimo.png"), true),
+                    // Already black, and its dot must stay blue.
+                    decode_provider_logo(
+                        include_bytes!("../assets/providers/kimi-light-theme.png"),
+                        false,
+                    ),
                 ]
             });
             return logos[logo_index].clone();
