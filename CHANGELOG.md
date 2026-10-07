@@ -22,7 +22,10 @@ All notable changes to this project are documented here. The format follows
 - An account whose saved sign-in the provider refused says "Sign-in
   expired" with the provider's reason (such as `refresh_token_reused`) and
   when its last reading was taken, with a "Sign in again" button.
-- Cost tab: what Codex and Claude Code use on this PC would cost at API list
+- Image themes put a deeper shade under the accounts, so the figures stand
+  off the picture.
+- Cost page, opened from the $ button at the top left: what Codex and
+  Claude Code use on this PC would cost at API list
   prices, read from their local session logs, weighed against what the
   saved accounts' plans cost for the same days ("22× your plans' worth").
   Plan prices start at the list price and can be changed in the tab. Also:

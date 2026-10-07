@@ -426,6 +426,8 @@ struct App {
     device_sign_in: Option<DeviceSignIn>,
     account_add_status: Option<AccountAddStatus>,
     selected_tab: DashboardTab,
+    /// The tab to go back to when the Cost page closes.
+    tab_before_cost: DashboardTab,
     /// The user's arrangement of the tab bar.
     tab_layout: tabs::TabLayout,
     tab_manager_open: bool,
@@ -484,6 +486,7 @@ impl App {
             device_sign_in: None,
             account_add_status: None,
             selected_tab: tab_layout.resolve(DashboardTab::Provider(UsageProvider::Codex)),
+            tab_before_cost: tab_layout.resolve(DashboardTab::Provider(UsageProvider::Codex)),
             tab_icons: tab_icons::load_saved(&tab_layout),
             tab_icon_picking: false,
             tab_layout,
@@ -808,6 +811,8 @@ enum Message {
     SwitchAntigravityAppAccount(usage_monitor_core::accounts::AccountId),
     CodexDesktopSwitchFinished(usage_monitor_core::accounts::AccountId, Result<(), String>),
     SelectTab(DashboardTab),
+    /// Opens the Cost page, or goes back to the tab it was opened from.
+    ToggleCostPage,
     CostScanned(Box<Result<usage_monitor_core::cost::CostReport, String>>),
     CostView(cost_tab::CostView),
     ToggleTabManager,

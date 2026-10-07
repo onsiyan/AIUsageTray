@@ -104,6 +104,43 @@ pub(super) fn theme_button(active_theme: &'static ThemeDefinition) -> Element<'s
         .into()
 }
 
+/// Opens or closes the page of what local Codex and Claude Code use would
+/// cost at API prices; lit while the page is open.
+pub(super) fn cost_page_button(
+    open: bool,
+    active_theme: &'static ThemeDefinition,
+    language: locale::Language,
+) -> Element<'static, Message> {
+    let icon = icon_circle_dollar_sign::<Theme>()
+        .size(17)
+        .color(active_theme.colors.text());
+    let button = button(container(icon).center(Fill))
+        .on_press(Message::ToggleCostPage)
+        .width(30)
+        .height(29)
+        .padding(0)
+        .style(move |theme: &Theme, status| {
+            let mut style = button::text(theme, status);
+            style.background =
+                if open || matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                    Some(Background::Color(active_theme.colors.hover()))
+                } else {
+                    None
+                };
+            style.border = Border {
+                radius: 8.0.into(),
+                ..Border::default()
+            };
+            style.shadow = Shadow::default();
+            style
+        });
+    hint::hint(
+        button,
+        locale::text(language, locale::Text::CostTab),
+        active_theme,
+    )
+}
+
 pub(super) fn refresh_button(
     refreshing: bool,
     active_theme: &'static ThemeDefinition,
@@ -168,7 +205,6 @@ pub(super) fn provider_tab_bar(
                 provider_tab(tab, selected_tab, active_theme)
             }
             tabs::TabKind::Favorites => favorites_tab(selected_tab, active_theme, language),
-            tabs::TabKind::Cost => cost_tab_button(selected_tab, active_theme, language),
             tabs::TabKind::Custom(custom) => custom_tab(
                 custom,
                 icons.get(&custom.id),
@@ -230,25 +266,6 @@ fn favorites_tab(
         DashboardTab::Favorites,
         selected_tab,
         locale::text(language, locale::Text::Favorites),
-        Length::FillPortion(2),
-        active_theme,
-    )
-}
-
-/// The tab of what local Codex and Claude Code usage would cost.
-fn cost_tab_button(
-    selected_tab: DashboardTab,
-    active_theme: &'static ThemeDefinition,
-    language: locale::Language,
-) -> Element<'static, Message> {
-    let icon = icon_circle_dollar_sign::<Theme>()
-        .size(20)
-        .color(active_theme.colors.text());
-    tab_button(
-        icon.into(),
-        DashboardTab::Cost,
-        selected_tab,
-        locale::text(language, locale::Text::CostTab),
         Length::FillPortion(2),
         active_theme,
     )

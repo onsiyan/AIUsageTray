@@ -327,6 +327,15 @@ impl App {
                     Task::none()
                 }
             }
+            Message::ToggleCostPage => {
+                let tab = if self.selected_tab == DashboardTab::Cost {
+                    self.tab_layout.resolve(self.tab_before_cost)
+                } else {
+                    self.tab_before_cost = self.selected_tab;
+                    DashboardTab::Cost
+                };
+                self.update(Message::SelectTab(tab))
+            }
             Message::CostScanned(result) => {
                 self.cost.finish(*result);
                 Task::none()

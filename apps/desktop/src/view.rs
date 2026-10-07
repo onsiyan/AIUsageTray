@@ -16,6 +16,11 @@ impl App {
         );
         let title_bar = container(
             row![
+                cost_page_button(
+                    self.selected_tab == DashboardTab::Cost,
+                    active_theme,
+                    self.language,
+                ),
                 mouse_area(Space::new().width(Fill).height(Length::Fill))
                     .on_press(Message::DragWindow),
                 add_account_button(self.account_add_running, active_theme, self.language),
@@ -81,21 +86,24 @@ impl App {
                 title_bar_separator,
                 provider_tab_bar,
                 account_add_status,
-                if self.selected_tab == DashboardTab::Cost {
-                    cost_tab::view(
-                        &self.cost,
-                        self.dashboard.account_entries(),
-                        active_theme,
-                        self.language,
-                    )
-                } else {
-                    dashboard::view(
-                        &self.dashboard,
-                        self.selected_tab,
-                        active_theme,
-                        self.language,
-                    )
-                }
+                content_shade(
+                    if self.selected_tab == DashboardTab::Cost {
+                        cost_tab::view(
+                            &self.cost,
+                            self.dashboard.account_entries(),
+                            active_theme,
+                            self.language,
+                        )
+                    } else {
+                        dashboard::view(
+                            &self.dashboard,
+                            self.selected_tab,
+                            active_theme,
+                            self.language,
+                        )
+                    },
+                    active_theme,
+                )
             ]
             .spacing(0)
             .width(Fill)
@@ -310,3 +318,33 @@ fn dialog_scrim<'a>() -> Element<'a, Message> {
         })
         .into()
 }
+
+/// Image themes get a deeper shade under the page than under the bars, so
+/// the figures stand off the picture.
+fn content_shade<'a>(
+    content: Element<'a, Message>,
+    active_theme: &'static ThemeDefinition,
+) -> Element<'a, Message> {
+    if active_theme.backdrop.is_none() {
+        return content;
+    }
+    let shade = if active_theme.colors.is_light {
+        active_theme.colors.window_surface().scale_alpha(CONTENT_SHADE_OPACITY)
+    } else {
+        Color::from_rgba(0.0, 0.0, 0.0, CONTENT_SHADE_OPACITY)
+    };
+    container(content)
+        .width(Fill)
+        .height(Fill)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(shade)),
+            border: Border {
+                radius: iced::border::Radius::default().bottom(WINDOW_FRAME_RADIUS),
+                ..Border::default()
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+const CONTENT_SHADE_OPACITY: f32 = 0.75;

@@ -361,13 +361,6 @@ fn tab_row(
                 .into(),
             locale::text(language, locale::Text::Favorites).to_owned(),
         ),
-        TabKind::Cost => (
-            icon_circle_dollar_sign::<Theme>()
-                .size(17)
-                .color(active_theme.colors.text())
-                .into(),
-            locale::text(language, locale::Text::CostTab).to_owned(),
-        ),
         TabKind::Custom(custom) => (
             custom_tab_icon(icons.get(&custom.id), 20.0, active_theme),
             custom.name.clone(),

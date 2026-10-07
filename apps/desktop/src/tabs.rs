@@ -68,7 +68,6 @@ pub struct CustomTab {
 pub enum TabKind {
     Provider(UsageProvider),
     Favorites,
-    Cost,
     Custom(CustomTab),
 }
 
@@ -83,7 +82,6 @@ impl TabEntry {
         match &self.kind {
             TabKind::Provider(provider) => DashboardTab::Provider(*provider),
             TabKind::Favorites => DashboardTab::Favorites,
-            TabKind::Cost => DashboardTab::Cost,
             TabKind::Custom(custom) => DashboardTab::Custom {
                 id: custom.id,
                 providers: custom.providers,
@@ -99,8 +97,7 @@ pub struct TabLayout {
 }
 
 impl Default for TabLayout {
-    /// Every provider in its usual order, with Favorites in the middle and
-    /// Cost at the end.
+    /// Every provider in its usual order, with Favorites in the middle.
     fn default() -> Self {
         let mut entries = PROVIDER_TABS
             .iter()
@@ -116,10 +113,6 @@ impl Default for TabLayout {
                 visible: true,
             },
         );
-        entries.push(TabEntry {
-            kind: TabKind::Cost,
-            visible: true,
-        });
         Self { entries }
     }
 }
@@ -135,6 +128,10 @@ impl TabLayout {
 
     /// The tab to show when `tab` is hidden or gone: the first shown tab.
     pub fn resolve(&self, tab: DashboardTab) -> DashboardTab {
+        // The Cost page opens from the title bar, not from the tab bar.
+        if tab == DashboardTab::Cost {
+            return tab;
+        }
         self.visible_tabs()
             .map(TabEntry::dashboard_tab)
             .find(|visible| visible.same_tab(tab))
@@ -296,7 +293,6 @@ impl TabLayout {
                         format!("provider\t{}\t{visible}", provider.cli_name())
                     }
                     TabKind::Favorites => format!("favorites\t-\t{visible}"),
-                    TabKind::Cost => format!("cost\t-\t{visible}"),
                     TabKind::Custom(custom) => format!(
                         "custom\t{}\t{visible}\t{}\t{}\t{}",
                         custom.id,
@@ -330,7 +326,6 @@ impl TabLayout {
             let kind = match fields.as_slice() {
                 ["provider", key, ..] => provider_from_cli_name(key).map(TabKind::Provider),
                 ["favorites", ..] => Some(TabKind::Favorites),
-                ["cost", ..] => Some(TabKind::Cost),
                 ["custom", id, _, providers, name, rest @ ..] => id.parse().ok().map(|id| {
                     TabKind::Custom(CustomTab {
                         id,
@@ -370,14 +365,11 @@ impl TabLayout {
                 });
             }
         }
-        // Tabs added since the layout was saved join at the end.
-        for kind in [TabKind::Favorites, TabKind::Cost] {
-            if !entries.iter().any(|entry| entry.kind == kind) {
-                entries.push(TabEntry {
-                    kind,
-                    visible: true,
-                });
-            }
+        if !entries.iter().any(|entry| entry.kind == TabKind::Favorites) {
+            entries.push(TabEntry {
+                kind: TabKind::Favorites,
+                visible: true,
+            });
         }
         let mut layout = Self { entries };
         if layout.visible_tabs().next().is_none() {
@@ -429,8 +421,8 @@ mod tests {
             .visible_tabs()
             .map(TabEntry::dashboard_tab)
             .collect::<Vec<_>>();
-        assert_eq!(tabs.len(), PROVIDER_TABS.len() + 2);
-        assert_eq!(tabs.last(), Some(&DashboardTab::Cost));
+        assert_eq!(tabs.len(), PROVIDER_TABS.len() + 1);
+        assert!(!tabs.contains(&DashboardTab::Cost));
         assert_eq!(
             tabs[PROVIDER_TABS.len().div_ceil(2)],
             DashboardTab::Favorites
@@ -463,7 +455,7 @@ mod tests {
             layout.entries()[0].kind,
             TabKind::Provider(UsageProvider::Claude)
         );
-        assert_eq!(layout.entries().len(), PROVIDER_TABS.len() + 2);
+        assert_eq!(layout.entries().len(), PROVIDER_TABS.len() + 1);
     }
 
     #[test]

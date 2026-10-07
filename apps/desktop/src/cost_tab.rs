@@ -278,14 +278,6 @@ pub(super) fn view(
         .padding([10, 12])
         .width(Fill)
         .height(Fill)
-        .style(move |_| container::Style {
-            // Image themes get a shade, so the figures stay off the picture.
-            background: theme
-                .backdrop
-                .is_some()
-                .then(|| Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.55))),
-            ..Default::default()
-        })
         .into()
 }
 
