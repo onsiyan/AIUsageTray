@@ -23,11 +23,12 @@ All notable changes to this project are documented here. The format follows
   expired" with the provider's reason (such as `refresh_token_reused`) and
   when its last reading was taken, with a "Sign in again" button.
 - Cost tab: what Codex and Claude Code use on this PC would cost at API list
-  prices, read from their local session logs. Laid out like T3 Code's usage
-  page: today, 7 or 30 days, by cost or by tokens, each tool's share, a daily
-  chart with a hover readout, cached and uncached input, output with
-  reasoning, what the cache saved, and a breakdown by model or by day. Logs
-  are read once and then only
+  prices, read from their local session logs, weighed against what the
+  saved accounts' plans cost for the same days ("22× your plans' worth").
+  Plan prices start at the list price and can be changed in the tab. Also:
+  today, 7 or 30 days, by cost or by tokens, each tool's share, the days,
+  cache reads and fresh input, thinking, what the cache saved, and where the
+  use went by model or by day. Logs are read once and then only
   where they grew; prices come from models.dev, updated daily, with a
   built-in table for offline use. `usage-monitor-cli cost` prints the same.
 - Favorites tab, third in the tab bar, gathering accounts starred from any

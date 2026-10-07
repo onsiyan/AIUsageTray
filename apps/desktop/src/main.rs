@@ -497,7 +497,7 @@ impl App {
             window_focused: false,
             last_focus_lost: None,
             dashboard,
-            cost: cost_tab::CostTab::default(),
+            cost: cost_tab::CostTab::load(),
             language: locale::default_language(),
             memory_saver: memory_saver::load_saved(),
             ui_zoom: 1.0,

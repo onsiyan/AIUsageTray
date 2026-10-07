@@ -82,7 +82,12 @@ impl App {
                 provider_tab_bar,
                 account_add_status,
                 if self.selected_tab == DashboardTab::Cost {
-                    cost_tab::view(&self.cost, active_theme, self.language)
+                    cost_tab::view(
+                        &self.cost,
+                        self.dashboard.account_entries(),
+                        active_theme,
+                        self.language,
+                    )
                 } else {
                     dashboard::view(
                         &self.dashboard,

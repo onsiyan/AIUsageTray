@@ -1,14 +1,21 @@
 //! The Cost tab: what Codex and Claude Code usage on this PC would cost at
 //! API list prices, read from the tools' local logs.
 //!
-//! Laid out like T3 Code's usage page, narrowed to the popup: the period and
-//! cost/tokens switches, the headline total, each tool's share, a daily
-//! chart, the token classes, and a table by model or by day.
+//! The page leads with what the user gets from their subscriptions: the API
+//! value of the period against what their plans cost for it. Below come each
+//! tool's share, the days, the token classes, and a table by model or day.
+
+mod plans;
+
+use std::collections::BTreeMap;
 
 use super::*;
 // Explicit, so it is not confused with the built-in column! macro.
 use iced::widget::{column, stack};
+use plans::Plan;
 use usage_monitor_core::cost::{self, CostReport, CostTool, DayCost, LogRoots};
+
+use crate::dashboard::AccountUsageEntry;
 
 /// A report on screen is read again after this long.
 const RESCAN_AFTER: Duration = Duration::from_secs(5 * 60);
@@ -37,7 +44,7 @@ impl Period {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum CostView {
     Period(Period),
     /// Show tokens instead of dollars.
@@ -46,7 +53,14 @@ pub(super) enum CostView {
     ByDay(bool),
     /// The chart day under the pointer, counted from the chart's first day.
     HoverDay(Option<usize>),
+    /// Start editing a plan's price, with the text to start from, or stop.
+    EditPlan(Option<(String, String)>),
+    PlanDraft(String),
+    SavePlan,
 }
+
+/// The price field, focused when editing starts.
+const PLAN_PRICE_INPUT: &str = "cost-plan-price";
 
 #[derive(Default)]
 pub(super) struct CostTab {
@@ -58,9 +72,20 @@ pub(super) struct CostTab {
     tokens: bool,
     by_day: bool,
     hovered_day: Option<usize>,
+    /// Monthly prices the user set, by plan key.
+    plan_prices: BTreeMap<String, f64>,
+    /// The plan whose price is being typed, and the text so far.
+    editing_plan: Option<(String, String)>,
 }
 
 impl CostTab {
+    pub(super) fn load() -> Self {
+        Self {
+            plan_prices: plans::load_prices(),
+            ..Self::default()
+        }
+    }
+
     /// Reads the logs if nothing is being read and the last report is old.
     pub(super) fn scan_if_due(&mut self) -> Task<Message> {
         let due = self
@@ -108,7 +133,7 @@ impl CostTab {
         }
     }
 
-    pub(super) fn change(&mut self, change: CostView) {
+    pub(super) fn change(&mut self, change: CostView) -> Task<Message> {
         match change {
             CostView::Period(period) => {
                 self.period = period;
@@ -117,7 +142,36 @@ impl CostTab {
             CostView::Tokens(tokens) => self.tokens = tokens,
             CostView::ByDay(by_day) => self.by_day = by_day,
             CostView::HoverDay(day) => self.hovered_day = day,
+            CostView::EditPlan(editing) => {
+                let started = editing.is_some();
+                self.editing_plan = editing;
+                if started {
+                    return iced::widget::operation::focus(PLAN_PRICE_INPUT);
+                }
+            }
+            CostView::PlanDraft(draft) => {
+                if let Some((_, text)) = &mut self.editing_plan {
+                    *text = draft;
+                }
+            }
+            CostView::SavePlan => {
+                if let Some((key, draft)) = self.editing_plan.take() {
+                    // An empty field goes back to the list price.
+                    if draft.trim().is_empty() {
+                        self.plan_prices.remove(&key);
+                    } else if let Some(price) = plans::parse_typed_price(&draft) {
+                        self.plan_prices.insert(key, price);
+                    } else {
+                        self.editing_plan = Some((key, draft));
+                        return Task::none();
+                    }
+                    if let Err(error) = plans::save_prices(&self.plan_prices) {
+                        preview_log(format!("saving plan prices failed: {error}"));
+                    }
+                }
+            }
         }
+        Task::none()
     }
 }
 
@@ -146,12 +200,21 @@ fn tr(language: locale::Language, english: &'static str, arabic: &'static str) -
     }
 }
 
-/// Codex in a neutral tone and Claude in its orange, as T3 Code does.
+/// Codex in a neutral tone and Claude in its brand orange.
 fn tool_color(tool: CostTool, theme: &'static ThemeDefinition) -> Color {
     match tool {
         CostTool::Claude => Color::from_rgb8(0xD9, 0x77, 0x57),
         CostTool::Codex if theme.colors.is_light => Color::from_rgb8(0x3A, 0x3A, 0x3A),
         CostTool::Codex => Color::from_rgb8(0xE6, 0xE6, 0xE6),
+    }
+}
+
+/// The green of what the use is worth, the same on every theme.
+fn value_color(theme: &'static ThemeDefinition) -> Color {
+    if theme.colors.is_light {
+        Color::from_rgb8(0x1F, 0x9D, 0x63)
+    } else {
+        Color::from_rgb8(0x3D, 0xD6, 0x8C)
     }
 }
 
@@ -164,6 +227,7 @@ fn tool_provider(tool: CostTool) -> UsageProvider {
 
 pub(super) fn view(
     state: &CostTab,
+    entries: &[AccountUsageEntry],
     theme: &'static ThemeDefinition,
     language: locale::Language,
 ) -> Element<'static, Message> {
@@ -189,15 +253,21 @@ pub(super) fn view(
     };
 
     let days = state.period.days();
-    let sections = vec![
+    let plans = plans::plans(entries, &state.plan_prices);
+    let mut sections = vec![
         controls(state, theme, language),
-        headline(report, state, theme, language),
+        headline(report, state, &plans, theme, language),
+    ];
+    if !state.tokens && !plans.is_empty() {
+        sections.push(plan_list(state, &plans, theme, language));
+    }
+    sections.extend([
         tool_split(report, state, theme, language),
         daily_chart(report, state, theme, language),
         token_metrics(report, days, theme, language),
         breakdown(report, state, theme, language),
         footer(report, state.scanning, theme, language),
-    ];
+    ]);
 
     let content = crate::smooth_scroll::smooth_scroll(
         DashboardTab::Cost.scroll_key(),
@@ -223,7 +293,7 @@ pub(super) fn view(
         .into()
 }
 
-/// A row of choices with the picked one filled, like T3 Code's toggles.
+/// A row of choices with the picked one filled.
 fn segmented(
     options: Vec<(&'static str, bool, Message)>,
     theme: &'static ThemeDefinition,
@@ -312,54 +382,364 @@ fn controls(
     .into()
 }
 
-/// The period's total, in the unit the switch shows.
+/// The period's API value against what the plans cost for it, or the
+/// period's tokens.
 fn headline(
     report: &CostReport,
     state: &CostTab,
+    plans: &[Plan],
     theme: &'static ThemeDefinition,
     language: locale::Language,
 ) -> Element<'static, Message> {
     let days = state.period.days();
-    let (cost, tokens) = report.tools.iter().fold((0.0, 0), |(cost, tokens), tool| {
+    let (value, tokens) = report.tools.iter().fold((0.0, 0), |(cost, tokens), tool| {
         let total = tool.last(days);
         (cost + total.cost_usd, tokens + total.tokens.total())
     });
-    let (label, value, note) = if state.tokens {
-        (
-            tr(language, "PROCESSED TOKENS", "الرموز المعالجة"),
-            format_tokens(tokens),
-            tr(
-                language,
-                "Input, cache reads and output, all accounts on this PC.",
-                "الإدخال وقراءات الكاش والإخراج، لكل الحسابات على هذا الجهاز.",
-            ),
-        )
-    } else {
-        (
-            tr(language, "RAW TOKEN COST", "تكلفة الرموز الخام"),
-            format!("{}*", format_dollars(cost)),
-            tr(
-                language,
-                "* if billed at the full API rate. Subscriptions are billed separately.",
-                "* لو حوسبت بسعر API الكامل. الاشتراكات تُحاسب بشكل منفصل.",
-            ),
-        )
-    };
-    column![
-        text(label)
+    let english = language == locale::Language::English;
+    let label = |english_label: &'static str, arabic_label: &'static str| {
+        text(tr(language, english_label, arabic_label))
             .size(typography::METADATA_SIZE)
             .font(typography::EMPHASIS)
-            .color(theme.colors.muted_text()),
-        text(value)
+            .color(theme.colors.muted_text())
+    };
+    let big = |figure: String| {
+        text(figure)
             .size(30)
             .font(typography::STRONG)
-            .color(theme.colors.text()),
-        text(note)
+            .color(theme.colors.text())
+    };
+
+    if state.tokens {
+        return column![
+            label("ALL TOKENS", "كل الرموز"),
+            big(format_tokens(tokens)),
+            muted_line(
+                tr(
+                    language,
+                    "Input, cache reads and output from every account on this PC.",
+                    "الإدخال وقراءات الكاش والإخراج من كل الحسابات على هذا الجهاز.",
+                ),
+                theme,
+            ),
+        ]
+        .spacing(2)
+        .into();
+    }
+
+    let paid = plans
+        .iter()
+        .filter_map(|plan| plan.paid_over(days))
+        .sum::<f64>();
+    let unpriced = plans.iter().any(|plan| plan.monthly_usd.is_none());
+    let mut figure = row![big(format_dollars(value)), Space::new().width(Fill)]
+        .align_y(Alignment::Center);
+    if paid > 0.0 && value > 0.0 {
+        figure = figure.push(return_badge(value / paid, theme, language));
+    }
+
+    let note = if plans.is_empty() {
+        tr(
+            language,
+            "What this PC's use would cost at API prices. Add your Codex or Claude account to weigh it against what you pay.",
+            "ما يكلّفه استخدام هذا الجهاز بأسعار API. أضف حساب Codex أو Claude لتقارنه بما تدفعه.",
+        )
+        .to_owned()
+    } else if paid <= 0.0 {
+        tr(
+            language,
+            "What this PC's use would cost at API prices. Set your plan's price below to compare.",
+            "ما يكلّفه استخدام هذا الجهاز بأسعار API. حدّد سعر اشتراكك في الأسفل لتقارن.",
+        )
+        .to_owned()
+    } else {
+        let mut note = match (english, value >= paid) {
+            (true, true) => format!(
+                "Your plans cost {} for this period. The same use at API prices: {}.",
+                format_price(paid),
+                format_dollars(value)
+            ),
+            (true, false) => format!(
+                "Your plans cost {} for this period, more than this use at API prices.",
+                format_price(paid)
+            ),
+            (false, true) => format!(
+                "اشتراكاتك كلّفت {} لهذه الفترة، والاستخدام نفسه بأسعار API يكلّف {}.",
+                format_price(paid),
+                format_dollars(value)
+            ),
+            (false, false) => format!(
+                "اشتراكاتك كلّفت {} لهذه الفترة، أكثر من هذا الاستخدام بأسعار API.",
+                format_price(paid)
+            ),
+        };
+        if unpriced {
+            note.push_str(tr(
+                language,
+                " Plans without a price are left out.",
+                " الاشتراكات بلا سعر غير محسوبة.",
+            ));
+        }
+        note
+    };
+
+    let mut lines = column![
+        label("API VALUE OF YOUR USE", "قيمة استخدامك بأسعار API"),
+        figure,
+    ]
+    .spacing(2);
+    if paid > 0.0 {
+        lines = lines.push(
+            column![
+                compare_bar(
+                    tr(language, "Plans", "الاشتراك"),
+                    paid,
+                    paid.max(value),
+                    theme.colors.muted_text(),
+                    theme,
+                ),
+                compare_bar(
+                    tr(language, "API", "API"),
+                    value,
+                    paid.max(value),
+                    value_color(theme),
+                    theme,
+                ),
+            ]
+            .spacing(4)
+            .padding([6, 0]),
+        );
+    }
+    lines.push(muted_line(&note, theme)).into()
+}
+
+/// `14×`: how many times the plans' price the use is worth.
+fn return_badge(
+    times: f64,
+    theme: &'static ThemeDefinition,
+    language: locale::Language,
+) -> Element<'static, Message> {
+    let figure = if times >= 10.0 {
+        format!("{times:.0}×")
+    } else {
+        format!("{times:.1}×")
+    };
+    let accent = value_color(theme);
+    container(
+        column![
+            text(figure)
+                .size(20)
+                .font(typography::STRONG)
+                .color(theme.colors.text()),
+            text(tr(language, "your plans' worth", "قيمة اشتراكك"))
+                .size(typography::COMPACT_SIZE)
+                .font(typography::MEDIUM)
+                .color(theme.colors.muted_text()),
+        ]
+        .align_x(Alignment::Center),
+    )
+    .padding([4, 10])
+    .style(move |_| container::Style {
+        background: Some(Background::Color(accent.scale_alpha(0.16))),
+        border: Border {
+            color: accent.scale_alpha(0.55),
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+/// A labelled bar sized against `largest`, with its amount at the end.
+fn compare_bar(
+    label: &'static str,
+    amount: f64,
+    largest: f64,
+    color: Color,
+    theme: &'static ThemeDefinition,
+) -> Element<'static, Message> {
+    let filled = if largest > 0.0 {
+        ((amount / largest) * 1000.0).round().clamp(1.0, 1000.0) as u16
+    } else {
+        1
+    };
+    let bar = row![
+        container(Space::new().width(Fill).height(8))
+            .width(Length::FillPortion(filled))
+            .style(move |_| container::Style {
+                background: Some(Background::Color(color)),
+                border: Border {
+                    radius: 4.0.into(),
+                    ..Border::default()
+                },
+                ..Default::default()
+            }),
+        Space::new()
+            .width(Length::FillPortion(1000_u16.saturating_sub(filled).max(1)))
+            .height(8),
+    ]
+    .width(Fill);
+    row![
+        text(label)
             .size(typography::METADATA_SIZE)
             .font(typography::MEDIUM)
-            .color(theme.colors.muted_text()),
+            .color(theme.colors.muted_text())
+            .width(58),
+        bar,
+        text(format_price(amount))
+            .size(typography::METADATA_SIZE)
+            .font(typography::EMPHASIS)
+            .color(theme.colors.text())
+            .width(56)
+            .align_x(iced::alignment::Horizontal::Right),
     ]
-    .spacing(2)
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// The saved accounts' plans and their monthly prices, each price editable.
+fn plan_list(
+    state: &CostTab,
+    plans: &[Plan],
+    theme: &'static ThemeDefinition,
+    language: locale::Language,
+) -> Element<'static, Message> {
+    let english = language == locale::Language::English;
+    let mut rows = column![
+        text(tr(language, "Your plans", "اشتراكاتك"))
+            .size(typography::LABEL_SIZE)
+            .font(typography::EMPHASIS)
+            .color(theme.colors.text())
+    ]
+    .spacing(4);
+    for plan in plans {
+        let name = if plan.accounts > 1 {
+            format!("{} {} × {}", plan.tool.label(), plan.name, plan.accounts)
+        } else {
+            format!("{} {}", plan.tool.label(), plan.name)
+        };
+        let editing = state
+            .editing_plan
+            .as_ref()
+            .filter(|(key, _)| *key == plan.key)
+            .map(|(_, draft)| draft.clone());
+        let price: Element<'static, Message> = match editing {
+            Some(draft) => {
+                let valid = draft.trim().is_empty() || plans::parse_typed_price(&draft).is_some();
+                row![
+                    text_input(tr(language, "$ a month", "$ شهريًا"), &draft)
+                        .id(PLAN_PRICE_INPUT)
+                        .on_input(|draft| Message::CostView(CostView::PlanDraft(draft)))
+                        .on_submit(Message::CostView(CostView::SavePlan))
+                        .size(typography::METADATA_SIZE)
+                        .padding([3, 6])
+                        .width(76)
+                        .style(move |framework_theme, status| {
+                            let mut style = crate::dialogs::account_key_input_style(
+                                framework_theme,
+                                status,
+                                theme,
+                            );
+                            if !valid {
+                                style.border.color = Color::from_rgb8(0xD9, 0x4B, 0x4B);
+                            }
+                            style
+                        }),
+                    plan_button(tr(language, "Save", "حفظ"), true, CostView::SavePlan, theme),
+                    plan_button("✕", false, CostView::EditPlan(None), theme),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center)
+                .into()
+            }
+            None => {
+                let label = match (plan.monthly_usd, english) {
+                    (Some(price), true) => format!("{}/mo", format_price(price)),
+                    (Some(price), false) => format!("{} شهريًا", format_price(price)),
+                    (None, _) => tr(language, "Set price", "حدّد السعر").to_owned(),
+                };
+                let draft = plan
+                    .monthly_usd
+                    .filter(|_| plan.custom)
+                    .map(|price| format!("{price}"))
+                    .unwrap_or_default();
+                plan_button(
+                    label,
+                    plan.monthly_usd.is_none(),
+                    CostView::EditPlan(Some((plan.key.clone(), draft))),
+                    theme,
+                )
+            }
+        };
+        rows = rows.push(
+            row![
+                image(provider_logo_handle(
+                    tool_provider(plan.tool),
+                    theme.colors.is_light
+                ))
+                .width(14)
+                .height(14)
+                .content_fit(ContentFit::Contain),
+                text(name)
+                    .size(typography::LABEL_SIZE)
+                    .font(typography::MEDIUM)
+                    .color(theme.colors.text())
+                    .width(Fill),
+                price,
+            ]
+            .spacing(7)
+            .align_y(Alignment::Center),
+        );
+    }
+    let custom = plans.iter().any(|plan| plan.custom);
+    rows.push(muted_line(
+        match (custom, english) {
+            (false, true) => "List prices on monthly billing. Click a price to enter what you pay.",
+            (false, false) => "أسعار الاشتراك الشهري المعلنة. اضغط على السعر لتكتب ما تدفعه فعلًا.",
+            (true, true) => "Prices you entered, or list prices. Clear a price to go back to the list price.",
+            (true, false) => "الأسعار التي كتبتها أو المعلنة. امسح السعر لتعود إلى المعلن.",
+        },
+        theme,
+    ))
+    .into()
+}
+
+/// A small text button for the plan prices; `strong` ones are filled.
+fn plan_button(
+    label: impl Into<String>,
+    strong: bool,
+    change: CostView,
+    theme: &'static ThemeDefinition,
+) -> Element<'static, Message> {
+    let accent = value_color(theme);
+    button(
+        text(label.into())
+            .size(typography::METADATA_SIZE)
+            .font(typography::EMPHASIS)
+            .color(theme.colors.text()),
+    )
+    .on_press(Message::CostView(change))
+    .padding([3, 8])
+    .style(move |framework_theme: &Theme, status| {
+        let mut style = button::text(framework_theme, status);
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        style.background = Some(Background::Color(if strong {
+            accent.scale_alpha(if hovered { 0.34 } else { 0.22 })
+        } else if hovered {
+            theme.colors.hover()
+        } else {
+            Color::TRANSPARENT
+        }));
+        style.border = Border {
+            color: theme.colors.border(0.35),
+            width: 1.0,
+            radius: 6.0.into(),
+        };
+        style.shadow = Shadow::default();
+        style
+    })
     .into()
 }
 
@@ -609,9 +989,9 @@ fn daily_chart(
                 .into()
         }
         None => text(if state.tokens {
-            tr(language, "Daily tokens", "الرموز اليومية")
+            tr(language, "Tokens by day", "الرموز يومًا بيوم")
         } else {
-            tr(language, "Daily cost", "التكلفة اليومية")
+            tr(language, "API value by day", "القيمة يومًا بيوم")
         })
         .size(typography::LABEL_SIZE)
         .font(typography::EMPHASIS)
@@ -716,60 +1096,60 @@ fn token_metrics(
     let per_day = tokens.total() / active_days.max(1);
     let english = language == locale::Language::English;
     let processed = metric(
-        tr(language, "Processed tokens", "الرموز المعالجة"),
+        tr(language, "All tokens", "كل الرموز"),
         format_tokens(tokens.total()),
         if english {
-            format!("{} per active day", format_tokens(per_day))
+            format!("about {} on a working day", format_tokens(per_day))
         } else {
-            format!("{} لكل يوم نشط", format_tokens(per_day))
+            format!("نحو {} في يوم العمل", format_tokens(per_day))
         },
         theme,
     );
     let cached = metric(
-        tr(language, "Cached input", "إدخال من الكاش"),
+        tr(language, "Read from cache", "مقروء من الكاش"),
         format_tokens(tokens.cache_read),
         if english {
-            format!("{} of input", format_percent(cached_share))
+            format!("{} of everything read", format_percent(cached_share))
         } else {
-            format!("{} من الإدخال", format_percent(cached_share))
+            format!("{} من كل ما قُرئ", format_percent(cached_share))
         },
         theme,
     );
     let uncached = metric(
-        tr(language, "Uncached input", "إدخال جديد"),
+        tr(language, "Fresh input", "إدخال جديد"),
         format_tokens(tokens.input),
         if english {
-            format!("{} cache writes", format_tokens(tokens.cache_write))
+            format!("{} of it kept in cache", format_tokens(tokens.cache_write))
         } else {
-            format!("{} كتابة للكاش", format_tokens(tokens.cache_write))
+            format!("{} منه حُفظ في الكاش", format_tokens(tokens.cache_write))
         },
         theme,
     );
     let output = metric(
-        tr(language, "Output", "الإخراج"),
+        tr(language, "Written by the model", "ما كتبه النموذج"),
         format_tokens(tokens.output),
         if english {
-            format!("includes {} reasoning", format_tokens(tokens.reasoning))
+            format!("{} of it thinking", format_tokens(tokens.reasoning))
         } else {
-            format!("منه {} تفكير", format_tokens(tokens.reasoning))
+            format!("{} منه تفكير", format_tokens(tokens.reasoning))
         },
         theme,
     );
     let savings = metric(
-        tr(language, "Cache savings", "وفّر الكاش"),
+        tr(language, "Saved by the cache", "ما وفّره الكاش"),
         format_dollars(total.cache_savings_usd),
         if total.cost_usd > 0.0 {
             let times = total.cache_savings_usd / total.cost_usd;
             if english {
-                format!("{times:.1}× the raw token cost, against full input rates")
+                format!("{times:.1}× the API value, had every read been new input")
             } else {
-                format!("{times:.1}× تكلفة الرموز، مقارنة بسعر الإدخال الكامل")
+                format!("{times:.1}× القيمة، لو قُرئ كل شيء كإدخال جديد")
             }
         } else {
             tr(
                 language,
-                "against full input rates",
-                "مقارنة بسعر الإدخال الكامل",
+                "had every read been new input",
+                "لو قُرئ كل شيء كإدخال جديد",
             )
             .to_owned()
         },
@@ -859,7 +1239,7 @@ fn breakdown(
         theme,
     );
     let title = row![
-        text(tr(language, "Breakdown", "التفصيل"))
+        text(tr(language, "Where it went", "أين ذهب الاستخدام"))
             .size(typography::LABEL_SIZE)
             .font(typography::EMPHASIS)
             .color(theme.colors.text())
@@ -1125,6 +1505,15 @@ pub(super) fn format_dollars(amount: f64) -> String {
     format!("${grouped}")
 }
 
+/// `$30`, `$2.67`, `$1,769`: whole dollars without cents.
+fn format_price(amount: f64) -> String {
+    if amount > 0.0 && amount < 1_000.0 && (amount - amount.round()).abs() < 0.005 {
+        format!("${:.0}", amount.round())
+    } else {
+        format_dollars(amount)
+    }
+}
+
 /// `820`, `5.2K`, `131M`, `1.47B`.
 pub(super) fn format_tokens(tokens: u64) -> String {
     let value = tokens as f64;
@@ -1149,7 +1538,7 @@ pub(super) fn format_tokens(tokens: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_day, format_dollars, format_percent, format_tokens};
+    use super::{format_day, format_dollars, format_percent, format_price, format_tokens};
     use crate::locale::Language;
 
     #[test]
@@ -1164,6 +1553,8 @@ mod tests {
         assert_eq!(format_tokens(131_054_244), "131M");
         assert_eq!(format_tokens(1_466_920_434), "1.47B");
         assert_eq!(format_percent(0.684), "68.4%");
+        assert_eq!(format_price(30.0), "$30");
+        assert_eq!(format_price(2.666), "$2.67");
     }
 
     #[test]
