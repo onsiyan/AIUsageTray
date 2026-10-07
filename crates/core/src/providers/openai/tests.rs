@@ -368,7 +368,7 @@ impl UsageHttpTransport for ParallelCodexRequestTransport {
             self.usage_and_reset_barrier.wait().await;
             (
                     200,
-                    r#"{"account_id":"workspace-1","plan_type":"team","rate_limit":{"primary_window":{"used_percent":40,"reset_at":"2030-01-01T00:00:00Z","limit_window_seconds":18000}}}"#.to_owned(),
+                    r#"{"account_id":"workspace-1","plan_type":"team","credits":{"has_credits":true,"unlimited":false},"spend_control":{},"rate_limit":{"primary_window":{"used_percent":40,"reset_at":"2030-01-01T00:00:00Z","limit_window_seconds":18000}}}"#.to_owned(),
                 )
         } else if path.ends_with("/wham/rate-limit-reset-credits") {
             self.usage_and_reset_barrier.wait().await;
@@ -500,4 +500,112 @@ fn token_users_match_by_user_id_before_email() {
         user(None, Some("A@example.com")).is_same_user(&user(Some("u1"), Some("a@example.com")))
     );
     assert!(!user(None, None).is_same_user(&user(None, None)));
+}
+
+#[test]
+fn workspace_balance_and_monthly_limit_follow_codexbar_rules() {
+    assert_eq!(
+        parse_workspace_balance(r#"{"balance":"12.5"}"#),
+        Some(Some(12.5))
+    );
+    assert_eq!(
+        parse_workspace_balance(r#"{"balance":-3}"#),
+        Some(Some(0.0))
+    );
+    assert_eq!(parse_workspace_balance(r#"{}"#), Some(None));
+    assert_eq!(parse_workspace_balance(r#"{"balance":"many"}"#), None);
+
+    let limit = r#"{"current_month_usage":"30","effective_monthly_limit":{"limit":120,"enforcement_mode":"hard"}}"#;
+    assert_eq!(parse_monthly_limit(limit), Some(Some((30.0, 120.0))));
+    let off = r#"{"current_month_usage":30,"effective_monthly_limit":{"limit":120,"enforcement_mode":"OFF"}}"#;
+    assert_eq!(parse_monthly_limit(off), Some(None));
+    let zero = r#"{"current_month_usage":30,"effective_monthly_limit":{"limit":0}}"#;
+    assert_eq!(parse_monthly_limit(zero), Some(None));
+    let unreadable = r#"{"current_month_usage":30,"effective_monthly_limit":{"limit":"lots"}}"#;
+    assert_eq!(parse_monthly_limit(unreadable), None);
+
+    let team: Value =
+        serde_json::from_str(r#"{"plan_type":"business","spend_control":{}}"#).unwrap();
+    assert!(wants_monthly_limit(&team));
+    let plus: Value = serde_json::from_str(r#"{"plan_type":"plus","spend_control":{}}"#).unwrap();
+    assert!(!wants_monthly_limit(&plus));
+    let known: Value = serde_json::from_str(
+        r#"{"plan_type":"team","spend_control":{"individual_limit":{"limit":50,"used":5}}}"#,
+    )
+    .unwrap();
+    assert!(!wants_monthly_limit(&known));
+    assert!(!is_path_safe_id("../other"));
+
+    // A member who may not see an amount is not a failure.
+    let refused = Ok(UsageHttpResponse {
+        status_code: 401,
+        body: String::new(),
+        headers: BTreeMap::new(),
+    });
+    assert!(matches!(optional_body(MONTHLY_LIMIT_SOURCE, refused), Ok(None)));
+}
+
+#[tokio::test]
+async fn team_workspace_amounts_become_metrics() {
+    let transport = Arc::new(TeamWorkspaceTransport);
+    let auth = Arc::new(StaticOAuthAuth(oauth_material()));
+    let adapter = WhamUsageAdapter::new(transport, auth)
+        .unwrap()
+        .with_reset_credits(false);
+    let account = AccountRecord::create(
+        "codex",
+        "codex@example.com",
+        None,
+        OPENAI,
+        Some("workspace-1".to_owned()),
+    )
+    .unwrap();
+
+    let snapshot = adapter.probe(&account).await.unwrap().snapshot.unwrap();
+    let balance = snapshot
+        .metrics
+        .iter()
+        .find(|metric| metric.key == WORKSPACE_BALANCE_KEY)
+        .unwrap();
+    assert_eq!(balance.remaining_amount, Some(840.0));
+    let monthly = snapshot
+        .metrics
+        .iter()
+        .find(|metric| metric.key == MONTHLY_LIMIT_KEY)
+        .unwrap();
+    assert_eq!(
+        (monthly.used_amount, monthly.limit_amount),
+        (Some(25.0), Some(100.0))
+    );
+    assert!(snapshot.source_diagnostics.is_empty());
+}
+
+struct TeamWorkspaceTransport;
+
+#[async_trait]
+impl UsageHttpTransport for TeamWorkspaceTransport {
+    async fn send(&self, request: UsageHttpRequest) -> Result<UsageHttpResponse, TransportError> {
+        assert_eq!(
+            request
+                .headers
+                .get("ChatGPT-Account-Id")
+                .map(String::as_str),
+            Some("workspace-1")
+        );
+        let body = match request.url.path() {
+            "/backend-api/wham/usage" => {
+                r#"{"account_id":"workspace-1","plan_type":"team","credits":{"has_credits":true,"unlimited":false},"spend_control":{},"rate_limit":{"primary_window":{"used_percent":40,"reset_at":"2030-01-01T00:00:00Z","limit_window_seconds":18000}}}"#
+            }
+            "/backend-api/accounts/workspace-1/remaining_balance" => r#"{"balance":840}"#,
+            "/backend-api/accounts/workspace-1/spend-controls/current-user/monthly-usage" => {
+                r#"{"current_month_usage":25,"effective_monthly_limit":{"limit":100,"enforcement_mode":"hard"}}"#
+            }
+            path => panic!("unexpected request {path}"),
+        };
+        Ok(UsageHttpResponse {
+            status_code: 200,
+            body: body.to_owned(),
+            headers: BTreeMap::new(),
+        })
+    }
 }

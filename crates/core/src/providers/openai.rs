@@ -293,6 +293,79 @@ impl UsageAdapter for WhamUsageAdapter {
             }
         }
 
+        // Team workspaces: the shared credit balance and the member's monthly
+        // limit come from separate endpoints, read only when the usage
+        // response says they apply. A failure never fails the usage.
+        let root = serde_json::from_str::<Value>(&usage_response.body).unwrap_or(Value::Null);
+        let workspace = snapshot
+            .response_account_id
+            .clone()
+            .or_else(|| account.workspace_id.clone())
+            .filter(|id| is_path_safe_id(id));
+        if let Some(workspace) = workspace {
+            let balance_path = format!("accounts/{workspace}/remaining_balance");
+            let monthly_path =
+                format!("accounts/{workspace}/spend-controls/current-user/monthly-usage");
+            let balance_request = async {
+                if wants_workspace_balance(snapshot.credits.as_ref()) {
+                    Some(
+                        self.get(&balance_path, Some(account), &material, true)
+                            .await,
+                    )
+                } else {
+                    None
+                }
+            };
+            let monthly_request = async {
+                if wants_monthly_limit(&root) {
+                    Some(
+                        self.get(&monthly_path, Some(account), &material, true)
+                            .await,
+                    )
+                } else {
+                    None
+                }
+            };
+            let (balance_response, monthly_response) =
+                tokio::join!(balance_request, monthly_request);
+            if let Some(response) = balance_response {
+                match optional_body(WORKSPACE_BALANCE_SOURCE, response) {
+                    Ok(None) => {}
+                    Ok(Some(body)) => match parse_workspace_balance(&body) {
+                        Some(Some(balance)) => snapshot.metrics.push(amount_metric(
+                            WORKSPACE_BALANCE_KEY,
+                            "Workspace balance",
+                            None,
+                            None,
+                            Some(balance),
+                        )),
+                        Some(None) => {}
+                        None => source_diagnostics
+                            .push(optional_payload_diagnostic(WORKSPACE_BALANCE_SOURCE)),
+                    },
+                    Err(diagnostic) => source_diagnostics.push(diagnostic),
+                }
+            }
+            if let Some(response) = monthly_response {
+                match optional_body(MONTHLY_LIMIT_SOURCE, response) {
+                    Ok(None) => {}
+                    Ok(Some(body)) => match parse_monthly_limit(&body) {
+                        Some(Some((used, limit))) => snapshot.metrics.push(amount_metric(
+                            MONTHLY_LIMIT_KEY,
+                            "Monthly limit",
+                            Some(used),
+                            Some(limit),
+                            None,
+                        )),
+                        Some(None) => {}
+                        None => source_diagnostics
+                            .push(optional_payload_diagnostic(MONTHLY_LIMIT_SOURCE)),
+                    },
+                    Err(diagnostic) => source_diagnostics.push(diagnostic),
+                }
+            }
+        }
+
         snapshot.source_diagnostics = source_diagnostics;
         let identity = VerifiedIdentity {
             email: Some(account.email.clone()),
@@ -300,6 +373,133 @@ impl UsageAdapter for WhamUsageAdapter {
             plan_type: snapshot.plan_type.clone(),
         };
         Ok(UsageProbeResult::success(snapshot, Some(identity)))
+    }
+}
+
+/// Metric keys for team workspace amounts; hosts may choose not to show them.
+pub const WORKSPACE_BALANCE_KEY: &str = "team.workspace_balance";
+pub const MONTHLY_LIMIT_KEY: &str = "team.monthly_limit";
+/// Diagnostic sources of the team amounts share the metrics' `team.` prefix.
+const WORKSPACE_BALANCE_SOURCE: &str = "team.remaining-balance";
+const MONTHLY_LIMIT_SOURCE: &str = "team.monthly-usage";
+
+/// Workspace ids go into the request path, so only plain ids are used.
+fn is_path_safe_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+}
+
+/// The workspace pays from a shared balance the usage response leaves out.
+fn wants_workspace_balance(credits: Option<&CreditsSnapshot>) -> bool {
+    credits.is_some_and(|credits| {
+        credits.has_credits == Some(true)
+            && credits.unlimited != Some(true)
+            && credits.balance.is_none()
+    })
+}
+
+/// A team member's monthly limit is set by spend controls but missing from
+/// the usage response; personal plans never have one.
+fn wants_monthly_limit(root: &Value) -> bool {
+    let personal = json_string(root, &["plan_type", "planType"]).is_some_and(|plan| {
+        matches!(
+            plan.to_ascii_lowercase().as_str(),
+            "guest" | "free" | "go" | "plus" | "pro"
+        )
+    });
+    parse_credit_limit(root).is_none()
+        && (root.get("spend_control").is_some() || root.get("spendControl").is_some())
+        && !personal
+}
+
+/// A team endpoint's body. Refused or missing means the member cannot see
+/// that amount, which is not a failure worth reporting.
+fn optional_body(
+    source: &str,
+    response: Result<UsageHttpResponse, TransportError>,
+) -> Result<Option<String>, UsageSourceDiagnostic> {
+    match response {
+        Ok(response) if response.is_success() => Ok(Some(response.body)),
+        Ok(response) if matches!(response.status_code, 401 | 403 | 404) => Ok(None),
+        Ok(response) => Err(optional_response_diagnostic(source, &response)),
+        Err(error) => Err(optional_transport_diagnostic(source, &error)),
+    }
+}
+
+/// A number or numeric string; `None` when present but unreadable.
+fn flexible_number(value: Option<&Value>) -> Option<Option<f64>> {
+    match value {
+        None | Some(Value::Null) => Some(None),
+        Some(Value::Number(number)) => number.as_f64().filter(|value| value.is_finite()).map(Some),
+        Some(Value::String(text)) => text
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite())
+            .map(Some),
+        Some(_) => None,
+    }
+}
+
+/// `Some(None)` is a readable response without a balance; `None` is an
+/// unreadable one.
+fn parse_workspace_balance(body: &str) -> Option<Option<f64>> {
+    let root: Value = serde_json::from_str(body).ok()?;
+    let balance = flexible_number(root.as_object()?.get("balance"))?;
+    Some(balance.map(|balance| balance.max(0.0)))
+}
+
+/// The used amount and limit of an enforced monthly limit. `Some(None)` means
+/// no limit applies; `None` is an unreadable response.
+fn parse_monthly_limit(body: &str) -> Option<Option<(f64, f64)>> {
+    let root: Value = serde_json::from_str(body).ok()?;
+    let root = root.as_object()?;
+    let Some(limit_value) = root
+        .get("effective_monthly_limit")
+        .filter(|value| !value.is_null())
+    else {
+        return Some(None);
+    };
+    let limit_value = limit_value.as_object()?;
+    let limit = flexible_number(limit_value.get("limit"))?;
+    let mode = match limit_value.get("enforcement_mode") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(mode)) => Some(mode.to_ascii_lowercase()),
+        Some(_) => return None,
+    };
+    let Some(limit) = limit.filter(|limit| *limit > 0.0) else {
+        return Some(None);
+    };
+    if mode
+        .as_deref()
+        .is_some_and(|mode| matches!(mode, "none" | "off" | "disabled" | "no_limit"))
+    {
+        return Some(None);
+    }
+    let used = flexible_number(root.get("current_month_usage"))?.unwrap_or(0.0);
+    Some(Some((used.max(0.0), limit)))
+}
+
+fn amount_metric(
+    key: &str,
+    name: &str,
+    used: Option<f64>,
+    limit: Option<f64>,
+    remaining: Option<f64>,
+) -> UsageMetric {
+    UsageMetric {
+        key: key.to_owned(),
+        name: name.to_owned(),
+        used_percent: None,
+        used_amount: used,
+        limit_amount: limit,
+        remaining_amount: remaining,
+        unit: Some("credits".to_owned()),
+        reset_at_utc: None,
+        reset_label: None,
+        metadata: HashMap::new(),
     }
 }
 
