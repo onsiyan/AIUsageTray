@@ -12,7 +12,7 @@ mod deepseek;
 mod opencode_go;
 mod openrouter;
 
-const USAGE: &str = "Usage: usage-monitor-login <codex|claude|antigravity|opencode-go|openrouter|deepseek|copilot|cursor|kimi|zai|xai|minimax> [options]";
+const USAGE: &str = "Usage: usage-monitor-login <codex|claude|antigravity|opencode-go|openrouter|deepseek|copilot|cursor|kimi|zai|xai|minimax|mimo> [options]";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,6 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("zai") => api_key::run(&api_key::ZAI_CODING_PLAN).await,
         Some("xai") => api_key::run(&api_key::XAI_MANAGEMENT).await,
         Some("minimax") => api_key::run(&api_key::MINIMAX_CODING_PLAN).await,
+        Some("mimo") => api_key::run(&api_key::XIAOMI_MIMO).await,
         Some("--help" | "-h") => {
             println!("{USAGE}");
             Ok(())

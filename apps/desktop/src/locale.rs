@@ -43,6 +43,10 @@ pub enum Text {
     Last30Days,
     Last30DaysPartial,
     MiniMaxTitle,
+    MiMoTitle,
+    MiMoCookie,
+    MiMoHint,
+    OpenMiMo,
     PointsBalance,
     CursorSession,
     CursorSessionHint,
@@ -207,6 +211,12 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, Last30Days) => "Last 30 days",
         (English, Last30DaysPartial) => "Last 30 days (partial)",
         (English, MiniMaxTitle) => "Add MiniMax account",
+        (English, MiMoTitle) => "Add Xiaomi MiMo account",
+        (English, MiMoCookie) => "Cookie header",
+        (English, MiMoHint) => {
+            "Sign in at platform.xiaomimimo.com, open the balance page, and paste the Cookie header of any request to it (browser developer tools → Network). Only the MiMo session cookies are kept."
+        }
+        (English, OpenMiMo) => "Open MiMo console",
         (English, PointsBalance) => "Points balance",
         (English, CursorSession) => "WorkosCursorSessionToken cookie",
         (English, CursorSessionHint) => {
@@ -362,6 +372,12 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (Arabic, Last30Days) => "آخر 30 يومًا",
         (Arabic, Last30DaysPartial) => "آخر 30 يومًا (جزئي)",
         (Arabic, MiniMaxTitle) => "إضافة حساب MiniMax",
+        (Arabic, MiMoTitle) => "إضافة حساب Xiaomi MiMo",
+        (Arabic, MiMoCookie) => "ترويسة Cookie",
+        (Arabic, MiMoHint) => {
+            "سجّل الدخول في platform.xiaomimimo.com وافتح صفحة الرصيد، ثم الصق ترويسة Cookie لأي طلب إليها (أدوات المطور في المتصفح ← Network). تُحفظ ملفات جلسة MiMo فقط."
+        }
+        (Arabic, OpenMiMo) => "افتح لوحة MiMo",
         (Arabic, PointsBalance) => "رصيد النقاط",
         (Arabic, CursorSession) => "ملف تعريف الارتباط WorkosCursorSessionToken",
         (Arabic, CursorSessionHint) => {

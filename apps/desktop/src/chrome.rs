@@ -317,6 +317,7 @@ pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -
             UsageProvider::Cursor => Some(3),
             UsageProvider::Zai => Some(4),
             UsageProvider::Xai => Some(5),
+            UsageProvider::MiMo => Some(6),
             _ => None,
         };
         if let Some(logo_index) = logo_index {
@@ -331,6 +332,7 @@ pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -
                     decode_provider_logo(include_bytes!("../assets/providers/cursor.png"), true),
                     decode_provider_logo(include_bytes!("../assets/providers/zai.png"), true),
                     decode_provider_logo(include_bytes!("../assets/providers/xai.png"), true),
+                    decode_provider_logo(include_bytes!("../assets/providers/mimo.png"), true),
                 ]
             });
             return logos[logo_index].clone();
@@ -351,6 +353,7 @@ pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -
             decode_provider_logo(include_bytes!("../assets/providers/zai.png"), false),
             decode_provider_logo(include_bytes!("../assets/providers/xai.png"), false),
             decode_provider_logo(include_bytes!("../assets/providers/minimax.png"), false),
+            decode_provider_logo(include_bytes!("../assets/providers/mimo.png"), false),
         ]
     });
 
@@ -367,6 +370,7 @@ pub(super) fn provider_logo_handle(provider: UsageProvider, light_theme: bool) -
         UsageProvider::Zai => 9,
         UsageProvider::Xai => 10,
         UsageProvider::MiniMax => 11,
+        UsageProvider::MiMo => 12,
     }]
     .clone()
 }

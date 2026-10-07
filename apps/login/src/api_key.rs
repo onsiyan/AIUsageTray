@@ -8,7 +8,8 @@
 //! only to the account's Windows Credential Manager entry before the normal
 //! runtime reads the account's usage once. Kimi Code and z.ai keys belong to
 //! one region; the region that accepts the key is found here and stored in
-//! the second value's place.
+//! the second value's place. Xiaomi MiMo is read with a console session
+//! cookie instead of a key; only its MiMo cookies are kept.
 
 use std::{
     env,
@@ -18,12 +19,12 @@ use std::{
     time::Duration,
 };
 use usage_monitor_core::{
-    accounts::{AccountRecord, AccountStore, KIMI, MINIMAX, XAI, ZAI},
+    accounts::{AccountRecord, AccountStore, KIMI, MIMO, MINIMAX, XAI, ZAI},
     auth::{
         AccountAuthMaterial, AccountAuthMaterialProvider, AccountAuthMaterialStore,
         StoredAuthMaterialProvider,
     },
-    providers::{kimi, minimax, registry::ProviderRegistryConfig, xai, zai},
+    providers::{kimi, mimo, minimax, registry::ProviderRegistryConfig, xai, zai},
     refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
     runtime::UsageRuntime,
     storage::{SqliteStore, default_accounts_database_path},
@@ -43,6 +44,13 @@ pub struct ApiKeyProvider {
     /// Find the region whose host accepts the key and keep it as the
     /// secondary token.
     pub region: Option<Region>,
+    /// Rewrites what was pasted into what is stored, or rejects it.
+    pub key_format: Option<KeyFormat>,
+}
+
+pub struct KeyFormat {
+    pub normalize: fn(&str) -> Option<String>,
+    pub error: &'static str,
 }
 
 #[derive(Clone, Copy)]
@@ -66,6 +74,7 @@ pub const KIMI_CODE: ApiKeyProvider = ApiKeyProvider {
     key_variable: "KIMI_CODE_API_KEY",
     second: None,
     region: Some(Region::Kimi),
+    key_format: None,
 };
 
 pub const ZAI_CODING_PLAN: ApiKeyProvider = ApiKeyProvider {
@@ -75,6 +84,7 @@ pub const ZAI_CODING_PLAN: ApiKeyProvider = ApiKeyProvider {
     key_variable: "Z_AI_API_KEY",
     second: None,
     region: Some(Region::Zai),
+    key_format: None,
 };
 
 pub const MINIMAX_CODING_PLAN: ApiKeyProvider = ApiKeyProvider {
@@ -84,6 +94,20 @@ pub const MINIMAX_CODING_PLAN: ApiKeyProvider = ApiKeyProvider {
     key_variable: "MINIMAX_CODING_API_KEY",
     second: None,
     region: Some(Region::MiniMax),
+    key_format: None,
+};
+
+pub const XIAOMI_MIMO: ApiKeyProvider = ApiKeyProvider {
+    command: "mimo",
+    provider_id: MIMO,
+    name: "Xiaomi MiMo",
+    key_variable: "MIMO_COOKIE",
+    second: None,
+    region: None,
+    key_format: Some(KeyFormat {
+        normalize: mimo::cookie_header,
+        error: "The Xiaomi MiMo cookie needs api-platform_serviceToken and userId; copy the Cookie header from platform.xiaomimimo.com while signed in",
+    }),
 };
 
 pub const XAI_MANAGEMENT: ApiKeyProvider = ApiKeyProvider {
@@ -97,6 +121,7 @@ pub const XAI_MANAGEMENT: ApiKeyProvider = ApiKeyProvider {
         is_valid: xai::valid_team_id,
     }),
     region: None,
+    key_format: None,
 };
 
 #[derive(Debug, Default)]
@@ -146,6 +171,11 @@ pub async fn run(provider: &ApiKeyProvider) -> Result<(), Box<dyn std::error::Er
     {
         return Err(format!("The {} `{value}` is not valid", rule.name).into());
     }
+
+    let api_key = match &provider.key_format {
+        Some(format) => (format.normalize)(&api_key).ok_or(format.error)?,
+        None => api_key,
+    };
 
     let transport = Arc::new(ReqwestUsageHttpTransport::new(Duration::from_secs(45))?);
     match provider.region {

@@ -453,6 +453,10 @@ impl App {
                 open_in_browser("https://cursor.com/dashboard");
                 Task::none()
             }
+            Message::OpenMiMoSite => {
+                open_in_browser("https://platform.xiaomimimo.com/#/console/balance");
+                Task::none()
+            }
             Message::CancelCredentials => {
                 self.cancel_credentials();
                 Task::none()

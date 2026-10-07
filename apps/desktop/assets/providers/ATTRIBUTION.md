@@ -12,3 +12,4 @@
 - `zai.png`: Z mark from [CodexBar](https://github.com/steipete/CodexBar) `docs/logos/zai-dark.svg` (MIT), rasterized at 192 px with a small margin to match the other tab icons.
 - `xai.png`: xAI mark from [CodexBar](https://github.com/steipete/CodexBar) `docs/logos/xai.svg` (MIT), recolored white and rasterized at 192 px with a small margin to match the other tab icons.
 - `minimax.png`: MiniMax mark from [CodexBar](https://github.com/steipete/CodexBar) `docs/logos/minimax.svg` (MIT), rasterized at 192 px with a small margin to match the other tab icons.
+- `mimo.png`: Xiaomi MiMo mark from [CodexBar](https://github.com/steipete/CodexBar) `docs/logos/mimo.svg` (MIT), drawn in white and rasterized at 192 px with a small margin to match the other tab icons.

@@ -394,11 +394,14 @@ pub(super) fn api_key_dialog<'a>(
 ) -> Element<'a, Message> {
     let is_cursor = provider == UsageProvider::Cursor;
     let is_xai = provider == UsageProvider::Xai;
+    let is_mimo = provider == UsageProvider::MiMo;
     let api_key_input = text_input(
         locale::text(
             language,
             if is_cursor {
                 locale::Text::CursorSession
+            } else if is_mimo {
+                locale::Text::MiMoCookie
             } else if is_xai {
                 locale::Text::XaiManagementKey
             } else {
@@ -448,23 +451,33 @@ pub(super) fn api_key_dialog<'a>(
         UsageProvider::Zai => locale::text(language, locale::Text::ZaiTitle),
         UsageProvider::Xai => locale::text(language, locale::Text::XaiTitle),
         UsageProvider::MiniMax => locale::text(language, locale::Text::MiniMaxTitle),
+        UsageProvider::MiMo => locale::text(language, locale::Text::MiMoTitle),
         _ => locale::text(language, locale::Text::OpenRouterTitle),
     };
     let hint = if is_cursor {
         locale::Text::CursorSessionHint
     } else if is_xai {
         locale::Text::XaiHint
+    } else if is_mimo {
+        locale::Text::MiMoHint
     } else {
         locale::Text::OpenRouterCredentialHint
     };
-    // Cursor's cookie is copied from a signed-in cursor.com page.
-    let open_site = is_cursor.then(|| {
+    // Cursor's and MiMo's cookies are copied from their signed-in sites.
+    let open_site = if is_cursor {
+        Some((locale::Text::OpenCursor, Message::OpenCursorSite))
+    } else if is_mimo {
+        Some((locale::Text::OpenMiMo, Message::OpenMiMoSite))
+    } else {
+        None
+    }
+    .map(|(label, message)| {
         account_dialog_button(
-            locale::text(language, locale::Text::OpenCursor),
+            locale::text(language, label),
             false,
             true,
             active_theme,
-            Message::OpenCursorSite,
+            message,
         )
     });
 

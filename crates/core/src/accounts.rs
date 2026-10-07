@@ -16,6 +16,7 @@ pub const KIMI: &str = "kimi";
 pub const ZAI: &str = "zai";
 pub const XAI: &str = "xai";
 pub const MINIMAX: &str = "minimax";
+pub const MIMO: &str = "mimo";
 
 pub(crate) fn account_reference_prefix(provider_id: &str) -> &'static str {
     match provider_id {
@@ -31,6 +32,7 @@ pub(crate) fn account_reference_prefix(provider_id: &str) -> &'static str {
         "zai" => "za",
         "xai" => "xa",
         "minimax" => "mx",
+        "mimo" => "mi",
         _ => "ac",
     }
 }

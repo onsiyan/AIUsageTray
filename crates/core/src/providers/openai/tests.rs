@@ -542,7 +542,10 @@ fn workspace_balance_and_monthly_limit_follow_codexbar_rules() {
         body: String::new(),
         headers: BTreeMap::new(),
     });
-    assert!(matches!(optional_body(MONTHLY_LIMIT_SOURCE, refused), Ok(None)));
+    assert!(matches!(
+        optional_body(MONTHLY_LIMIT_SOURCE, refused),
+        Ok(None)
+    ));
 }
 
 #[tokio::test]

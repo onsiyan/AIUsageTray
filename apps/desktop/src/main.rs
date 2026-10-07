@@ -133,6 +133,7 @@ fn main() -> iced::Result {
                     Ok("zai") => Some(Message::ChooseAccountProvider(UsageProvider::Zai)),
                     Ok("xai") => Some(Message::ChooseAccountProvider(UsageProvider::Xai)),
                     Ok("minimax") => Some(Message::ChooseAccountProvider(UsageProvider::MiniMax)),
+                    Ok("mimo") => Some(Message::ChooseAccountProvider(UsageProvider::MiMo)),
                     Ok("openrouter") => {
                         Some(Message::ChooseAccountProvider(UsageProvider::OpenRouter))
                     }
@@ -209,6 +210,7 @@ enum UsageProvider {
     Zai,
     Xai,
     MiniMax,
+    MiMo,
 }
 
 impl UsageProvider {
@@ -226,6 +228,7 @@ impl UsageProvider {
             Self::Zai => "zai",
             Self::Xai => "xai",
             Self::MiniMax => "minimax",
+            Self::MiMo => "mimo",
         }
     }
 
@@ -243,6 +246,7 @@ impl UsageProvider {
             Self::Zai => "z.ai",
             Self::Xai => "xAI",
             Self::MiniMax => "MiniMax",
+            Self::MiMo => "Xiaomi MiMo",
         }
     }
 
@@ -250,7 +254,13 @@ impl UsageProvider {
     const fn uses_api_key(self) -> bool {
         matches!(
             self,
-            Self::OpenRouter | Self::DeepSeek | Self::Kimi | Self::Zai | Self::Xai | Self::MiniMax
+            Self::OpenRouter
+                | Self::DeepSeek
+                | Self::Kimi
+                | Self::Zai
+                | Self::Xai
+                | Self::MiniMax
+                | Self::MiMo
         )
     }
 }
@@ -365,10 +375,14 @@ const PROVIDER_TABS: &[ProviderTab] = &[
         provider: UsageProvider::MiniMax,
         label: "MiniMax",
     },
+    ProviderTab {
+        provider: UsageProvider::MiMo,
+        label: "Xiaomi MiMo",
+    },
 ];
 
-static PROVIDER_LOGOS: OnceLock<[image::Handle; 12]> = OnceLock::new();
-static LIGHT_THEME_PROVIDER_LOGOS: OnceLock<[image::Handle; 6]> = OnceLock::new();
+static PROVIDER_LOGOS: OnceLock<[image::Handle; 13]> = OnceLock::new();
+static LIGHT_THEME_PROVIDER_LOGOS: OnceLock<[image::Handle; 7]> = OnceLock::new();
 
 struct App {
     window_id: Option<window::Id>,
@@ -705,6 +719,7 @@ enum Message {
     OpenCopilotPage,
     CopyCopilotCode,
     OpenCursorSite,
+    OpenMiMoSite,
     CancelCredentials,
     AccountAddCompleted(UsageProvider, Result<(), String>),
     CancelAccountAdd,

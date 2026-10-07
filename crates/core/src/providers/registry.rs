@@ -11,6 +11,7 @@ use super::{
     cursor::CursorUsageAdapter,
     deepseek::DeepSeekUsageAdapter,
     kimi::KimiUsageAdapter,
+    mimo::MiMoUsageAdapter,
     minimax::MiniMaxUsageAdapter,
     openai::WhamUsageAdapter,
     opencode_go::{OpenCodeGoSourceMode, OpenCodeGoUsageAdapter},
@@ -182,6 +183,11 @@ impl ProviderRegistry {
             Arc::clone(&auth),
         )?) as Arc<dyn UsageAdapter>;
 
+        let mimo = Arc::new(MiMoUsageAdapter::new(
+            Arc::clone(&transport),
+            Arc::clone(&auth),
+        )?) as Arc<dyn UsageAdapter>;
+
         Self::from_adapters([
             openai,
             claude,
@@ -195,6 +201,7 @@ impl ProviderRegistry {
             zai,
             xai,
             minimax,
+            mimo,
         ])
     }
 
@@ -253,7 +260,7 @@ mod tests {
     use super::*;
     use crate::{
         accounts::{
-            ANTIGRAVITY, AccountRecord, CLAUDE, COPILOT, CURSOR, DEEPSEEK, KIMI, MINIMAX,
+            ANTIGRAVITY, AccountRecord, CLAUDE, COPILOT, CURSOR, DEEPSEEK, KIMI, MIMO, MINIMAX,
             OPENCODE_GO, OPENROUTER, XAI, ZAI,
         },
         transport::TransportError,
@@ -318,11 +325,12 @@ mod tests {
         let registry =
             ProviderRegistry::from_dependencies(transport, auth, ProviderRegistryConfig::default())
                 .unwrap();
-        assert_eq!(registry.len(), 12);
+        assert_eq!(registry.len(), 13);
         assert!(registry.contains(KIMI));
         assert!(registry.contains(ZAI));
         assert!(registry.contains(XAI));
         assert!(registry.contains(MINIMAX));
+        assert!(registry.contains(MIMO));
         assert!(registry.contains(COPILOT));
         assert!(registry.contains(CURSOR));
         assert!(registry.contains(DEEPSEEK));

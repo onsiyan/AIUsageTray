@@ -16,6 +16,7 @@ pub(super) enum AccountAddProvider {
     Zai,
     Xai,
     MiniMax,
+    MiMo,
 }
 
 impl AccountAddProvider {
@@ -33,6 +34,7 @@ impl AccountAddProvider {
             "zai" | "z.ai" | "glm" => Some(Self::Zai),
             "xai" | "x.ai" => Some(Self::Xai),
             "minimax" => Some(Self::MiniMax),
+            "mimo" | "xiaomi" => Some(Self::MiMo),
             _ => None,
         }
     }
@@ -51,6 +53,7 @@ impl AccountAddProvider {
             Self::Zai => ZAI,
             Self::Xai => XAI,
             Self::MiniMax => MINIMAX,
+            Self::MiMo => MIMO,
         }
     }
 
@@ -69,6 +72,7 @@ impl AccountAddProvider {
             Self::Zai => "zai",
             Self::Xai => "xai",
             Self::MiniMax => "minimax",
+            Self::MiMo => "mimo",
         }
     }
 
@@ -82,6 +86,7 @@ impl AccountAddProvider {
             Self::Zai => Some("Z_AI_API_KEY"),
             Self::Xai => Some("XAI_MANAGEMENT_API_KEY"),
             Self::MiniMax => Some("MINIMAX_CODING_API_KEY"),
+            Self::MiMo => Some("MIMO_COOKIE"),
             _ => None,
         }
     }
@@ -105,6 +110,7 @@ const API_KEY_ENVIRONMENT: &[&str] = &[
     "XAI_MANAGEMENT_API_KEY",
     "XAI_TEAM_ID",
     "MINIMAX_CODING_API_KEY",
+    "MIMO_COOKIE",
 ];
 
 /// The sign-in helper shipped next to the CLI.
@@ -139,7 +145,8 @@ pub(super) fn build_account_add_arguments(
         | AccountAddProvider::Kimi
         | AccountAddProvider::Zai
         | AccountAddProvider::Xai
-        | AccountAddProvider::MiniMax => {
+        | AccountAddProvider::MiniMax
+        | AccountAddProvider::MiMo => {
             // Each explicit add gets its own credential slot; a repeated label
             // must not silently replace another key.
             result.push("--new".into());
@@ -207,7 +214,7 @@ pub(super) async fn execute_account_add(
         return Err(CliFailure::new(
             "unsupported_provider",
             format!(
-                "Unsupported provider `{}`. Choose codex, claude, openrouter, opencode-go, antigravity, deepseek, copilot, cursor, kimi, zai, xai, or minimax.",
+                "Unsupported provider `{}`. Choose codex, claude, openrouter, opencode-go, antigravity, deepseek, copilot, cursor, kimi, zai, xai, minimax, or mimo.",
                 arguments.provider
             ),
             2,
@@ -231,7 +238,7 @@ pub(super) async fn execute_account_add(
     {
         return Err(CliFailure::new(
             "invalid_arguments",
-            "Stdin credential options can only be used with `account add openrouter`, `account add deepseek`, `account add kimi`, `account add zai`, `account add xai`, `account add minimax`, `account add copilot`, or `account add cursor`.",
+            "Stdin credential options can only be used with `account add openrouter`, `account add deepseek`, `account add kimi`, `account add zai`, `account add xai`, `account add minimax`, `account add mimo`, `account add copilot`, or `account add cursor`.",
             2,
         ));
     }
@@ -285,6 +292,7 @@ pub(super) async fn execute_account_add(
             AccountAddProvider::Zai => variable.starts_with("Z_AI_"),
             AccountAddProvider::Xai => variable.starts_with("XAI_"),
             AccountAddProvider::MiniMax => variable.starts_with("MINIMAX_"),
+            AccountAddProvider::MiMo => variable.starts_with("MIMO_"),
             _ => false,
         };
         if !belongs_to_provider {
