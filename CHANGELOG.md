@@ -24,6 +24,10 @@ All notable changes to this project are documented here. The format follows
   when its last reading was taken, with a "Sign in again" button.
 - Image themes put a deeper shade over the whole window, so the figures stand
   off the picture.
+- The Cost page keeps every day it has seen, even after Codex or Claude
+  Code delete their old sessions, on this PC and on each SSH machine. Its
+  period list adds 90 days and All time; long periods chart by week or
+  month.
 - The Cost page counts other machines too: add a Linux, macOS or Windows
   machine reached over SSH (with your keys; no password is asked or kept)
   and its Codex and Claude Code logs are read every minute while the page

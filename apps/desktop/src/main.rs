@@ -155,6 +155,12 @@ fn main() -> iced::Result {
                             cost_tab::Period::Week,
                         )))
                     }
+                    Ok("cost-all") => {
+                        boot.push(Task::done(Message::SelectTab(DashboardTab::Cost)));
+                        Some(Message::CostView(cost_tab::CostView::Period(
+                            cost_tab::Period::All,
+                        )))
+                    }
                     Ok("welcome") => Some(Message::WelcomePreview(false)),
                     Ok("custom-theme") => Some(Message::OpenCustomTheme),
                     Ok("welcome-accounts") => Some(Message::WelcomePreview(true)),

@@ -7,8 +7,10 @@
 //! signed in here is counted together. Each file is read once and then only
 //! from where the last scan stopped, so later scans cost little even when the
 //! logs run to gigabytes. Other machines' logs can be counted too, read over
-//! SSH (see [`remote`]).
+//! SSH (see [`remote`]). What the logs held is kept after the tools delete
+//! them, so the report reaches back to the first use the app saw.
 
+mod history;
 mod pricing;
 pub mod remote;
 mod scan;
@@ -24,8 +26,12 @@ use serde::{Deserialize, Serialize};
 pub use pricing::{PriceSource, PriceTable, Priced, refresh_prices_if_stale};
 pub use scan::LogRoots;
 
-/// Days a report covers, today included.
+/// Days a report covers at least, today included; it reaches further back
+/// when there is older usage.
 pub const REPORT_DAYS: u32 = 30;
+/// How far back a report reaches at most, so a stray timestamp cannot stretch
+/// it over decades.
+const MAX_REPORT_DAYS: u64 = 3_660;
 
 /// The tool whose logs a figure came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -236,8 +242,9 @@ pub fn default_cache_directory() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("UsageMonitor-cost"))
 }
 
-/// Reads what is new in the logs and reports the last [`REPORT_DAYS`] days.
-/// Blocking: logs can be large, so hosts run it off the UI thread.
+/// Reads what is new in the logs and reports every day since the first use
+/// seen, or the last [`REPORT_DAYS`] days if that is longer. Blocking: logs
+/// can be large, so hosts run it off the UI thread.
 pub fn scan_report(roots: &LogRoots, cache_directory: &std::path::Path) -> CostReport {
     scan_report_with(roots, cache_directory, &[])
 }
@@ -252,12 +259,57 @@ pub fn scan_report_with(
     let started = std::time::Instant::now();
     let now = Local::now();
     let today = now.date_naive();
-    let first_day = today
-        .checked_sub_days(Days::new(u64::from(REPORT_DAYS - 1)))
-        .unwrap_or(today);
-    let usage = scan::scan(roots, cache_directory, today);
+    let usage = scan::scan(roots, cache_directory);
     let prices = PriceTable::load(cache_directory);
-    let tools_of = |rows: &BTreeMap<CostTool, Vec<UsageRow>>, found: &dyn Fn(CostTool) -> bool| {
+    let mut history = history::History::load(cache_directory);
+
+    // Each machine's rows by tool, this PC first, joined with its history.
+    let mut this_pc = usage.rows;
+    history.keep("", &mut this_pc, scan::CACHE_VERSION);
+    let mut machine_rows = vec![(None, this_pc, usage.found)];
+    for (name, reading) in remotes {
+        let mut rows: history::ToolRows = BTreeMap::new();
+        for row in &reading.rows {
+            // Half hours line up with every whole and half-hour time zone,
+            // so the start alone places the row on this PC's calendar.
+            let Some(day) = DateTime::from_timestamp(row.slot, 0)
+                .map(|start| start.with_timezone(&Local).date_naive())
+            else {
+                continue;
+            };
+            scan::add_usage(
+                rows.entry(row.tool).or_default(),
+                day,
+                &row.model,
+                row.long_context,
+                &row.tokens,
+            );
+        }
+        history.keep(name, &mut rows, scan::CACHE_VERSION);
+        machine_rows.push((
+            Some(name.clone()),
+            rows,
+            reading.found.iter().copied().collect(),
+        ));
+    }
+    history.save(cache_directory, scan::CACHE_VERSION);
+
+    let earliest = today
+        .checked_sub_days(Days::new(MAX_REPORT_DAYS - 1))
+        .unwrap_or(today);
+    let first_day = machine_rows
+        .iter()
+        .flat_map(|(_, rows, _)| rows.values().flatten())
+        .map(|row| row.day)
+        .filter(|day| *day >= earliest)
+        .min()
+        .unwrap_or(today)
+        .min(
+            today
+                .checked_sub_days(Days::new(u64::from(REPORT_DAYS - 1)))
+                .unwrap_or(today),
+        );
+    let tools_of = |rows: &history::ToolRows, found: &dyn Fn(CostTool) -> bool| {
         CostTool::ALL
             .into_iter()
             .map(|tool| {
@@ -267,40 +319,23 @@ pub fn scan_report_with(
             .collect::<Vec<_>>()
     };
 
+    let mut all_rows: history::ToolRows = BTreeMap::new();
+    let mut all_found = std::collections::BTreeSet::new();
     let mut machines = Vec::new();
-    let mut all_rows = usage.rows.clone();
-    let mut all_found = usage.found.clone();
-    if !remotes.is_empty() {
-        machines.push(MachineCost {
-            name: None,
-            tools: tools_of(&usage.rows, &|tool| usage.found.contains(&tool)),
-        });
-    }
-    for (name, reading) in remotes {
-        let mut rows: BTreeMap<CostTool, Vec<UsageRow>> = BTreeMap::new();
-        for row in &reading.rows {
-            // Half hours line up with every whole and half-hour time zone,
-            // so the start alone places the row on this PC's calendar.
-            let Some(day) = DateTime::from_timestamp(row.slot, 0)
-                .map(|start| start.with_timezone(&Local).date_naive())
-            else {
-                continue;
-            };
-            if day < first_day {
-                continue;
-            }
-            for target in [
-                rows.entry(row.tool).or_default(),
-                all_rows.entry(row.tool).or_default(),
-            ] {
-                scan::add_usage(target, day, &row.model, row.long_context, &row.tokens);
+    for (name, rows, found) in &machine_rows {
+        for (tool, rows) in rows {
+            let target = all_rows.entry(*tool).or_default();
+            for row in rows {
+                scan::add_usage(target, row.day, &row.model, row.long_context, &row.tokens);
             }
         }
-        all_found.extend(reading.found.iter().copied());
-        machines.push(MachineCost {
-            name: Some(name.clone()),
-            tools: tools_of(&rows, &|tool| reading.found.contains(&tool)),
-        });
+        all_found.extend(found.iter().copied());
+        if !remotes.is_empty() {
+            machines.push(MachineCost {
+                name: name.clone(),
+                tools: tools_of(rows, &|tool| found.contains(&tool)),
+            });
+        }
     }
     let tools = tools_of(&all_rows, &|tool| all_found.contains(&tool));
     CostReport {

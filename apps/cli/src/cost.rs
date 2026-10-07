@@ -38,7 +38,12 @@ fn print_report(report: &CostReport) {
             println!("  no logs on this PC");
             continue;
         }
-        for (label, days) in [("Today", 1), ("Last 7 days", 7), ("Last 30 days", 30)] {
+        for (label, days) in [
+            ("Today", 1),
+            ("Last 7 days", 7),
+            ("Last 30 days", 30),
+            ("All time", tool.days.len()),
+        ] {
             let total = tool.last(days);
             let unpriced = if total.unpriced_tokens > 0 {
                 format!("  ({} tokens unpriced)", total.unpriced_tokens)

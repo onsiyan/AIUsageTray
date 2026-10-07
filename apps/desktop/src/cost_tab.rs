@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 
 use super::*;
 // Explicit, so it is not confused with the built-in column! macro.
-use iced::widget::{column, stack};
+use iced::widget::{column, pick_list, stack};
 use plans::Plan;
 use usage_monitor_core::cost::{self, CostReport, CostTool, DayCost, LogRoots};
 
@@ -27,22 +27,60 @@ const CHART_HEIGHT: f32 = 72.0;
 /// Width of the number columns in the table.
 const NUMBER_COLUMN: f32 = 62.0;
 
-/// The days the page totals: today, a week, or the whole report.
+/// The days the page totals, up to every day the app has seen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum Period {
     Today,
     Week,
     #[default]
     Month,
+    Quarter,
+    All,
 }
 
 impl Period {
-    fn days(self) -> usize {
+    const ALL: [Self; 5] = [
+        Self::Today,
+        Self::Week,
+        Self::Month,
+        Self::Quarter,
+        Self::All,
+    ];
+
+    /// The days counted, never more than `report` holds.
+    fn days(self, report: &CostReport) -> usize {
+        let held = report.tools.first().map_or(0, |tool| tool.days.len());
         match self {
             Self::Today => 1,
             Self::Week => 7,
-            Self::Month => cost::REPORT_DAYS as usize,
+            Self::Month => 30,
+            Self::Quarter => 90,
+            Self::All => held,
         }
+        .min(held.max(1))
+    }
+
+    fn label(self, language: locale::Language) -> &'static str {
+        match self {
+            Self::Today => tr(language, "Today", "اليوم"),
+            Self::Week => tr(language, "7 days", "7 أيام"),
+            Self::Month => tr(language, "30 days", "30 يومًا"),
+            Self::Quarter => tr(language, "90 days", "90 يومًا"),
+            Self::All => tr(language, "All time", "كل السجل"),
+        }
+    }
+}
+
+/// A period as the period list shows it.
+#[derive(Debug, Clone, PartialEq)]
+struct PeriodChoice {
+    period: Period,
+    label: &'static str,
+}
+
+impl std::fmt::Display for PeriodChoice {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.label)
     }
 }
 
@@ -340,7 +378,7 @@ pub(super) fn view(
     };
 
     let report = state.shown.as_ref().unwrap_or(full);
-    let days = state.period.days();
+    let days = state.period.days(report);
     let plans = plans::plans(entries, &state.plan_prices);
     let mut sections = vec![
         controls(state, full, theme, language),
@@ -438,26 +476,85 @@ fn controls(
     theme: &'static ThemeDefinition,
     language: locale::Language,
 ) -> Element<'static, Message> {
-    let periods = [
-        (Period::Today, tr(language, "Today", "اليوم")),
-        (Period::Week, tr(language, "7 days", "7 أيام")),
-        (Period::Month, tr(language, "30 days", "30 يومًا")),
-    ]
-    .into_iter()
-    .map(|(period, label)| {
-        (
-            label,
-            state.period == period,
-            Message::CostView(CostView::Period(period)),
-        )
-    })
-    .collect();
-    let mut line =
-        row![segmented(periods, theme), Space::new().width(Fill)].align_y(Alignment::Center);
+    let choices = Period::ALL
+        .into_iter()
+        .map(|period| PeriodChoice {
+            period,
+            label: period.label(language),
+        })
+        .collect::<Vec<_>>();
+    let selected = choices
+        .iter()
+        .find(|choice| choice.period == state.period)
+        .cloned();
+    let periods = dropdown(
+        choices,
+        selected,
+        |choice: PeriodChoice| Message::CostView(CostView::Period(choice.period)),
+        false,
+        theme,
+    );
+    let mut line = row![periods, Space::new().width(Fill)].align_y(Alignment::Center);
     if let Some(picker) = machines::picker(full, &state.scope, theme, language) {
         line = line.push(picker);
     }
     line.into()
+}
+
+/// A compact list of choices, drawn like the page's other controls; filled
+/// when `emphasized`.
+pub(super) fn dropdown<T>(
+    choices: Vec<T>,
+    selected: Option<T>,
+    on_pick: impl Fn(T) -> Message + 'static,
+    emphasized: bool,
+    theme: &'static ThemeDefinition,
+) -> Element<'static, Message>
+where
+    T: ToString + PartialEq + Clone + 'static,
+{
+    pick_list(choices, selected, on_pick)
+        .text_size(typography::METADATA_SIZE)
+        .font(if emphasized {
+            typography::EMPHASIS
+        } else {
+            typography::MEDIUM
+        })
+        .padding([4, 10])
+        .style(move |_: &Theme, status| {
+            let hovered = matches!(
+                status,
+                pick_list::Status::Hovered | pick_list::Status::Opened { .. }
+            );
+            pick_list::Style {
+                text_color: theme.colors.text(),
+                placeholder_color: theme.colors.muted_text(),
+                handle_color: theme.colors.muted_text(),
+                background: Background::Color(if emphasized || hovered {
+                    theme.colors.hover()
+                } else {
+                    Color::TRANSPARENT
+                }),
+                border: Border {
+                    color: theme.colors.border(0.45),
+                    width: 1.0,
+                    radius: 7.0.into(),
+                },
+            }
+        })
+        .menu_style(move |_: &Theme| iced::overlay::menu::Style {
+            background: Background::Color(theme.colors.control_surface()),
+            border: Border {
+                color: theme.colors.border(0.35),
+                width: 1.0,
+                radius: 7.0.into(),
+            },
+            text_color: theme.colors.text(),
+            selected_text_color: theme.colors.text(),
+            selected_background: Background::Color(theme.colors.hover()),
+            shadow: Shadow::default(),
+        })
+        .into()
 }
 
 /// The period's API value against what the plans cost for it.
@@ -468,7 +565,7 @@ fn headline(
     theme: &'static ThemeDefinition,
     language: locale::Language,
 ) -> Element<'static, Message> {
-    let days = state.period.days();
+    let days = state.period.days(report);
     let value = report
         .tools
         .iter()
@@ -827,7 +924,7 @@ fn tool_split(
     theme: &'static ThemeDefinition,
     language: locale::Language,
 ) -> Element<'static, Message> {
-    let days = state.period.days();
+    let days = state.period.days(report);
     let measure = |total: &DayCost| total.cost_usd;
     let mut totals = report
         .tools
@@ -926,7 +1023,41 @@ fn tool_split(
 /// The days the chart shows: the period, and at least a week.
 fn chart_days(report: &CostReport, period: Period) -> usize {
     let available = report.tools.first().map_or(0, |tool| tool.days.len());
-    period.days().max(7).min(available)
+    period.days(report).max(7).min(available)
+}
+
+/// Days per chart column, so a long period stays readable: a week each past
+/// two months, a month each past a year.
+fn chart_bucket(days: usize) -> usize {
+    match days {
+        0..=62 => 1,
+        63..=420 => 7,
+        _ => 30,
+    }
+}
+
+/// One chart column: its first and last day and their API value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ChartColumn {
+    first: chrono::NaiveDate,
+    last: chrono::NaiveDate,
+    cost_usd: f64,
+}
+
+/// `days` in columns of `bucket` days, the last column ending today.
+fn chart_columns(days: &[DayCost], bucket: usize) -> Vec<ChartColumn> {
+    let mut columns = days
+        .rchunks(bucket.max(1))
+        .filter_map(|chunk| {
+            Some(ChartColumn {
+                first: chunk.first()?.day,
+                last: chunk.last()?.day,
+                cost_usd: chunk.iter().map(|day| day.cost_usd).sum(),
+            })
+        })
+        .collect::<Vec<_>>();
+    columns.reverse();
+    columns
 }
 
 /// One column per day with both tools drawn from the same baseline, the
@@ -938,22 +1069,24 @@ fn daily_chart(
     language: locale::Language,
 ) -> Element<'static, Message> {
     let count = chart_days(report, state.period);
-    let value = |day: &DayCost| day.cost_usd;
+    let bucket = chart_bucket(count);
+    let value = |column: &ChartColumn| column.cost_usd;
     let series = report
         .tools
         .iter()
         .map(|tool| {
             let start = tool.days.len().saturating_sub(count);
-            (tool.tool, &tool.days[start..])
+            (tool.tool, chart_columns(&tool.days[start..], bucket))
         })
         .collect::<Vec<_>>();
     let highest = series
         .iter()
         .flat_map(|(_, days)| days.iter().map(value))
         .fold(0.0_f64, f64::max);
-    let first_in_period = count.saturating_sub(state.period.days());
+    let shown = series.first().map_or(0, |(_, columns)| columns.len());
+    let first_in_period = count.saturating_sub(state.period.days(report)) / bucket;
 
-    let columns = (0..count).map(|index| {
+    let columns = (0..shown).map(|index| {
         let mut bars = series
             .iter()
             .filter_map(|(tool, days)| days.get(index).map(|day| (*tool, value(day))))
@@ -1014,13 +1147,25 @@ fn daily_chart(
             .into()
     });
 
-    let days_shown = series.first().map(|(_, days)| *days).unwrap_or_default();
-    // Under the pointer, the day's figures replace the heading.
+    let columns_shown = series
+        .first()
+        .map(|(_, columns)| columns.as_slice())
+        .unwrap_or_default();
+    // Under the pointer, the column's figures replace the heading.
     let heading: Element<'static, Message> = match state
         .hovered_day
-        .and_then(|index| days_shown.get(index).map(|day| (index, day.day)))
+        .and_then(|index| columns_shown.get(index).map(|column| (index, column)))
     {
-        Some((index, day)) => {
+        Some((index, column)) => {
+            let when = if column.first == column.last {
+                format_day(column.first, language)
+            } else {
+                format!(
+                    "{} – {}",
+                    format_day(column.first, language),
+                    format_day(column.last, language)
+                )
+            };
             let figures = series
                 .iter()
                 .filter_map(|(tool, days)| {
@@ -1029,32 +1174,36 @@ fn daily_chart(
                 })
                 .collect::<Vec<_>>()
                 .join(" · ");
-            text(format!("{} · {figures}", format_day(day, language)))
+            text(format!("{when} · {figures}"))
                 .size(typography::LABEL_SIZE)
                 .font(typography::EMPHASIS)
                 .color(theme.colors.text())
                 .into()
         }
-        None => text(tr(language, "API value by day", "القيمة يومًا بيوم"))
-            .size(typography::LABEL_SIZE)
-            .font(typography::EMPHASIS)
-            .color(theme.colors.text())
-            .into(),
+        None => text(match bucket {
+            1 => tr(language, "API value by day", "القيمة يومًا بيوم"),
+            7 => tr(language, "API value by week", "القيمة أسبوعًا بأسبوع"),
+            _ => tr(language, "API value by month", "القيمة شهرًا بشهر"),
+        })
+        .size(typography::LABEL_SIZE)
+        .font(typography::EMPHASIS)
+        .color(theme.colors.text())
+        .into(),
     };
     let axis = row![
         text(
-            days_shown
+            columns_shown
                 .first()
-                .map(|day| format_day(day.day, language))
+                .map(|column| format_day(column.first, language))
                 .unwrap_or_default()
         )
         .size(typography::COMPACT_SIZE)
         .color(theme.colors.muted_text())
         .width(Fill),
         text(
-            days_shown
+            columns_shown
                 .last()
-                .map(|day| format_day(day.day, language))
+                .map(|column| format_day(column.last, language))
                 .unwrap_or_default()
         )
         .size(typography::COMPACT_SIZE)
@@ -1269,7 +1418,7 @@ fn breakdown(
         .size(typography::LABEL_SIZE)
         .font(typography::EMPHASIS)
         .color(theme.colors.text());
-    let days = state.period.days();
+    let days = state.period.days(report);
     let mut rows = vec![title.into()];
     let empty = tr(
         language,
@@ -1492,8 +1641,32 @@ pub(super) fn format_tokens(tokens: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_day, format_dollars, format_percent, format_price, format_tokens};
+    use super::{
+        DayCost, chart_bucket, chart_columns, format_day, format_dollars, format_percent,
+        format_price, format_tokens,
+    };
     use crate::locale::Language;
+
+    #[test]
+    fn long_charts_group_days_ending_today() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 8).unwrap();
+        let days = (0..10u64)
+            .rev()
+            .map(|back| DayCost {
+                day: today - chrono::Days::new(back),
+                cost_usd: 1.0,
+                ..DayCost::default()
+            })
+            .collect::<Vec<_>>();
+        let columns = chart_columns(&days, 7);
+        assert_eq!(columns.len(), 2);
+        assert_eq!(columns[0].cost_usd, 3.0);
+        assert_eq!(columns[1].first, today - chrono::Days::new(6));
+        assert_eq!(columns[1].last, today);
+        assert_eq!(chart_bucket(30), 1);
+        assert_eq!(chart_bucket(150), 7);
+        assert_eq!(chart_bucket(500), 30);
+    }
 
     #[test]
     fn amounts_and_token_counts_read_short() {

@@ -6,11 +6,11 @@
 import json
 import os
 import sys
-import time
 from datetime import datetime
 
 VERSION = 1
-RETAINED_DAYS = 40
+# Bumped when the state file's shape or what it keeps changes.
+CACHE_VERSION = 2
 SLOT_SECONDS = 1800
 CODEX_LONG_CONTEXT_TOKENS = 272000
 CODEX_PREFIX_BYTES = 192
@@ -32,8 +32,6 @@ else:
     ]
 cache_dir = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(home, ".cache"), "usage-monitor")
 cache_path = os.path.join(cache_dir, "remote-scan.json")
-
-first_kept = time.time() - RETAINED_DAYS * 86400
 
 
 def slot_of(timestamp):
@@ -120,7 +118,7 @@ def read_codex(handle, entry):
         if not isinstance(model, str) or not model.strip():
             model = entry["model"] or "unknown"
         slot = slot_of(parsed.get("timestamp"))
-        if slot is None or slot < first_kept:
+        if slot is None:
             continue
         input_tokens = number(last.get("input_tokens"))
         cache_read = min(number(last.get("cached_input_tokens")), input_tokens)
@@ -165,7 +163,7 @@ def read_claude(handle, entry):
         if not model.strip() or model.strip() == "<synthetic>":
             continue
         slot = slot_of(parsed.get("timestamp"))
-        if slot is None or slot < first_kept:
+        if slot is None:
             continue
         cache_write = number(usage.get("cache_creation_input_tokens"))
         creation = usage.get("cache_creation")
@@ -201,7 +199,7 @@ def main():
     try:
         with open(cache_path, "r", encoding="utf-8") as handle:
             cache = json.load(handle)
-        if cache.get("version") != VERSION:
+        if cache.get("version") != CACHE_VERSION:
             cache = {}
     except (OSError, ValueError):
         cache = {}
@@ -221,8 +219,6 @@ def main():
                 except OSError:
                     continue
                 mtime = int(status.st_mtime)
-                if mtime < first_kept:
-                    continue
                 entry = previous_files.get(path)
                 if entry and entry.get("tool") == tool and entry["size"] == status.st_size and entry["mtime"] == mtime:
                     files[path] = entry
@@ -240,15 +236,11 @@ def main():
                 entry["mtime"] = mtime
                 files[path] = entry
 
-    for entry in files.values():
-        entry["rows"] = {key: row for key, row in entry["rows"].items() if int(key.split("|", 1)[0]) >= first_kept}
-        entry["claude"] = [record for record in entry["claude"] if record[1] >= first_kept]
-
     try:
         os.makedirs(cache_dir, exist_ok=True)
         temporary = cache_path + ".tmp"
         with open(temporary, "w", encoding="utf-8") as handle:
-            json.dump({"version": VERSION, "files": files}, handle)
+            json.dump({"version": CACHE_VERSION, "files": files}, handle)
         os.replace(temporary, cache_path)
     except OSError:
         pass

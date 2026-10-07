@@ -2,7 +2,8 @@
 //!
 //! Every file's place and running state are kept between scans, so a log
 //! that grew is read only from where the last scan stopped, and an unchanged
-//! one is not opened at all.
+//! one is not opened at all. Everything the logs hold is kept, however old;
+//! what they lose when the tools delete them is kept by [`super::history`].
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
@@ -11,7 +12,7 @@ use std::io::{self, BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use chrono::{DateTime, Days, Local, NaiveDate};
+use chrono::{DateTime, Local, NaiveDate};
 use memchr::memmem;
 use serde::{Deserialize, Serialize};
 
@@ -20,9 +21,7 @@ use super::{CostTool, TokenCounts, UsageRow};
 pub(super) const CACHE_FILE: &str = "scan-cache.json";
 /// Bumped when the stored shape or the reading rules change, so old results
 /// are read again.
-const CACHE_VERSION: u32 = 1;
-/// Usage kept between scans: the report's days plus a margin.
-const RETAINED_DAYS: u64 = 40;
+pub(super) const CACHE_VERSION: u32 = 2;
 /// OpenAI's long-context rates apply to requests with more input than this.
 pub(super) const CODEX_LONG_CONTEXT_TOKENS: u64 = 272_000;
 /// Codex puts a line's kind near its start; only that much of an
@@ -127,21 +126,13 @@ struct ClaudeRecord {
     tokens: TokenCounts,
 }
 
-pub(super) fn scan(roots: &LogRoots, cache_directory: &Path, today: NaiveDate) -> ScannedUsage {
+pub(super) fn scan(roots: &LogRoots, cache_directory: &Path) -> ScannedUsage {
     let cache_path = cache_directory.join(CACHE_FILE);
     let mut cache = fs::read(&cache_path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<ScanCache>(&bytes).ok())
         .filter(|cache| cache.version == CACHE_VERSION)
         .unwrap_or_default();
-    let first_kept = today
-        .checked_sub_days(Days::new(RETAINED_DAYS))
-        .unwrap_or(today);
-    // A file last written before the kept days holds nothing to report.
-    let oldest_modified = first_kept
-        .and_hms_opt(0, 0, 0)
-        .and_then(|start| start.and_local_timezone(Local).earliest())
-        .map_or(0, |start| u64::try_from(start.timestamp()).unwrap_or(0));
 
     let mut files = BTreeMap::new();
     let mut found = BTreeSet::new();
@@ -160,12 +151,9 @@ pub(super) fn scan(roots: &LogRoots, cache_directory: &Path, today: NaiveDate) -
                     .ok()
                     .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
                     .map_or(0, |since| since.as_secs());
-                if modified < oldest_modified {
-                    continue;
-                }
                 let key = path.to_string_lossy().into_owned();
                 let previous = cache.files.remove(&key);
-                let entry = read_file(&path, tool, metadata.len(), modified, previous, first_kept);
+                let entry = read_file(&path, tool, metadata.len(), modified, previous);
                 if let Some(entry) = entry {
                     files.insert(key, entry);
                 }
@@ -252,11 +240,10 @@ fn read_file(
     size: u64,
     modified: u64,
     previous: Option<FileEntry>,
-    first_kept: NaiveDate,
 ) -> Option<FileEntry> {
     let mut entry = match previous {
         Some(entry) if entry.tool == tool && entry.size == size && entry.modified == modified => {
-            return Some(prune(entry, first_kept));
+            return Some(entry);
         }
         // Appended to: carry on from where the last scan stopped.
         Some(entry) if entry.tool == tool && entry.offset <= size => entry,
@@ -278,7 +265,7 @@ fn read_file(
             let mut state = entry.codex.clone();
             let rows = &mut entry.rows;
             let read = for_each_line(reader, CODEX_PREFIX_BYTES, is_codex_usage_line, |line| {
-                read_codex_line(line, &mut state, rows, first_kept);
+                read_codex_line(line, &mut state, rows);
             });
             entry.codex = state;
             read
@@ -290,7 +277,7 @@ fn read_file(
                 usize::MAX,
                 |_| true,
                 |line| {
-                    if let Some(record) = read_claude_line(line, first_kept) {
+                    if let Some(record) = read_claude_line(line) {
                         records.push(record);
                     }
                 },
@@ -303,13 +290,7 @@ fn read_file(
     entry.offset += read;
     entry.size = size;
     entry.modified = modified;
-    Some(prune(entry, first_kept))
-}
-
-fn prune(mut entry: FileEntry, first_kept: NaiveDate) -> FileEntry {
-    entry.rows.retain(|row| row.day >= first_kept);
-    entry.claude.retain(|record| record.day >= first_kept);
-    entry
+    Some(entry)
 }
 
 /// Calls `handle` with each complete line that `wanted` accepts after seeing
@@ -410,12 +391,7 @@ struct CodexUsage {
 /// session's running total. The turn's own usage is counted, because a
 /// forked session's running total starts from its parent's; the running
 /// total only spots an event repeated with nothing new.
-fn read_codex_line(
-    line: &[u8],
-    state: &mut CodexState,
-    rows: &mut Vec<UsageRow>,
-    first_kept: NaiveDate,
-) {
+fn read_codex_line(line: &[u8], state: &mut CodexState, rows: &mut Vec<UsageRow>) {
     let Ok(parsed) = serde_json::from_slice::<CodexLine>(line) else {
         return;
     };
@@ -459,9 +435,6 @@ fn read_codex_line(
     let Some(day) = parsed.timestamp.as_deref().and_then(local_day) else {
         return;
     };
-    if day < first_kept {
-        return;
-    }
     // Codex counts cached reads and cache writes inside `input_tokens`.
     let cache_read = last.cached_input_tokens.min(last.input_tokens);
     let cache_write = last
@@ -518,7 +491,7 @@ struct ClaudeCacheCreation {
 
 /// One Claude Code response's usage. Claude reports input, cache reads, and
 /// cache writes as separate counts.
-fn read_claude_line(line: &[u8], first_kept: NaiveDate) -> Option<ClaudeRecord> {
+fn read_claude_line(line: &[u8]) -> Option<ClaudeRecord> {
     memmem::find(line, br#""usage""#)?;
     let parsed = serde_json::from_slice::<ClaudeLine>(line).ok()?;
     let message = parsed.message?;
@@ -528,9 +501,6 @@ fn read_claude_line(line: &[u8], first_kept: NaiveDate) -> Option<ClaudeRecord> 
         !model.is_empty() && model != "<synthetic>"
     })?;
     let day = parsed.timestamp.as_deref().and_then(local_day)?;
-    if day < first_kept {
-        return None;
-    }
     let tokens = TokenCounts {
         input: usage.input_tokens,
         cache_read: usage.cache_read_input_tokens,

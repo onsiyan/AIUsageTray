@@ -79,7 +79,8 @@ fn codex_counts_each_turn_once_and_follows_the_model() {
     let report = scan_report(&roots(home.path()), &cache);
     let codex = report.tool(CostTool::Codex).unwrap();
     assert!(codex.logs_found);
-    assert_eq!(codex.days.len(), REPORT_DAYS as usize);
+    // The report reaches back to the oldest event, past its usual 30 days.
+    assert_eq!(codex.days.len(), 61);
     let today_cost = codex.last(1);
     assert_eq!(today_cost.tokens.cache_read, 400);
     assert_eq!(today_cost.tokens.input, 600 + 1_000 + 300_000);
@@ -95,8 +96,8 @@ fn codex_counts_each_turn_once_and_follows_the_model() {
     assert_eq!(models.len(), 2);
     // 400 cached tokens at $0.20 rather than $0.02 per million.
     assert!((today_cost.cache_savings_usd - 400.0 * 0.18 / 1e6).abs() < 1e-12);
-    // The 60-day-old event is past the report and the kept days.
     assert_eq!(codex.models(30).len(), 2);
+    assert_eq!(codex.last(61).tokens.output, 215);
 }
 
 #[test]
@@ -293,7 +294,7 @@ fn other_machines_join_the_report_on_this_pcs_calendar() {
     };
     let reading = remote::RemoteUsage {
         found: vec![CostTool::Codex],
-        // Yesterday's noon, and a day past the report.
+        // Yesterday's noon, and 40 days before it.
         rows: vec![row(noon - noon % 1800, 10), row(noon - 40 * 86_400, 99)],
         synced_at: Utc::now(),
     };
@@ -312,8 +313,48 @@ fn other_machines_join_the_report_on_this_pcs_calendar() {
     assert_eq!(codex.last(1).tokens.output, 0);
     let remote_codex = &report.machines[1].tools[0];
     assert_eq!(remote_codex.last(30).tokens.input, 1_000);
+    assert_eq!(remote_codex.last(42).tokens.output, 109);
+    assert_eq!(codex.days.len(), 42);
     assert!(report.machines[1].cost_over(30) > 0.0);
     assert_eq!(report.machines[0].tools[0].last(30).tokens.total(), 0);
     // Only this PC: no machine list.
-    assert!(scan_report(&roots(home.path()), &home.path().join("cache")).machines.is_empty());
+    assert!(
+        scan_report(&roots(home.path()), &home.path().join("cache"))
+            .machines
+            .is_empty()
+    );
+}
+
+#[test]
+fn usage_outlives_the_logs_it_was_read_from() {
+    let home = tempfile::tempdir().unwrap();
+    let cache = home.path().join("cache");
+    let old = home.path().join("codex/rollout-old.jsonl");
+    write_lines(
+        &old,
+        &[
+            turn_context(&stamp(100), "gpt-5.5"),
+            token_count(&stamp(100), 100, 100, 0, 7),
+        ],
+    );
+    let today = home.path().join("codex/rollout-new.jsonl");
+    write_lines(
+        &today,
+        &[
+            turn_context(&stamp(0), "gpt-5.5"),
+            token_count(&stamp(0), 50, 50, 0, 3),
+        ],
+    );
+    let first = scan_report(&roots(home.path()), &cache);
+    assert_eq!(first.tool(CostTool::Codex).unwrap().days.len(), 101);
+
+    // Codex clears the old session, and the new one grows.
+    fs::remove_file(&old).unwrap();
+    write_lines(&today, &[token_count(&stamp(0), 80, 30, 0, 2)]);
+    let later = scan_report(&roots(home.path()), &cache);
+    let codex = later.tool(CostTool::Codex).unwrap();
+    assert_eq!(codex.days.len(), 101);
+    assert_eq!(codex.last(101).tokens.output, 12);
+    assert_eq!(codex.last(1).tokens.output, 5);
+    assert!(cache.join(history::HISTORY_FILE).is_file());
 }

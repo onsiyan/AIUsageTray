@@ -11,7 +11,7 @@ use usage_monitor_core::cost::{
 
 use super::*;
 // Explicit, so it is not confused with the built-in column! macro.
-use iced::widget::{column, pick_list};
+use iced::widget::column;
 
 /// How often an open Cost page reads the machines again.
 pub(super) const LIVE_SYNC: Duration = Duration::from_secs(60);
@@ -119,53 +119,13 @@ pub(super) fn picker(
         .iter()
         .find(|choice| choice.scope == *scope)
         .cloned();
-    let picked = scope != &Scope::All;
-    Some(
-        pick_list(choices, selected, |choice: ScopeChoice| {
-            Message::CostView(CostView::Scope(choice.scope))
-        })
-        .text_size(typography::METADATA_SIZE)
-        .font(if picked {
-            typography::EMPHASIS
-        } else {
-            typography::MEDIUM
-        })
-        .padding([4, 10])
-        .style(move |_: &Theme, status| {
-            let hovered = matches!(
-                status,
-                pick_list::Status::Hovered | pick_list::Status::Opened { .. }
-            );
-            pick_list::Style {
-                text_color: theme.colors.text(),
-                placeholder_color: theme.colors.muted_text(),
-                handle_color: theme.colors.muted_text(),
-                background: Background::Color(if picked || hovered {
-                    theme.colors.hover()
-                } else {
-                    Color::TRANSPARENT
-                }),
-                border: Border {
-                    color: theme.colors.border(0.45),
-                    width: 1.0,
-                    radius: 7.0.into(),
-                },
-            }
-        })
-        .menu_style(move |_: &Theme| iced::overlay::menu::Style {
-            background: Background::Color(theme.colors.control_surface()),
-            border: Border {
-                color: theme.colors.border(0.35),
-                width: 1.0,
-                radius: 7.0.into(),
-            },
-            text_color: theme.colors.text(),
-            selected_text_color: theme.colors.text(),
-            selected_background: Background::Color(theme.colors.hover()),
-            shadow: Shadow::default(),
-        })
-        .into(),
-    )
+    Some(super::dropdown(
+        choices,
+        selected,
+        |choice: ScopeChoice| Message::CostView(CostView::Scope(choice.scope)),
+        scope != &Scope::All,
+        theme,
+    ))
 }
 
 /// What a machine read returned, by machine name.

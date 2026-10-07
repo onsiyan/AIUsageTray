@@ -5,7 +5,8 @@
 # %LOCALAPPDATA%\UsageMonitor lets the next run read only what the logs added.
 $ErrorActionPreference = 'Stop'
 $Version = 1
-$RetainedDays = 40
+# Bumped when the state file's shape or what it keeps changes.
+$CacheVersion = 2
 $SlotSeconds = 1800
 $CodexLongContextTokens = 272000
 $CodexPrefixBytes = 192
@@ -21,7 +22,6 @@ if ($env:CLAUDE_CONFIG_DIR -and $env:CLAUDE_CONFIG_DIR.Trim()) {
 }
 $cacheDir = Join-Path $env:LOCALAPPDATA 'UsageMonitor'
 $cachePath = Join-Path $cacheDir 'remote-scan.txt'
-$firstKept = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $RetainedDays * 86400
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 $invariant = [Globalization.CultureInfo]::InvariantCulture
 
@@ -86,7 +86,7 @@ function Read-CodexLine([string]$text, $entry) {
     $model = if ($info.model) { [string]$info.model } elseif ($payload.model) { [string]$payload.model } else { $null }
     if (-not $model -or -not $model.Trim()) { $model = if ($entry.model) { $entry.model } else { 'unknown' } }
     $slot = Get-Slot $parsed.timestamp
-    if ($null -eq $slot -or $slot -lt $firstKept) { return }
+    if ($null -eq $slot) { return }
     $inputTokens = Get-Count $last.input_tokens
     $cacheRead = [Math]::Min((Get-Count $last.cached_input_tokens), $inputTokens)
     $cacheWrite = [Math]::Min((Get-Count $last.cache_write_input_tokens), $inputTokens - $cacheRead)
@@ -119,7 +119,7 @@ function Read-ClaudeLine([string]$text, $entry) {
     $timestampMatch = $patternTimestamp.Match($text)
     if (-not $timestampMatch.Success) { return }
     $slot = Get-Slot $timestampMatch.Groups[1].Value
-    if ($null -eq $slot -or $slot -lt $firstKept) { return }
+    if ($null -eq $slot) { return }
     $usage = $text.Substring($usageAt, [Math]::Min(1500, $text.Length - $usageAt))
     $count = @{}
     foreach ($name in $usageFields.Keys) {
@@ -206,7 +206,7 @@ function Read-Cache {
     foreach ($line in [IO.File]::ReadAllLines($cachePath, $utf8)) {
         $fields = $line.Split("`t")
         if ($first) {
-            if ($fields[0] -ne 'V' -or $fields[1] -ne [string]$Version) { return @{} }
+            if ($fields[0] -ne 'V' -or $fields[1] -ne [string]$CacheVersion) { return @{} }
             $first = $false
             continue
         }
@@ -235,7 +235,7 @@ function Read-Cache {
 
 function Write-Cache($files) {
     $builder = New-Object Text.StringBuilder
-    [void]$builder.Append("V`t$Version`n")
+    [void]$builder.Append("V`t$CacheVersion`n")
     foreach ($path in $files.Keys) {
         $entry = $files[$path]
         [void]$builder.Append(("F`t{0}`t{1}`t{2}`t{3}`t{4}`t{5}`t{6}`n" -f $path, $entry.tool, $entry.size,
@@ -278,7 +278,6 @@ foreach ($pair in @(@('codex', $codexRoots), @('claude', $claudeRoots))) {
         $list = @(Get-ChildItem -LiteralPath $root -Recurse -File -Filter '*.jsonl' -ErrorAction SilentlyContinue)
         foreach ($file in $list) {
             $mtime = ([DateTimeOffset]$file.LastWriteTimeUtc).ToUnixTimeSeconds()
-            if ($mtime -lt $firstKept) { continue }
             $path = $file.FullName
             $entry = $previous[$path]
             if ($entry -and $entry.tool -eq $tool -and $entry.size -eq $file.Length -and $entry.mtime -eq $mtime) {
@@ -294,14 +293,6 @@ foreach ($pair in @(@('codex', $codexRoots), @('claude', $claudeRoots))) {
     }
 }
 
-foreach ($entry in $files.Values) {
-    foreach ($key in @($entry.rows.Keys)) {
-        if ([int64]($key.Split('|')[0]) -lt $firstKept) { $entry.rows.Remove($key) }
-    }
-    $kept = New-Object System.Collections.ArrayList
-    foreach ($record in $entry.claude) { if ($record[1] -ge $firstKept) { [void]$kept.Add($record) } }
-    $entry.claude = $kept
-}
 try { Write-Cache $files } catch { }
 
 $totals = @{}
