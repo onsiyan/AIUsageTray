@@ -865,6 +865,12 @@ async fn invalidated_refresh_marks_the_stored_snapshot_stale() {
             .as_deref()
             .is_some_and(|reason| reason.contains("token revoked"))
     );
+    // A refused sign-in is told apart, with the provider's words.
+    assert!(
+        stored
+            .sign_in_required()
+            .is_some_and(|detail| detail.contains("token revoked"))
+    );
 }
 
 #[tokio::test]
@@ -905,6 +911,8 @@ fn stale_marker_keeps_the_first_stale_time() {
     let second = first.mark_stale("second");
     assert_eq!(second.stale_at_utc, first.stale_at_utc);
     assert_eq!(second.stale_reason.as_deref(), Some("second"));
+    // Other failures are not mistaken for a needed sign-in.
+    assert_eq!(second.sign_in_required(), None);
 }
 
 #[tokio::test]

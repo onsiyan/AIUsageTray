@@ -9,6 +9,7 @@ use crate::{
     auth::{AccountAuthMaterial, AccountAuthMaterialProvider, AuthError},
     providers::shared::{
         bearer_headers, invalid_payload, json_number, json_string, map_http_error, missing_auth,
+        sign_in_expired,
     },
     transport::{TransportError, UsageHttpRequest, UsageHttpResponse, UsageHttpTransport},
     usage::{
@@ -162,7 +163,9 @@ impl UsageAdapter for OpenCodeGoUsageAdapter {
         let material = match self.auth.get(account).await {
             Ok(Some(material)) => material,
             Ok(None) => return Ok(missing_auth("OpenCode Go")),
-            Err(AuthError::ReauthenticationRequired(_)) => return Ok(missing_auth("OpenCode Go")),
+            Err(AuthError::ReauthenticationRequired(reason)) => {
+                return Ok(sign_in_expired("OpenCode Go", &reason));
+            }
             Err(error) => return Ok(invalid_payload("OpenCode Go", error.to_string())),
         };
 

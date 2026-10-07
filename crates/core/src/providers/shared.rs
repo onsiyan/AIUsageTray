@@ -32,6 +32,17 @@ pub fn missing_auth(provider: &str) -> UsageProbeResult {
     })
 }
 
+/// The provider refused the saved sign-in, with the reason it gave (such
+/// as `invalid_grant`), so the user knows to sign in again and why.
+pub fn sign_in_expired(provider: &str, reason: &str) -> UsageProbeResult {
+    UsageProbeResult::failure(UsageAdapterError {
+        code: UsageAdapterErrorCode::AuthenticationUnavailable,
+        message: format!("{provider} sign-in expired ({})", reason.trim()),
+        http_status_code: None,
+        retry_after_seconds: None,
+    })
+}
+
 pub fn invalid_payload(provider: &str, reason: impl Into<String>) -> UsageProbeResult {
     UsageProbeResult::failure(UsageAdapterError {
         code: UsageAdapterErrorCode::InvalidPayload,

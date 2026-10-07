@@ -131,25 +131,40 @@ pub(super) async fn add_account(
     }
 
     let process_id = child.id();
-    let output = tokio::select! {
-        output = child.wait_with_output() => output
+    let stdout = tokio::spawn(read_pipe(child.stdout.take()));
+    let stderr = tokio::spawn(read_pipe(child.stderr.take()));
+    // `child` stays alive here while a cancel ends the tree: were it
+    // dropped first, the account tool would die alone and taskkill could no
+    // longer find the login helper it started, which would keep holding the
+    // callback port and could still finish the sign-in.
+    let status = tokio::select! {
+        status = child.wait() => status
             .map_err(|error| format!("The account sign-in flow could not finish: {error}"))?,
         Ok(()) = cancel.recv() => {
-            // The account tool runs the provider's login helper, which holds
-            // the sign-in callback port until it times out. End the whole
-            // process tree so a new sign-in can start immediately.
             if let Some(process_id) = process_id {
                 kill_process_tree(process_id);
             }
             return Err(ACCOUNT_ADD_CANCELLED.to_owned());
         }
     };
-    if output.status.success() {
+    let stdout = stdout.await.unwrap_or_default();
+    let stderr = stderr.await.unwrap_or_default();
+    if status.success() {
         Ok(())
     } else {
-        let details = account_add_failure_detail(&output.stdout, &output.stderr);
+        let details = account_add_failure_detail(&stdout, &stderr);
         Err(redact_and_limit_account_add_error(details, &secrets))
     }
+}
+
+/// Everything a child process writes to one of its pipes.
+async fn read_pipe(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let mut bytes = Vec::new();
+    if let Some(mut pipe) = pipe {
+        let _ = pipe.read_to_end(&mut bytes).await;
+    }
+    bytes
 }
 
 /// Signs in to GitHub with a device code, then adds the Copilot account

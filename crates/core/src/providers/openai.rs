@@ -3,7 +3,7 @@ use crate::{
     auth::{AccountAuthMaterial, AccountAuthMaterialProvider, AuthError, OAuthProviderDefinition},
     providers::shared::{
         bearer_headers, invalid_payload, json_bool, json_number, json_string, map_http_error,
-        missing_auth,
+        missing_auth, sign_in_expired,
     },
     transport::{TransportError, UsageHttpRequest, UsageHttpResponse, UsageHttpTransport},
     usage::{
@@ -203,8 +203,9 @@ impl UsageAdapter for WhamUsageAdapter {
     async fn probe(&self, account: &AccountRecord) -> Result<UsageProbeResult, TransportError> {
         let source_material = match self.auth.get(account).await {
             Ok(Some(material)) => material,
-            Ok(None) | Err(AuthError::ReauthenticationRequired(_)) => {
-                return Ok(missing_auth("Codex"));
+            Ok(None) => return Ok(missing_auth("Codex")),
+            Err(AuthError::ReauthenticationRequired(reason)) => {
+                return Ok(sign_in_expired("Codex", &reason));
             }
             Err(error) => return Ok(invalid_payload("OpenAI", error.to_string())),
         };

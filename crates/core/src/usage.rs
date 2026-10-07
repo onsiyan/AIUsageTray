@@ -216,6 +216,10 @@ pub struct CodexWeeklyResetCandidate {
     pub snapshot: UsageSnapshot,
 }
 
+/// Put in a stale reason when the account must sign in again (or get a new
+/// key), so hosts can offer that instead of a plain "couldn't update".
+pub const SIGN_IN_REQUIRED: &str = "sign-in required";
+
 impl UsageSnapshot {
     /// Returns every rate-limit window in display-independent order.
     ///
@@ -261,6 +265,16 @@ impl UsageSnapshot {
             }
         }
         changed
+    }
+
+    /// Whether the reading went stale because the saved sign-in (or key)
+    /// stopped working, and the provider's words for it.
+    pub fn sign_in_required(&self) -> Option<&str> {
+        let reason = self.stale_reason.as_deref().filter(|_| self.is_stale)?;
+        let marker = format!(": {SIGN_IN_REQUIRED}: ");
+        reason
+            .find(&marker)
+            .map(|start| reason[start + marker.len()..].trim())
     }
 
     /// Marks the snapshot stale. `stale_at_utc` records when the data first

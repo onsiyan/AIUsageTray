@@ -12,7 +12,9 @@ pub(super) fn append_snapshot_rows(
     theme: &'static crate::theme::ThemeDefinition,
     language: Language,
 ) {
-    if snapshot.is_stale {
+    if let Some(detail) = snapshot.sign_in_required() {
+        rows.push(sign_in_needed_line(snapshot, detail, theme, language));
+    } else if snapshot.is_stale {
         rows.push(warning_line(
             &stale_label(snapshot.observed_at_utc, Utc::now(), language),
             theme,

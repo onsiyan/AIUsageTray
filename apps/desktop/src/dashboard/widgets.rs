@@ -244,11 +244,9 @@ pub(super) fn percent_line(
     .into()
 }
 
-pub(super) fn warning_line(
-    message: &str,
-    theme: &'static crate::theme::ThemeDefinition,
-) -> Element<'static, Message> {
-    let (text_color, background_color, border_color) = if theme.colors.is_light {
+/// Text, background, and border colors of a warning box.
+fn warning_colors(theme: &'static crate::theme::ThemeDefinition) -> (Color, Color, Color) {
+    if theme.colors.is_light {
         (
             Color::from_rgb8(146, 64, 14),
             Color::from_rgb8(255, 248, 230),
@@ -260,7 +258,27 @@ pub(super) fn warning_line(
             Color::from_rgba(0.62, 0.36, 0.10, 0.18),
             Color::from_rgba(0.83, 0.57, 0.24, 0.25),
         )
-    };
+    }
+}
+
+fn warning_box_style(theme: &'static crate::theme::ThemeDefinition) -> container::Style {
+    let (_, background_color, border_color) = warning_colors(theme);
+    container::Style {
+        background: Some(Background::Color(background_color)),
+        border: Border {
+            color: border_color,
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
+pub(super) fn warning_line(
+    message: &str,
+    theme: &'static crate::theme::ThemeDefinition,
+) -> Element<'static, Message> {
+    let (text_color, _, _) = warning_colors(theme);
     container(
         text(message.to_owned())
             .size(typography::LABEL_SIZE)
@@ -269,15 +287,7 @@ pub(super) fn warning_line(
     )
     .width(Fill)
     .padding([5, 7])
-    .style(move |_| container::Style {
-        background: Some(Background::Color(background_color)),
-        border: Border {
-            color: border_color,
-            width: 1.0,
-            radius: 6.0.into(),
-        },
-        ..Default::default()
-    })
+    .style(move |_| warning_box_style(theme))
     .into()
 }
 
@@ -523,19 +533,92 @@ pub(super) fn reset_time_accent(theme: &'static crate::theme::ThemeDefinition) -
     }
 }
 
+/// When a reading was taken: the time today, else the date and time.
+fn reading_time(observed_at: DateTime<Utc>, now: DateTime<Utc>, language: Language) -> String {
+    let observed = observed_at.with_timezone(&Local);
+    let today = observed.date_naive() == now.with_timezone(&Local).date_naive();
+    match (language, today) {
+        (Language::English, true) => observed.format("%-I:%M %p").to_string(),
+        (Language::Arabic, true) => observed.format("%H:%M").to_string(),
+        _ => format_local_reset(observed, language),
+    }
+}
+
+/// The saved sign-in (or key) stopped working: says so, with the
+/// provider's reason and the age of the reading shown, and offers to sign in
+/// again where adding the account again updates this one.
+pub(super) fn sign_in_needed_line(
+    snapshot: &UsageSnapshot,
+    detail: &str,
+    theme: &'static crate::theme::ThemeDefinition,
+    language: Language,
+) -> Element<'static, Message> {
+    let (text_color, _, _) = warning_colors(theme);
+    let provider = crate::PROVIDER_TABS
+        .iter()
+        .map(|tab| tab.provider)
+        .find(|provider| super::belongs_to_provider(&snapshot.provider_id, *provider));
+    // Adding an API key again makes a second account, so key providers get
+    // the explanation without the button.
+    let signs_in = provider.filter(|provider| !provider.uses_api_key());
+    let title = locale::text(
+        language,
+        if signs_in.is_some() || provider.is_none() {
+            Text::SignInExpired
+        } else {
+            Text::KeyRejected
+        },
+    );
+    let when = reading_time(snapshot.observed_at_utc, Utc::now(), language);
+    // "Codex sign-in expired (refresh_token_reused)" repeats the title, so
+    // only the provider's reason in the brackets is kept.
+    let detail = detail
+        .strip_suffix(')')
+        .and_then(|rest| rest.rsplit_once(" ("))
+        .map_or(detail, |(_, reason)| reason);
+    let note = match language {
+        Language::English => format!("{detail} · showing the reading from {when}"),
+        Language::Arabic => format!("{detail} · هذه القراءة من {when}"),
+    };
+    let mut line = row![
+        column![
+            text(title)
+                .size(typography::LABEL_SIZE)
+                .font(typography::EMPHASIS)
+                .color(text_color),
+            text(note)
+                .size(typography::METADATA_SIZE)
+                .font(typography::MEDIUM)
+                .color(text_color),
+        ]
+        .spacing(2)
+        .width(Fill),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    if let Some(provider) = signs_in {
+        line = line.push(crate::account_dialog_button(
+            locale::text(language, Text::SignInAgain),
+            true,
+            true,
+            theme,
+            Message::ChooseAccountProvider(provider),
+        ));
+    }
+    container(line)
+        .width(Fill)
+        .padding([6, 8])
+        .style(move |_| warning_box_style(theme))
+        .into()
+}
+
 /// Says the reading could not be updated and when it was taken.
 pub(super) fn stale_label(
     observed_at: DateTime<Utc>,
     now: DateTime<Utc>,
     language: Language,
 ) -> String {
-    let observed = observed_at.with_timezone(&Local);
-    let today = observed.date_naive() == now.with_timezone(&Local).date_naive();
-    let when = match (language, today) {
-        (Language::English, true) => observed.format("%-I:%M %p").to_string(),
-        (Language::Arabic, true) => observed.format("%H:%M").to_string(),
-        _ => format_local_reset(observed, language),
-    };
+    let when = reading_time(observed_at, now, language);
     match language {
         Language::English => format!("Couldn't update · showing the reading from {when}"),
         Language::Arabic => format!("تعذّر التحديث · هذه القراءة من {when}"),

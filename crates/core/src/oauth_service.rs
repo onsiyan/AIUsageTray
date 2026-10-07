@@ -281,12 +281,11 @@ where
             .await
             .map_err(|error| AuthError::Transport(error.to_string()))?;
         if !response.is_success() {
-            let error_code = response.body.parse::<Value>().ok().and_then(|value| {
-                value
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            });
+            let error_code = response
+                .body
+                .parse::<Value>()
+                .ok()
+                .and_then(|value| oauth_error_code(&value));
             // A 400/403 without an OAuth error body is typically an edge or
             // WAF block (HTML), which is temporary and must not sign the
             // account out.
@@ -421,6 +420,22 @@ fn build_authorization_uri(
     uri
 }
 
+/// The error a token endpoint gave: the standard `error` string, or the
+/// `code` (else `message`) of an error object such as OpenAI sends.
+fn oauth_error_code(body: &Value) -> Option<String> {
+    let error = body.get("error")?;
+    error
+        .as_str()
+        .or_else(|| {
+            ["code", "type", "message"]
+                .into_iter()
+                .find_map(|field| error.get(field).and_then(Value::as_str))
+        })
+        .map(str::trim)
+        .filter(|code| !code.is_empty())
+        .map(str::to_owned)
+}
+
 fn parse_token_response(body: &str) -> Result<OAuthTokenSet, AuthError> {
     let value: Value = serde_json::from_str(body)
         .map_err(|error| AuthError::TokenEndpoint(format!("invalid token response: {error}")))?;
@@ -509,6 +524,24 @@ fn random_url_safe() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn token_errors_are_read_flat_or_nested() {
+        let read = |body: &str| super::oauth_error_code(&serde_json::from_str(body).unwrap());
+        assert_eq!(
+            read(r#"{"error":"invalid_grant"}"#).as_deref(),
+            Some("invalid_grant")
+        );
+        assert_eq!(
+            read(r#"{"error":{"message":"Your refresh token has already been used","type":"invalid_request_error","code":"refresh_token_reused"}}"#).as_deref(),
+            Some("refresh_token_reused")
+        );
+        assert_eq!(
+            read(r#"{"error":{"message":"expired"}}"#).as_deref(),
+            Some("expired")
+        );
+        assert_eq!(read(r#"{"detail":"nope"}"#), None);
+    }
+
     use super::*;
     use crate::providers::{
         antigravity::oauth_definition, openai::oauth_definition as codex_oauth_definition,

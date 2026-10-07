@@ -19,6 +19,9 @@ All notable changes to this project are documented here. The format follows
   manager.
 - Account reordering, cancelling an in-progress sign-in, and hiding the
   Antigravity Claude/GPT group.
+- An account whose saved sign-in the provider refused says "Sign-in
+  expired" with the provider's reason (such as `refresh_token_reused`) and
+  when its last reading was taken, with a "Sign in again" button.
 - Favorites tab, third in the tab bar, gathering accounts starred from any
   provider. The star sits with the rename and move controls on each account;
   favorites keep their own order and are refreshed first while shown.
@@ -155,6 +158,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Cancelling an account add now stops the sign-in helper too; before, it
+  could keep waiting in the background and hold the callback port.
 - Adding a Codex account no longer fails with "could not bind OAuth callback
   (os error 10013)" on computers where Windows reserves OpenAI's sign-in port
   (Hyper-V, WSL, Docker): the app then signs in with a code entered on

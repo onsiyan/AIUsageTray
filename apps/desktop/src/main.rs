@@ -615,7 +615,11 @@ impl App {
     }
 
     fn start_usage_refresh(&mut self, trigger: usage_refresh::RefreshTrigger) -> Task<Message> {
-        if self.dashboard_refresh_running {
+        // Screenshot runs end the app abruptly; a refresh cut off after a
+        // provider rotated a sign-in token would lose the new token.
+        if self.dashboard_refresh_running
+            || std::env::var_os("USAGE_UI_PREVIEW_NO_REFRESH").is_some()
+        {
             return Task::none();
         }
 

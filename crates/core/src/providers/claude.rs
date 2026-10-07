@@ -9,6 +9,7 @@ use crate::{
     auth::{AccountAuthMaterialProvider, AuthError},
     providers::shared::{
         invalid_payload, json_number, json_string, missing_auth, normalize_percent, reset_at,
+        sign_in_expired,
     },
     transport::{TransportError, UsageHttpRequest, UsageHttpTransport},
     usage::{
@@ -77,8 +78,9 @@ impl UsageAdapter for ClaudeUsageAdapter {
     async fn probe(&self, account: &AccountRecord) -> Result<UsageProbeResult, TransportError> {
         let material = match self.auth.get(account).await {
             Ok(Some(material)) => material,
-            Ok(None) | Err(AuthError::ReauthenticationRequired(_)) => {
-                return Ok(missing_auth("Claude OAuth"));
+            Ok(None) => return Ok(missing_auth("Claude OAuth")),
+            Err(AuthError::ReauthenticationRequired(reason)) => {
+                return Ok(sign_in_expired("Claude", &reason));
             }
             Err(error) => return Ok(invalid_payload("Claude", error.to_string())),
         };

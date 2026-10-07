@@ -980,7 +980,19 @@ impl UsageRefreshCoordinator {
         prior: Option<UsageSnapshot>,
         error: UsageAdapterError,
     ) -> RefreshOutcome {
-        let stale_reason = format!("{}: {}", account.provider_id, error.message);
+        let stale_reason = if matches!(
+            error.code,
+            UsageAdapterErrorCode::AuthenticationUnavailable | UsageAdapterErrorCode::Unauthorized
+        ) {
+            format!(
+                "{}: {}: {}",
+                account.provider_id,
+                crate::usage::SIGN_IN_REQUIRED,
+                error.message
+            )
+        } else {
+            format!("{}: {}", account.provider_id, error.message)
+        };
         if should_retain_stale(&error.code)
             && let Some(prior) = prior
         {
