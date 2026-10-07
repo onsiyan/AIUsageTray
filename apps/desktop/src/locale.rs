@@ -367,18 +367,20 @@ pub const fn text(language: Language, key: Text) -> &'static str {
             "The Cursor app is not signed in on this computer, so Cursor cannot be added now. Sign in to the Cursor app and check again, or skip it."
         }
         (English, WelcomeBrowserSignInDetail) => {
-            "Your browser opens to sign in. Approve there and the account appears here."
+            "Press Add account and your browser opens to sign in. Approve there and the account appears here."
         }
         (English, WelcomeGitHubSignInDetail) => {
-            "A short code is copied for you. Paste it on the GitHub page that opens and approve."
+            "Press Add account: a short code is copied for you and GitHub opens. Paste the code there and approve."
         }
         (English, WelcomeCursorAppDetail) => {
-            "The Cursor app is signed in on this computer; its account is added with one click."
+            "The Cursor app is signed in on this computer. Press Add account to add its account."
         }
         (English, WelcomeTwoKeysDetail) => {
-            "Paste a Management key and your team ID from xAI's console."
+            "Press Add account, then paste a Management key and your team ID from xAI's console."
         }
-        (English, WelcomeApiKeyDetail) => "Paste an API key from the service's website.",
+        (English, WelcomeApiKeyDetail) => {
+            "Press Add account, then paste an API key from the service's website."
+        }
         (English, WelcomeCheckAgain) => "Check again",
         (English, WelcomeAddAnother) => "Add another",
         (English, WelcomeFinish) => "Finish",
@@ -585,16 +587,18 @@ pub const fn text(language: Language, key: Text) -> &'static str {
             "تطبيق Cursor غير مسجّل الدخول على هذا الجهاز، لذا لا يمكن إضافته الآن. سجّل الدخول في تطبيق Cursor ثم أعد التحقق، أو تخطَّه."
         }
         (Arabic, WelcomeBrowserSignInDetail) => {
-            "سيفتح المتصفح لتسجيل الدخول. وافق هناك وسيظهر الحساب هنا."
+            "اضغط «إضافة حساب» وسيفتح المتصفح لتسجيل الدخول. وافق هناك وسيظهر الحساب هنا."
         }
         (Arabic, WelcomeGitHubSignInDetail) => {
-            "يُنسخ لك رمز قصير. الصقه في صفحة GitHub التي تفتح ووافق."
+            "اضغط «إضافة حساب»: يُنسخ لك رمز قصير وتفتح صفحة GitHub. الصق الرمز هناك ووافق."
         }
         (Arabic, WelcomeCursorAppDetail) => {
-            "تطبيق Cursor مسجّل الدخول على هذا الجهاز؛ يُضاف حسابه بضغطة واحدة."
+            "تطبيق Cursor مسجّل الدخول على هذا الجهاز. اضغط «إضافة حساب» لإضافة حسابه."
         }
-        (Arabic, WelcomeTwoKeysDetail) => "الصق مفتاح الإدارة (Management) ورقم الفريق من لوحة xAI.",
-        (Arabic, WelcomeApiKeyDetail) => "الصق مفتاح API من موقع الخدمة.",
+        (Arabic, WelcomeTwoKeysDetail) => {
+            "اضغط «إضافة حساب» ثم الصق مفتاح الإدارة (Management) ورقم الفريق من لوحة xAI."
+        }
+        (Arabic, WelcomeApiKeyDetail) => "اضغط «إضافة حساب» ثم الصق مفتاح API من موقع الخدمة.",
         (Arabic, WelcomeCheckAgain) => "أعد التحقق",
         (Arabic, WelcomeAddAnother) => "إضافة حساب آخر",
         (Arabic, WelcomeFinish) => "إنهاء",
