@@ -198,29 +198,26 @@ pub(super) fn percent_line(
                 .font(typography::EMPHASIS)
                 .color(theme.colors.text()),
             space().width(Fill),
-            // The number and which way it reads (what is left or what is
-            // used), set as one bold reading in the bar's own color, which
-            // every theme keeps readable.
+            // The number in the bar's color, then which way it reads (what
+            // is left or what is used) in the theme's text color, which is
+            // readable on every background.
             row![
                 text(format!("{shown:.0}%"))
                     .size(typography::PERCENTAGE_SIZE)
                     .font(typography::STRONG)
                     .color(accent),
-                text(
-                    locale::text(
-                        language,
-                        match crate::percent_display::current() {
-                            crate::percent_display::PercentDisplay::Remaining => Text::PercentLeft,
-                            crate::percent_display::PercentDisplay::Used => Text::PercentUsed,
-                        },
-                    )
-                    .to_uppercase(),
-                )
-                .size(typography::PERCENTAGE_SIZE)
-                .font(typography::STRONG)
-                .color(accent),
+                text(locale::text(
+                    language,
+                    match crate::percent_display::current() {
+                        crate::percent_display::PercentDisplay::Remaining => Text::PercentLeft,
+                        crate::percent_display::PercentDisplay::Used => Text::PercentUsed,
+                    },
+                ))
+                .size(typography::BODY_SIZE)
+                .font(typography::EMPHASIS)
+                .color(theme.colors.text()),
             ]
-            .spacing(4)
+            .spacing(5)
             .align_y(Alignment::Center),
         ]
         .spacing(6)

@@ -46,7 +46,7 @@ pub(super) fn theme_dropdown(
         locale::text(language, locale::Text::PercentDisplayTitle),
         active_theme,
     ));
-    let current_display = percent_display::current();
+    let current_display = percent_display::default_mode();
     for (mode, label) in [
         (PercentDisplay::Remaining, locale::Text::ShowRemaining),
         (PercentDisplay::Used, locale::Text::ShowUsed),

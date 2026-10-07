@@ -442,7 +442,7 @@ struct App {
 impl App {
     fn new() -> Self {
         let theme_id = load_saved_theme();
-        percent_display::set_current(percent_display::load_saved());
+        percent_display::set_default(percent_display::load_saved());
         display_options::load_saved();
         let tab_layout = tabs::load_saved();
         let mut dashboard = dashboard::DashboardState::loading();
@@ -777,6 +777,8 @@ enum Message {
     ToggleTabManager,
     DismissTabManager,
     ToggleTabVisible(usize),
+    /// Sets how the tab with this key reads its percentages.
+    SetTabPercentDisplay(String, PercentDisplay),
     MoveTab(usize, isize),
     NewCustomTab,
     EditCustomTab(u32),

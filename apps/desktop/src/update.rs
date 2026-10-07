@@ -301,6 +301,7 @@ impl App {
             message @ (Message::ToggleTabManager
             | Message::DismissTabManager
             | Message::ToggleTabVisible(_)
+            | Message::SetTabPercentDisplay(..)
             | Message::MoveTab(..)
             | Message::NewCustomTab
             | Message::EditCustomTab(_)
@@ -680,7 +681,7 @@ impl App {
                 Task::none()
             }
             Message::SelectPercentDisplay(mode) => {
-                percent_display::set_current(mode);
+                percent_display::set_default(mode);
                 self.theme_menu_open = false;
                 if let Err(error) = percent_display::save(mode) {
                     preview_log(format!("percent display preference save failed: {error}"));

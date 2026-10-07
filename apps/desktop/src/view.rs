@@ -72,6 +72,7 @@ impl App {
             .map(|status| account_add_status_banner(status, active_theme, self.language))
             .unwrap_or_else(|| Space::new().width(Fill).height(0).into());
 
+        percent_display::begin_drawing(&self.selected_tab.scroll_key());
         let foreground: Element<'_, Message> = if let Some(welcome) = &self.welcome {
             self.welcome_view(welcome)
         } else {

@@ -5,8 +5,9 @@ use super::*;
 // Explicit, so it is not confused with the built-in column! macro.
 use iced::widget::column;
 use lucide_icons::iced::{
-    icon_chevron_down, icon_chevron_up, icon_eye, icon_eye_off, icon_image_plus, icon_layers,
-    icon_panels_top_left, icon_pencil, icon_plus, icon_square, icon_square_check, icon_x,
+    icon_chevron_down, icon_chevron_up, icon_chevrons_up_down, icon_eye, icon_eye_off,
+    icon_image_plus, icon_layers, icon_panels_top_left, icon_pencil, icon_plus, icon_square,
+    icon_square_check, icon_x,
 };
 use tabs::{ProviderSet, TabEntry, TabKind};
 use usage_monitor_core::accounts::AccountId;
@@ -99,8 +100,16 @@ impl App {
                     ..TabEditor::default()
                 });
             }
+            Message::SetTabPercentDisplay(key, mode) => percent_display::set_for_tab(&key, mode),
             Message::DeleteCustomTab(id) => {
                 self.tab_layout.remove_custom(id);
+                percent_display::forget_tab(
+                    &DashboardTab::Custom {
+                        id,
+                        providers: ProviderSet::default(),
+                    }
+                    .scroll_key(),
+                );
                 self.tab_icons.remove(&id);
                 if let Err(error) = tab_icons::remove(id) {
                     preview_log(format!("tab image removal failed: {error}"));
@@ -388,6 +397,11 @@ fn tab_row(
             ));
     }
     trailing = trailing
+        .push(percent_mode_button(
+            entry.dashboard_tab().scroll_key(),
+            language,
+            active_theme,
+        ))
         .push(small_icon_button(
             icon_chevron_up().size(15).into(),
             can_move_up.then_some(Message::MoveTab(index, -1)),
@@ -718,6 +732,54 @@ fn small_icon_button(
             style
         })
         .into()
+}
+
+/// Shows how the tab reads its percentages; a press flips it. Drawn like
+/// the row's other controls: plain until hovered.
+fn percent_mode_button(
+    key: String,
+    language: locale::Language,
+    active_theme: &'static ThemeDefinition,
+) -> Element<'static, Message> {
+    let mode = percent_display::for_tab(&key);
+    let label = match mode {
+        PercentDisplay::Remaining => locale::Text::PercentLeft,
+        PercentDisplay::Used => locale::Text::PercentUsed,
+    };
+    button(
+        container(
+            row![
+                text(locale::text(language, label))
+                    .size(typography::LABEL_SIZE)
+                    .font(typography::MEDIUM)
+                    .line_height(1.0)
+                    .color(active_theme.colors.text()),
+                icon_chevrons_up_down()
+                    .size(12)
+                    .line_height(1.0)
+                    .color(active_theme.colors.muted_text()),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
+        )
+        .center(Fill),
+    )
+    .on_press(Message::SetTabPercentDisplay(key, mode.other()))
+    .width(68)
+    .height(26)
+    .padding([0, 7])
+    .style(move |framework_theme: &Theme, status| {
+        let mut style = button::text(framework_theme, status);
+        style.background = matches!(status, button::Status::Hovered | button::Status::Pressed)
+            .then(|| Background::Color(active_theme.colors.hover()));
+        style.border = Border {
+            radius: 6.0.into(),
+            ..Border::default()
+        };
+        style.shadow = Shadow::default();
+        style
+    })
+    .into()
 }
 
 fn icon_text_button(

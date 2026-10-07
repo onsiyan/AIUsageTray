@@ -218,7 +218,7 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, Favorites) => "Favorites",
         (English, Tabs) => "Tabs",
         (English, TabsHint) => {
-            "Choose which tabs show and their order, or create a tab that gathers several providers."
+            "Choose which tabs show and their order, or create a tab that gathers several providers. Left or Used sets how each tab reads its percentages."
         }
         (English, NewTab) => "New tab",
         (English, EditTab) => "Edit tab",
@@ -237,8 +237,8 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, Unlimited) => "Unlimited",
         (English, BilledByUsage) => "Billed by usage",
         (English, UsedSuffix) => "used",
-        (English, PercentLeft) => "left",
-        (English, PercentUsed) => "used",
+        (English, PercentLeft) => "Left",
+        (English, PercentUsed) => "Used",
         (English, CursorTitle) => "Add Cursor account",
         (English, KimiTitle) => "Add Kimi Code account",
         (English, TotalUsage) => "Total usage",
@@ -441,7 +441,9 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         }
         (Arabic, Favorites) => "المفضلة",
         (Arabic, Tabs) => "التبويبات",
-        (Arabic, TabsHint) => "اختر التبويبات الظاهرة وترتيبها، أو أنشئ تبويبًا يجمع عدة مزودين.",
+        (Arabic, TabsHint) => {
+            "اختر التبويبات الظاهرة وترتيبها، أو أنشئ تبويبًا يجمع عدة مزودين. «متبقٍ» أو «مستهلك» يحدد كيف يعرض كل تبويب نسبه."
+        }
         (Arabic, NewTab) => "تبويب جديد",
         (Arabic, EditTab) => "تعديل التبويب",
         (Arabic, TabName) => "اسم التبويب",
