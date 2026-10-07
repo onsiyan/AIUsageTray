@@ -1,6 +1,7 @@
 //! What each account card shows, for people who want a denser popup: the
-//! email and plan line, team budgets, and which stored reset credits are
-//! listed.
+//! email and plan line, team budgets, which stored reset credits are
+//! listed, and the shade behind reset times. Also whether the window has a
+//! taskbar button.
 
 use std::{
     fs, io,
@@ -14,6 +15,8 @@ use crate::theme::preference_directory;
 const ACCOUNT_DETAILS_FILE: &str = "account_details.txt";
 const RESET_CREDITS_FILE: &str = "reset_credits.txt";
 const TEAM_BUDGETS_FILE: &str = "team_budgets.txt";
+const RESET_SHADE_FILE: &str = "reset_shade.txt";
+const TASKBAR_FILE: &str = "taskbar.txt";
 
 /// A reset credit expiring within this many days stays listed under
 /// [`ResetCreditVisibility::ExpiringSoon`].
@@ -24,6 +27,10 @@ static RESET_CREDITS: AtomicU8 = AtomicU8::new(0);
 /// Team workspace amounts (Codex workspace balance and monthly limit,
 /// Cursor member budget) are hidden until asked for.
 static SHOW_TEAM_BUDGETS: AtomicBool = AtomicBool::new(false);
+/// On image themes, a dark shade behind the reset times under the bars.
+static SHADE_RESET_TIMES: AtomicBool = AtomicBool::new(true);
+/// A tray app keeps out of the taskbar unless asked.
+static SHOW_IN_TASKBAR: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetCreditVisibility {
@@ -85,6 +92,22 @@ pub fn set_show_team_budgets(shown: bool) {
     SHOW_TEAM_BUDGETS.store(shown, Ordering::Relaxed);
 }
 
+pub fn shade_reset_times() -> bool {
+    SHADE_RESET_TIMES.load(Ordering::Relaxed)
+}
+
+pub fn set_shade_reset_times(shaded: bool) {
+    SHADE_RESET_TIMES.store(shaded, Ordering::Relaxed);
+}
+
+pub fn show_in_taskbar() -> bool {
+    SHOW_IN_TASKBAR.load(Ordering::Relaxed)
+}
+
+pub fn set_show_in_taskbar(shown: bool) {
+    SHOW_IN_TASKBAR.store(shown, Ordering::Relaxed);
+}
+
 /// Whether a metric, or a diagnostic's source, is one of the team amounts
 /// behind [`show_team_budgets`].
 pub fn is_team_budget_key(key: &str) -> bool {
@@ -114,6 +137,8 @@ pub fn load_saved() {
         read(ACCOUNT_DETAILS_FILE).is_none_or(|value| value.trim() != "hidden"),
     );
     set_show_team_budgets(read(TEAM_BUDGETS_FILE).is_some_and(|value| value.trim() == "shown"));
+    set_shade_reset_times(read(RESET_SHADE_FILE).is_none_or(|value| value.trim() != "off"));
+    set_show_in_taskbar(read(TASKBAR_FILE).is_some_and(|value| value.trim() == "shown"));
     set_reset_credits(
         read(RESET_CREDITS_FILE)
             .and_then(|value| ResetCreditVisibility::from_key(value.trim()))
@@ -127,6 +152,14 @@ pub fn save_show_account_details(shown: bool) -> io::Result<()> {
 
 pub fn save_show_team_budgets(shown: bool) -> io::Result<()> {
     write(TEAM_BUDGETS_FILE, if shown { "shown" } else { "hidden" })
+}
+
+pub fn save_shade_reset_times(shaded: bool) -> io::Result<()> {
+    write(RESET_SHADE_FILE, if shaded { "on" } else { "off" })
+}
+
+pub fn save_show_in_taskbar(shown: bool) -> io::Result<()> {
+    write(TASKBAR_FILE, if shown { "shown" } else { "hidden" })
 }
 
 pub fn save_reset_credits(mode: ResetCreditVisibility) -> io::Result<()> {

@@ -87,6 +87,8 @@ All notable changes to this project are documented here. The format follows
 - An empty provider tab has an "Add account" button; an empty custom tab
   opens the list of providers.
 - The palette menu is laid out in two columns across the window.
+- Palette menu options to show the window in the taskbar and to turn off the
+  shade behind reset times on image themes.
 - First-run welcome: pick the services you use (each says how its account is
   added; Cursor only from the Cursor app signed in on this computer), then add
   accounts to each in turn or skip it. Only the chosen services' tabs show

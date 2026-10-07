@@ -197,7 +197,7 @@ fn popup_window_settings() -> window::Settings {
         level: window::Level::Normal,
         exit_on_close_request: false,
         platform_specific: window::settings::PlatformSpecific {
-            skip_taskbar: true,
+            skip_taskbar: !display_options::show_in_taskbar(),
             ..Default::default()
         },
         ..Default::default()
@@ -762,6 +762,8 @@ enum Message {
     SetMemorySaver(bool),
     SetShowAccountDetails(bool),
     SetShowTeamBudgets(bool),
+    SetShadeResetTimes(bool),
+    SetShowInTaskbar(bool),
     OpenCustomTheme,
     CloseCustomTheme,
     CustomThemeLight(bool),

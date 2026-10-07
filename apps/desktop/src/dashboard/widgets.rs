@@ -470,13 +470,13 @@ pub(super) fn reset_time_label(
 }
 
 /// On themes with a background image, lays a light shade behind small text
-/// so bright parts of the picture cannot wash it out. Plain themes are
-/// left as they are.
+/// so bright parts of the picture cannot wash it out, unless the user turned
+/// it off. Plain themes are left as they are.
 fn shade_over_backdrop(
     content: Element<'static, Message>,
     theme: &'static crate::theme::ThemeDefinition,
 ) -> Element<'static, Message> {
-    if theme.backdrop.is_none() {
+    if theme.backdrop.is_none() || !crate::display_options::shade_reset_times() {
         return content;
     }
     container(content)

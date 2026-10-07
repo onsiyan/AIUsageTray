@@ -667,6 +667,29 @@ impl App {
                 }
                 Task::none()
             }
+            Message::SetShadeResetTimes(shaded) => {
+                display_options::set_shade_reset_times(shaded);
+                if let Err(error) = display_options::save_shade_reset_times(shaded) {
+                    preview_log(format!("reset shade preference save failed: {error}"));
+                }
+                Task::none()
+            }
+            Message::SetShowInTaskbar(shown) => {
+                display_options::set_show_in_taskbar(shown);
+                if let Err(error) = display_options::save_show_in_taskbar(shown) {
+                    preview_log(format!("taskbar preference save failed: {error}"));
+                }
+                // The taskbar button is set when the window is made, so the
+                // open window is replaced by one made with the new choice.
+                self.theme_menu_open = false;
+                match self.window_id.take() {
+                    Some(window_id) if self.popup_visible => {
+                        window::close::<Message>(window_id).chain(self.show_window(None))
+                    }
+                    Some(window_id) => window::close(window_id),
+                    None => Task::none(),
+                }
+            }
             Message::SetShowTeamBudgets(shown) => {
                 display_options::set_show_team_budgets(shown);
                 if let Err(error) = display_options::save_show_team_budgets(shown) {

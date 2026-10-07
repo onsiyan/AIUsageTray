@@ -88,6 +88,13 @@ pub(super) fn theme_dropdown(
         Message::SetShowTeamBudgets(!team_budgets_shown),
         active_theme,
     ));
+    let reset_shaded = display_options::shade_reset_times();
+    items.push(choice_row(
+        locale::text(language, locale::Text::ShadeResetTimes),
+        reset_shaded,
+        Message::SetShadeResetTimes(!reset_shaded),
+        active_theme,
+    ));
 
     let display = column(std::mem::take(&mut items)).spacing(1).width(Fill);
 
@@ -116,7 +123,19 @@ pub(super) fn theme_dropdown(
         .spacing(1)
         .width(Fill);
 
-    // Memory sits under the themes, where the shorter column has room.
+    // The window and memory sit under the themes, where the shorter
+    // column has room.
+    items.push(menu_section_title(
+        locale::text(language, locale::Text::WindowTitle),
+        active_theme,
+    ));
+    let in_taskbar = display_options::show_in_taskbar();
+    items.push(choice_row(
+        locale::text(language, locale::Text::ShowInTaskbar),
+        in_taskbar,
+        Message::SetShowInTaskbar(!in_taskbar),
+        active_theme,
+    ));
     items.push(menu_section_title(
         locale::text(language, locale::Text::MemoryTitle),
         active_theme,
