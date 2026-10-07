@@ -31,7 +31,7 @@ All notable changes to this project are documented here. The format follows
   Plan prices start at the list price and can be changed in the tab. Also:
   today, 7 or 30 days, each tool's share, the days,
   cache reads and fresh input, thinking, what the cache saved, and where the
-  use went by model or by day. Logs are read once and then only
+  use went by model. Logs are read once and then only
   where they grew; prices come from models.dev, updated daily, with a
   built-in table for offline use. `usage-monitor-cli cost` prints the same.
 - Favorites tab, third in the tab bar, gathering accounts starred from any

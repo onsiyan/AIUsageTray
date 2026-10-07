@@ -139,10 +139,9 @@ fn main() -> iced::Result {
                     Ok("cost-tab") => Some(Message::SelectTab(DashboardTab::Cost)),
                     Ok("cost-detail") => {
                         boot.push(Task::done(Message::SelectTab(DashboardTab::Cost)));
-                        boot.push(Task::done(Message::CostView(cost_tab::CostView::Period(
+                        Some(Message::CostView(cost_tab::CostView::Period(
                             cost_tab::Period::Week,
-                        ))));
-                        Some(Message::CostView(cost_tab::CostView::ByDay(true)))
+                        )))
                     }
                     Ok("welcome") => Some(Message::WelcomePreview(false)),
                     Ok("custom-theme") => Some(Message::OpenCustomTheme),

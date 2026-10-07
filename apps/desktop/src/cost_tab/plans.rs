@@ -197,7 +197,10 @@ mod tests {
         assert_eq!(plan_name(CostTool::Codex, "team"), "Business");
         assert_eq!(plan_name(CostTool::Codex, "plus"), "Plus");
         assert_eq!(plan_name(CostTool::Claude, "Claude Max 20x"), "Max 20x");
-        assert_eq!(plan_key(CostTool::Claude, "Claude Pro"), "claude:claude pro");
+        assert_eq!(
+            plan_key(CostTool::Claude, "Claude Pro"),
+            "claude:claude pro"
+        );
         assert_eq!(list_price(CostTool::Codex, "team"), Some(30.0));
         assert_eq!(list_price(CostTool::Claude, "claude pro"), Some(20.0));
         assert_eq!(list_price(CostTool::Codex, "enterprise"), None);

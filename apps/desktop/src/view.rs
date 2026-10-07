@@ -329,7 +329,10 @@ fn content_shade<'a>(
         return content;
     }
     let shade = if active_theme.colors.is_light {
-        active_theme.colors.window_surface().scale_alpha(CONTENT_SHADE_OPACITY)
+        active_theme
+            .colors
+            .window_surface()
+            .scale_alpha(CONTENT_SHADE_OPACITY)
     } else {
         Color::from_rgba(0.0, 0.0, 0.0, CONTENT_SHADE_OPACITY)
     };

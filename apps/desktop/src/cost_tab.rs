@@ -20,9 +20,7 @@ use crate::dashboard::AccountUsageEntry;
 /// A report on screen is read again after this long.
 const RESCAN_AFTER: Duration = Duration::from_secs(5 * 60);
 const CHART_HEIGHT: f32 = 72.0;
-/// Rows of the by-day table.
-const DAY_ROWS: usize = 8;
-/// Width of the number columns in the tables.
+/// Width of the number columns in the table.
 const NUMBER_COLUMN: f32 = 62.0;
 
 /// The days the page totals: today, a week, or the whole report.
@@ -47,8 +45,6 @@ impl Period {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum CostView {
     Period(Period),
-    /// The table lists days instead of models.
-    ByDay(bool),
     /// The chart day under the pointer, counted from the chart's first day.
     HoverDay(Option<usize>),
     /// Start editing a plan's price, with the text to start from, or stop.
@@ -67,7 +63,6 @@ pub(super) struct CostTab {
     last_started: Option<Instant>,
     error: Option<String>,
     period: Period,
-    by_day: bool,
     hovered_day: Option<usize>,
     /// Monthly prices the user set, by plan key.
     plan_prices: BTreeMap<String, f64>,
@@ -136,7 +131,6 @@ impl CostTab {
                 self.period = period;
                 self.hovered_day = None;
             }
-            CostView::ByDay(by_day) => self.by_day = by_day,
             CostView::HoverDay(day) => self.hovered_day = day,
             CostView::EditPlan(editing) => {
                 let started = editing.is_some();
@@ -387,8 +381,8 @@ fn headline(
         .filter_map(|plan| plan.paid_over(days))
         .sum::<f64>();
     let unpriced = plans.iter().any(|plan| plan.monthly_usd.is_none());
-    let mut figure = row![big(format_dollars(value)), Space::new().width(Fill)]
-        .align_y(Alignment::Center);
+    let mut figure =
+        row![big(format_dollars(value)), Space::new().width(Fill)].align_y(Alignment::Center);
     if paid > 0.0 && value > 0.0 {
         figure = figure.push(return_badge(value / paid, theme, language));
     }
@@ -653,7 +647,9 @@ fn plan_list(
         match (custom, english) {
             (false, true) => "List prices on monthly billing. Click a price to enter what you pay.",
             (false, false) => "أسعار الاشتراك الشهري المعلنة. اضغط على السعر لتكتب ما تدفعه فعلًا.",
-            (true, true) => "Prices you entered, or list prices. Clear a price to go back to the list price.",
+            (true, true) => {
+                "Prices you entered, or list prices. Clear a price to go back to the list price."
+            }
             (true, false) => "الأسعار التي كتبتها أو المعلنة. امسح السعر لتعود إلى المعلن.",
         },
         theme,
@@ -897,9 +893,8 @@ fn daily_chart(
             let figures = series
                 .iter()
                 .filter_map(|(tool, days)| {
-                    days.get(index).map(|day| {
-                        format!("{} {}", tool.label(), format_dollars(day.cost_usd))
-                    })
+                    days.get(index)
+                        .map(|day| format!("{} {}", tool.label(), format_dollars(day.cost_usd)))
                 })
                 .collect::<Vec<_>>()
                 .join(" · ");
@@ -910,10 +905,10 @@ fn daily_chart(
                 .into()
         }
         None => text(tr(language, "API value by day", "القيمة يومًا بيوم"))
-        .size(typography::LABEL_SIZE)
-        .font(typography::EMPHASIS)
-        .color(theme.colors.text())
-        .into(),
+            .size(typography::LABEL_SIZE)
+            .font(typography::EMPHASIS)
+            .color(theme.colors.text())
+            .into(),
     };
     let axis = row![
         text(
@@ -1132,38 +1127,17 @@ fn header_cell(label: &'static str, theme: &'static ThemeDefinition) -> Element<
         .into()
 }
 
-/// The period by model (cost, share, tokens) or by day (each tool, total,
-/// tokens).
+/// The period by model: cost, share and tokens.
 fn breakdown(
     report: &CostReport,
     state: &CostTab,
     theme: &'static ThemeDefinition,
     language: locale::Language,
 ) -> Element<'static, Message> {
-    let switch = segmented(
-        vec![
-            (
-                tr(language, "Model", "النموذج"),
-                !state.by_day,
-                Message::CostView(CostView::ByDay(false)),
-            ),
-            (
-                tr(language, "Day", "اليوم"),
-                state.by_day,
-                Message::CostView(CostView::ByDay(true)),
-            ),
-        ],
-        theme,
-    );
-    let title = row![
-        text(tr(language, "Where it went", "أين ذهب الاستخدام"))
-            .size(typography::LABEL_SIZE)
-            .font(typography::EMPHASIS)
-            .color(theme.colors.text())
-            .width(Fill),
-        switch,
-    ]
-    .align_y(Alignment::Center);
+    let title = text(tr(language, "Where it went", "أين ذهب الاستخدام"))
+        .size(typography::LABEL_SIZE)
+        .font(typography::EMPHASIS)
+        .color(theme.colors.text());
     let days = state.period.days();
     let mut rows = vec![title.into()];
     let empty = tr(
@@ -1172,153 +1146,77 @@ fn breakdown(
         "لا استخدام في هذه الفترة.",
     );
 
-    if state.by_day {
-        let mut headers = report
-            .tools
-            .iter()
-            .map(|tool| {
-                let name = match tool.tool {
-                    CostTool::Codex => "Codex",
-                    CostTool::Claude => "Claude",
-                };
-                (name.to_owned(), false)
-            })
-            .collect::<Vec<_>>();
-        headers.push((tr(language, "Total", "المجموع").to_owned(), false));
-        headers.push((tr(language, "Tokens", "الرموز").to_owned(), false));
+    rows.push(table_row(
+        header_cell(tr(language, "Model", "النموذج"), theme),
+        vec![
+            (tr(language, "Cost", "التكلفة").to_owned(), false),
+            (tr(language, "Share", "الحصة").to_owned(), false),
+            (tr(language, "Tokens", "الرموز").to_owned(), false),
+        ],
+        theme,
+        true,
+    ));
+    let mut models = report
+        .tools
+        .iter()
+        .flat_map(|tool| {
+            tool.models(days)
+                .into_iter()
+                .map(move |model| (tool.tool, model))
+        })
+        .filter(|(_, model)| model.tokens.total() > 0)
+        .collect::<Vec<_>>();
+    models.sort_by(|left, right| {
+        right
+            .1
+            .cost_usd
+            .unwrap_or(-1.0)
+            .total_cmp(&left.1.cost_usd.unwrap_or(-1.0))
+    });
+    let total = models
+        .iter()
+        .filter_map(|(_, model)| model.cost_usd)
+        .sum::<f64>();
+    if models.is_empty() {
+        rows.push(muted_line(empty, theme));
+    }
+    for (tool, model) in models {
+        let (cost, share) = match model.cost_usd {
+            Some(cost) => (
+                format_dollars(cost),
+                format_percent(if total > 0.0 { cost / total } else { 0.0 }),
+            ),
+            None => (
+                tr(language, "no price", "بلا سعر").to_owned(),
+                "–".to_owned(),
+            ),
+        };
+        let name = row![
+            image(provider_logo_handle(
+                tool_provider(tool),
+                theme.colors.is_light
+            ))
+            .width(13)
+            .height(13)
+            .content_fit(ContentFit::Contain),
+            text(model.model.clone())
+                .size(typography::LABEL_SIZE)
+                .font(typography::MEDIUM)
+                .color(theme.colors.text()),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .width(Fill);
         rows.push(table_row(
-            header_cell(tr(language, "Day", "اليوم"), theme),
-            headers,
-            theme,
-            true,
-        ));
-        let longest = report
-            .tools
-            .iter()
-            .map(|tool| tool.days.len())
-            .max()
-            .unwrap_or(0);
-        let mut shown = 0;
-        for offset in 0..days.min(longest) {
-            let per_tool = report
-                .tools
-                .iter()
-                .map(|tool| tool.days.iter().rev().nth(offset))
-                .collect::<Vec<_>>();
-            let tokens = per_tool
-                .iter()
-                .flatten()
-                .map(|day| day.tokens.total())
-                .sum::<u64>();
-            let Some(day) = per_tool.iter().flatten().next().map(|day| day.day) else {
-                continue;
-            };
-            if tokens == 0 {
-                continue;
-            }
-            let mut cells = per_tool
-                .iter()
-                .map(|day| (format_dollars(day.map_or(0.0, |day| day.cost_usd)), false))
-                .collect::<Vec<_>>();
-            let total = per_tool
-                .iter()
-                .flatten()
-                .map(|day| day.cost_usd)
-                .sum::<f64>();
-            cells.push((format_dollars(total), true));
-            cells.push((format_tokens(tokens), false));
-            rows.push(table_row(
-                text(format_day(day, language))
-                    .size(typography::LABEL_SIZE)
-                    .font(typography::MEDIUM)
-                    .color(theme.colors.text())
-                    .width(Fill)
-                    .into(),
-                cells,
-                theme,
-                false,
-            ));
-            shown += 1;
-            if shown == DAY_ROWS {
-                break;
-            }
-        }
-        if shown == 0 {
-            rows.push(muted_line(empty, theme));
-        }
-    } else {
-        rows.push(table_row(
-            header_cell(tr(language, "Model", "النموذج"), theme),
+            name.into(),
             vec![
-                (tr(language, "Cost", "التكلفة").to_owned(), false),
-                (tr(language, "Share", "الحصة").to_owned(), false),
-                (tr(language, "Tokens", "الرموز").to_owned(), false),
+                (cost, true),
+                (share, false),
+                (format_tokens(model.tokens.total()), false),
             ],
             theme,
-            true,
+            false,
         ));
-        let mut models = report
-            .tools
-            .iter()
-            .flat_map(|tool| {
-                tool.models(days)
-                    .into_iter()
-                    .map(move |model| (tool.tool, model))
-            })
-            .filter(|(_, model)| model.tokens.total() > 0)
-            .collect::<Vec<_>>();
-        models.sort_by(|left, right| {
-            right
-                .1
-                .cost_usd
-                .unwrap_or(-1.0)
-                .total_cmp(&left.1.cost_usd.unwrap_or(-1.0))
-        });
-        let total = models
-            .iter()
-            .filter_map(|(_, model)| model.cost_usd)
-            .sum::<f64>();
-        if models.is_empty() {
-            rows.push(muted_line(empty, theme));
-        }
-        for (tool, model) in models {
-            let (cost, share) = match model.cost_usd {
-                Some(cost) => (
-                    format_dollars(cost),
-                    format_percent(if total > 0.0 { cost / total } else { 0.0 }),
-                ),
-                None => (
-                    tr(language, "no price", "بلا سعر").to_owned(),
-                    "–".to_owned(),
-                ),
-            };
-            let name = row![
-                image(provider_logo_handle(
-                    tool_provider(tool),
-                    theme.colors.is_light
-                ))
-                .width(13)
-                .height(13)
-                .content_fit(ContentFit::Contain),
-                text(model.model.clone())
-                    .size(typography::LABEL_SIZE)
-                    .font(typography::MEDIUM)
-                    .color(theme.colors.text()),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center)
-            .width(Fill);
-            rows.push(table_row(
-                name.into(),
-                vec![
-                    (cost, true),
-                    (share, false),
-                    (format_tokens(model.tokens.total()), false),
-                ],
-                theme,
-                false,
-            ));
-        }
     }
     column(rows).spacing(2).into()
 }
