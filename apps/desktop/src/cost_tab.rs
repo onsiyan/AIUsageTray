@@ -1,15 +1,52 @@
 //! The Cost tab: what Codex and Claude Code usage on this PC would cost at
 //! API list prices, read from the tools' local logs.
+//!
+//! Laid out like T3 Code's usage page, narrowed to the popup: the period and
+//! cost/tokens switches, the headline total, each tool's share, a daily
+//! chart, the token classes, and a table by model or by day.
 
 use super::*;
 // Explicit, so it is not confused with the built-in column! macro.
-use iced::widget::column;
-use usage_monitor_core::cost::{self, CostReport, CostTool, DayCost, LogRoots, ToolCost};
+use iced::widget::{column, stack};
+use usage_monitor_core::cost::{self, CostReport, CostTool, DayCost, LogRoots};
 
 /// A report on screen is read again after this long.
 const RESCAN_AFTER: Duration = Duration::from_secs(5 * 60);
-const MODELS_SHOWN: usize = 4;
-const CHART_HEIGHT: f32 = 46.0;
+const CHART_HEIGHT: f32 = 72.0;
+/// Rows of the by-day table.
+const DAY_ROWS: usize = 8;
+/// Width of the number columns in the tables.
+const NUMBER_COLUMN: f32 = 62.0;
+
+/// The days the page totals: today, a week, or the whole report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum Period {
+    Today,
+    Week,
+    #[default]
+    Month,
+}
+
+impl Period {
+    fn days(self) -> usize {
+        match self {
+            Self::Today => 1,
+            Self::Week => 7,
+            Self::Month => cost::REPORT_DAYS as usize,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CostView {
+    Period(Period),
+    /// Show tokens instead of dollars.
+    Tokens(bool),
+    /// The table lists days instead of models.
+    ByDay(bool),
+    /// The chart day under the pointer, counted from the chart's first day.
+    HoverDay(Option<usize>),
+}
 
 #[derive(Default)]
 pub(super) struct CostTab {
@@ -17,6 +54,10 @@ pub(super) struct CostTab {
     scanning: bool,
     last_started: Option<Instant>,
     error: Option<String>,
+    period: Period,
+    tokens: bool,
+    by_day: bool,
+    hovered_day: Option<usize>,
 }
 
 impl CostTab {
@@ -66,6 +107,18 @@ impl CostTab {
             }
         }
     }
+
+    pub(super) fn change(&mut self, change: CostView) {
+        match change {
+            CostView::Period(period) => {
+                self.period = period;
+                self.hovered_day = None;
+            }
+            CostView::Tokens(tokens) => self.tokens = tokens,
+            CostView::ByDay(by_day) => self.by_day = by_day,
+            CostView::HoverDay(day) => self.hovered_day = day,
+        }
+    }
 }
 
 /// Updates prices once a day, then reads what is new in the logs. Runs on
@@ -85,6 +138,30 @@ fn read_report() -> Result<CostReport, String> {
     ))
 }
 
+/// English or Arabic, for the words only this page uses.
+fn tr(language: locale::Language, english: &'static str, arabic: &'static str) -> &'static str {
+    match language {
+        locale::Language::English => english,
+        locale::Language::Arabic => arabic,
+    }
+}
+
+/// Codex in a neutral tone and Claude in its orange, as T3 Code does.
+fn tool_color(tool: CostTool, theme: &'static ThemeDefinition) -> Color {
+    match tool {
+        CostTool::Claude => Color::from_rgb8(0xD9, 0x77, 0x57),
+        CostTool::Codex if theme.colors.is_light => Color::from_rgb8(0x3A, 0x3A, 0x3A),
+        CostTool::Codex => Color::from_rgb8(0xE6, 0xE6, 0xE6),
+    }
+}
+
+fn tool_provider(tool: CostTool) -> UsageProvider {
+    match tool {
+        CostTool::Codex => UsageProvider::Codex,
+        CostTool::Claude => UsageProvider::Claude,
+    }
+}
+
 pub(super) fn view(
     state: &CostTab,
     theme: &'static ThemeDefinition,
@@ -92,12 +169,16 @@ pub(super) fn view(
 ) -> Element<'static, Message> {
     let Some(report) = &state.report else {
         let note = if state.error.is_some() && !state.scanning {
-            locale::Text::CostFailed
+            tr(
+                language,
+                "Couldn't read the local logs",
+                "تعذّرت قراءة السجلات المحلية",
+            )
         } else {
-            locale::Text::CostReading
+            tr(language, "Reading local logs…", "جارٍ قراءة السجلات المحلية…")
         };
         return container(
-            text(locale::text(language, note))
+            text(note)
                 .size(typography::BODY_SIZE)
                 .color(theme.colors.muted_text()),
         )
@@ -107,17 +188,20 @@ pub(super) fn view(
         .into();
     };
 
-    let mut sections = Vec::new();
-    for tool in CostTool::ALL {
-        if let Some(cost) = report.tool(tool) {
-            sections.push(tool_card(cost, theme, language));
-        }
-    }
-    sections.push(footer(report, state.scanning, theme, language));
+    let days = state.period.days();
+    let sections = vec![
+        controls(state, theme, language),
+        headline(report, state, theme, language),
+        tool_split(report, state, theme, language),
+        daily_chart(report, state, theme, language),
+        token_metrics(report, days, theme, language),
+        breakdown(report, state, theme, language),
+        footer(report, state.scanning, theme, language),
+    ];
 
     let content = crate::smooth_scroll::smooth_scroll(
         DashboardTab::Cost.scroll_key(),
-        scrollable(column(sections).spacing(10).width(Fill))
+        scrollable(column(sections).spacing(16).width(Fill))
             .direction(scrollable::Direction::Vertical(
                 scrollable::Scrollbar::hidden(),
             ))
@@ -125,111 +209,457 @@ pub(super) fn view(
             .height(Fill),
     );
     container(content)
-        .padding([10, 10])
+        .padding([10, 12])
         .width(Fill)
         .height(Fill)
+        .style(move |_| container::Style {
+            // Image themes get a shade, so the figures stay off the picture.
+            background: theme
+                .backdrop
+                .is_some()
+                .then(|| Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.55))),
+            ..Default::default()
+        })
         .into()
 }
 
-fn tool_card(
-    cost: &ToolCost,
+/// A row of choices with the picked one filled, like T3 Code's toggles.
+fn segmented(
+    options: Vec<(&'static str, bool, Message)>,
+    theme: &'static ThemeDefinition,
+) -> Element<'static, Message> {
+    let buttons = options.into_iter().map(|(label, selected, message)| {
+        button(
+            text(label)
+                .size(typography::METADATA_SIZE)
+                .font(if selected {
+                    typography::EMPHASIS
+                } else {
+                    typography::MEDIUM
+                })
+                .color(if selected {
+                    theme.colors.text()
+                } else {
+                    theme.colors.muted_text()
+                }),
+        )
+        .on_press(message)
+        .padding([4, 9])
+        .style(move |framework_theme: &Theme, status| {
+            let mut style = button::text(framework_theme, status);
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            style.background =
+                (selected || hovered).then(|| Background::Color(theme.colors.hover()));
+            style.border = Border {
+                radius: 5.0.into(),
+                ..Border::default()
+            };
+            style.shadow = Shadow::default();
+            style
+        })
+        .into()
+    });
+    container(row(buttons).spacing(2))
+        .padding(2)
+        .style(move |_| container::Style {
+            border: Border {
+                color: theme.colors.border(0.45),
+                width: 1.0,
+                radius: 7.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn controls(
+    state: &CostTab,
     theme: &'static ThemeDefinition,
     language: locale::Language,
 ) -> Element<'static, Message> {
-    let provider = match cost.tool {
-        CostTool::Codex => UsageProvider::Codex,
-        CostTool::Claude => UsageProvider::Claude,
-    };
-    let header = row![
-        image(provider_logo_handle(provider, theme.colors.is_light))
-            .width(20)
-            .height(20)
-            .content_fit(ContentFit::Contain),
-        text(cost.tool.label())
-            .size(typography::ACCOUNT_NAME_SIZE)
-            .font(typography::EMPHASIS)
-            .color(theme.colors.text())
-            .width(Fill),
+    let periods = [
+        (Period::Today, tr(language, "Today", "اليوم")),
+        (Period::Week, tr(language, "7 days", "7 أيام")),
+        (Period::Month, tr(language, "30 days", "30 يومًا")),
     ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-
-    let mut body = vec![header.into()];
-    if !cost.logs_found {
-        body.push(muted_line(
-            locale::text(language, locale::Text::CostNoLogs),
-            theme,
-        ));
-    } else if !cost.has_usage() {
-        body.push(muted_line(
-            locale::text(language, locale::Text::CostNoUsage),
-            theme,
-        ));
-    } else {
-        body.push(
-            row![
-                period_tile(locale::Text::CostToday, &cost.last(1), theme, language),
-                period_tile(locale::Text::CostLast7, &cost.last(7), theme, language),
-                period_tile(
-                    locale::Text::CostLast30,
-                    &cost.last(cost.days.len()),
-                    theme,
-                    language
-                ),
-            ]
-            .spacing(6)
-            .into(),
-        );
-        body.push(daily_chart(&cost.days, theme));
-        body.push(models_list(cost, theme, language));
-    }
-
-    container(column(body).spacing(10))
-        .width(Fill)
-        .padding(12)
-        .style(move |_| card_style(theme))
-        .into()
+    .into_iter()
+    .map(|(period, label)| {
+        (
+            label,
+            state.period == period,
+            Message::CostView(CostView::Period(period)),
+        )
+    })
+    .collect();
+    let units = vec![
+        (
+            tr(language, "Cost", "التكلفة"),
+            !state.tokens,
+            Message::CostView(CostView::Tokens(false)),
+        ),
+        (
+            tr(language, "Tokens", "الرموز"),
+            state.tokens,
+            Message::CostView(CostView::Tokens(true)),
+        ),
+    ];
+    row![
+        segmented(periods, theme),
+        Space::new().width(Fill),
+        segmented(units, theme),
+    ]
+    .align_y(Alignment::Center)
+    .into()
 }
 
-fn card_style(theme: &'static ThemeDefinition) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(if theme.colors.is_light {
-            Color::from_rgba(1.0, 1.0, 1.0, 0.55)
-        } else {
-            Color::from_rgba(0.0, 0.0, 0.0, 0.62)
-        })),
-        border: Border {
-            color: theme.colors.border(0.35),
-            width: 1.0,
-            radius: 10.0.into(),
-        },
-        ..Default::default()
-    }
-}
-
-/// One period's cost, with its tokens under it.
-fn period_tile(
-    label: locale::Text,
-    total: &DayCost,
+/// The period's total, in the unit the switch shows.
+fn headline(
+    report: &CostReport,
+    state: &CostTab,
     theme: &'static ThemeDefinition,
     language: locale::Language,
 ) -> Element<'static, Message> {
-    let tokens = format!(
-        "{} {}",
-        format_tokens(total.tokens.total()),
-        locale::text(language, locale::Text::CostTokens)
-    );
-    container(
+    let days = state.period.days();
+    let (cost, tokens) = report.tools.iter().fold((0.0, 0), |(cost, tokens), tool| {
+        let total = tool.last(days);
+        (cost + total.cost_usd, tokens + total.tokens.total())
+    });
+    let (label, value, note) = if state.tokens {
+        (
+            tr(language, "PROCESSED TOKENS", "الرموز المعالجة"),
+            format_tokens(tokens),
+            tr(
+                language,
+                "Input, cache reads and output, all accounts on this PC.",
+                "الإدخال وقراءات الكاش والإخراج، لكل الحسابات على هذا الجهاز.",
+            ),
+        )
+    } else {
+        (
+            tr(language, "RAW TOKEN COST", "تكلفة الرموز الخام"),
+            format!("{}*", format_dollars(cost)),
+            tr(
+                language,
+                "* if billed at the full API rate. Subscriptions are billed separately.",
+                "* لو حوسبت بسعر API الكامل. الاشتراكات تُحاسب بشكل منفصل.",
+            ),
+        )
+    };
+    column![
+        text(label)
+            .size(typography::METADATA_SIZE)
+            .font(typography::EMPHASIS)
+            .color(theme.colors.muted_text()),
+        text(value)
+            .size(30)
+            .font(typography::STRONG)
+            .color(theme.colors.text()),
+        text(note)
+            .size(typography::METADATA_SIZE)
+            .font(typography::MEDIUM)
+            .color(theme.colors.muted_text()),
+    ]
+    .spacing(2)
+    .into()
+}
+
+/// Each tool's amount and share, largest first, with a thin bar in its color.
+fn tool_split(
+    report: &CostReport,
+    state: &CostTab,
+    theme: &'static ThemeDefinition,
+    language: locale::Language,
+) -> Element<'static, Message> {
+    let days = state.period.days();
+    let measure = |total: &DayCost| {
+        if state.tokens {
+            total.tokens.total() as f64
+        } else {
+            total.cost_usd
+        }
+    };
+    let mut totals = report
+        .tools
+        .iter()
+        .map(|tool| (tool, tool.last(days)))
+        .collect::<Vec<_>>();
+    let sum = totals.iter().map(|(_, total)| measure(total)).sum::<f64>();
+    totals.sort_by(|left, right| measure(&right.1).total_cmp(&measure(&left.1)));
+
+    let rows = totals.into_iter().map(|(tool, total)| {
+        let share = if sum > 0.0 {
+            measure(&total) / sum
+        } else {
+            0.0
+        };
+        let amount = if state.tokens {
+            format_tokens(total.tokens.total())
+        } else {
+            format_dollars(total.cost_usd)
+        };
+        let detail = if !tool.logs_found {
+            tr(language, "No logs on this PC", "لا توجد سجلات على هذا الجهاز").to_owned()
+        } else if state.tokens {
+            match language {
+                locale::Language::English => format!(
+                    "{} of tokens · {}",
+                    format_percent(share),
+                    format_dollars(total.cost_usd)
+                ),
+                locale::Language::Arabic => format!(
+                    "{} من الرموز · {}",
+                    format_percent(share),
+                    format_dollars(total.cost_usd)
+                ),
+            }
+        } else {
+            match language {
+                locale::Language::English => format!(
+                    "{} of cost · {} tokens",
+                    format_percent(share),
+                    format_tokens(total.tokens.total())
+                ),
+                locale::Language::Arabic => format!(
+                    "{} من التكلفة · {} رمز",
+                    format_percent(share),
+                    format_tokens(total.tokens.total())
+                ),
+            }
+        };
+        let color = tool_color(tool.tool, theme);
+        let filled = (share * 1000.0).round() as u16;
+        let bar = row![
+            container(Space::new().width(Fill).height(4))
+                .width(Length::FillPortion(filled.max(1)))
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(color)),
+                    border: Border {
+                        radius: 2.0.into(),
+                        ..Border::default()
+                    },
+                    ..Default::default()
+                }),
+            Space::new()
+                .width(Length::FillPortion(1000_u16.saturating_sub(filled).max(1)))
+                .height(4),
+        ];
+        let track = container(bar).width(Fill).style(move |_| container::Style {
+            background: Some(Background::Color(theme.colors.hover())),
+            border: Border {
+                radius: 2.0.into(),
+                ..Border::default()
+            },
+            ..Default::default()
+        });
         column![
-            text(locale::text(language, label))
+            row![
+                image(provider_logo_handle(
+                    tool_provider(tool.tool),
+                    theme.colors.is_light
+                ))
+                .width(16)
+                .height(16)
+                .content_fit(ContentFit::Contain),
+                text(tool.tool.label())
+                    .size(typography::BODY_SIZE)
+                    .font(typography::EMPHASIS)
+                    .color(theme.colors.text())
+                    .width(Fill),
+                text(amount)
+                    .size(typography::BODY_SIZE)
+                    .font(typography::EMPHASIS)
+                    .color(theme.colors.text()),
+            ]
+            .spacing(7)
+            .align_y(Alignment::Center),
+            track,
+            text(detail)
                 .size(typography::METADATA_SIZE)
                 .font(typography::MEDIUM)
                 .color(theme.colors.muted_text()),
-            text(format_dollars(total.cost_usd))
+        ]
+        .spacing(4)
+        .into()
+    });
+    column(rows).spacing(12).into()
+}
+
+/// The days the chart shows: the period, and at least a week.
+fn chart_days(report: &CostReport, period: Period) -> usize {
+    let available = report.tools.first().map_or(0, |tool| tool.days.len());
+    period.days().max(7).min(available)
+}
+
+/// One column per day with both tools drawn from the same baseline, the
+/// smaller in front, so neither looks bigger just for being on top.
+fn daily_chart(
+    report: &CostReport,
+    state: &CostTab,
+    theme: &'static ThemeDefinition,
+    language: locale::Language,
+) -> Element<'static, Message> {
+    let count = chart_days(report, state.period);
+    let value = |day: &DayCost| {
+        if state.tokens {
+            day.tokens.total() as f64
+        } else {
+            day.cost_usd
+        }
+    };
+    let series = report
+        .tools
+        .iter()
+        .map(|tool| {
+            let start = tool.days.len().saturating_sub(count);
+            (tool.tool, &tool.days[start..])
+        })
+        .collect::<Vec<_>>();
+    let highest = series
+        .iter()
+        .flat_map(|(_, days)| days.iter().map(value))
+        .fold(0.0_f64, f64::max);
+    let first_in_period = count.saturating_sub(state.period.days());
+
+    let columns = (0..count).map(|index| {
+        let mut bars = series
+            .iter()
+            .filter_map(|(tool, days)| days.get(index).map(|day| (*tool, value(day))))
+            .filter(|(_, amount)| *amount > 0.0)
+            .collect::<Vec<_>>();
+        // The taller bar behind, the shorter in front.
+        bars.sort_by(|left, right| right.1.total_cmp(&left.1));
+        let dimmed = index < first_in_period;
+        let layers = bars.into_iter().map(|(tool, amount)| {
+            let height = ((amount / highest) as f32 * CHART_HEIGHT).max(2.0);
+            let mut color = tool_color(tool, theme);
+            if dimmed {
+                color.a = 0.35;
+            }
+            container(
+                container(Space::new().width(Fill).height(height))
+                    .width(Fill)
+                    .style(move |_| container::Style {
+                        background: Some(Background::Color(color)),
+                        border: Border {
+                            radius: 2.0.into(),
+                            ..Border::default()
+                        },
+                        ..Default::default()
+                    }),
+            )
+            .width(Fill)
+            .height(Fill)
+            .align_y(Alignment::End)
+            .into()
+        });
+        let baseline: Element<'static, Message> = container(
+            container(Space::new().width(Fill).height(1)).style(move |_| container::Style {
+                background: Some(Background::Color(theme.colors.border(0.6))),
+                ..Default::default()
+            }),
+        )
+        .width(Fill)
+        .height(Fill)
+        .align_y(Alignment::End)
+        .into();
+        let hovered = state.hovered_day == Some(index);
+        let column_area = container(stack(std::iter::once(baseline).chain(layers)))
+            .width(Fill)
+            .height(CHART_HEIGHT)
+            .padding([0, 1])
+            .style(move |_| container::Style {
+                background: hovered.then(|| Background::Color(theme.colors.hover())),
+                border: Border {
+                    radius: 3.0.into(),
+                    ..Border::default()
+                },
+                ..Default::default()
+            });
+        mouse_area(column_area)
+            .on_enter(Message::CostView(CostView::HoverDay(Some(index))))
+            .on_exit(Message::CostView(CostView::HoverDay(None)))
+            .into()
+    });
+
+    let days_shown = series.first().map(|(_, days)| *days).unwrap_or_default();
+    // Under the pointer, the day's figures replace the heading.
+    let heading: Element<'static, Message> = match state
+        .hovered_day
+        .and_then(|index| days_shown.get(index).map(|day| (index, day.day)))
+    {
+        Some((index, day)) => {
+            let figures = series
+                .iter()
+                .filter_map(|(tool, days)| {
+                    days.get(index).map(|day| {
+                        let amount = if state.tokens {
+                            format_tokens(day.tokens.total())
+                        } else {
+                            format_dollars(day.cost_usd)
+                        };
+                        format!("{} {amount}", tool.label())
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join(" · ");
+            text(format!("{} · {figures}", format_day(day, language)))
+                .size(typography::LABEL_SIZE)
+                .font(typography::EMPHASIS)
+                .color(theme.colors.text())
+                .into()
+        }
+        None => text(if state.tokens {
+            tr(language, "Daily tokens", "الرموز اليومية")
+        } else {
+            tr(language, "Daily cost", "التكلفة اليومية")
+        })
+        .size(typography::LABEL_SIZE)
+        .font(typography::EMPHASIS)
+        .color(theme.colors.text())
+        .into(),
+    };
+    let axis = row![
+        text(
+            days_shown
+                .first()
+                .map(|day| format_day(day.day, language))
+                .unwrap_or_default()
+        )
+        .size(typography::COMPACT_SIZE)
+        .color(theme.colors.muted_text())
+        .width(Fill),
+        text(
+            days_shown
+                .last()
+                .map(|day| format_day(day.day, language))
+                .unwrap_or_default()
+        )
+        .size(typography::COMPACT_SIZE)
+        .color(theme.colors.muted_text()),
+    ];
+    column![heading, row(columns).spacing(1).height(CHART_HEIGHT), axis]
+        .spacing(6)
+        .into()
+}
+
+/// One figure with its label above and a note below.
+fn metric(
+    label: &'static str,
+    value: String,
+    detail: String,
+    theme: &'static ThemeDefinition,
+) -> Element<'static, Message> {
+    container(
+        column![
+            text(label)
+                .size(typography::METADATA_SIZE)
+                .font(typography::MEDIUM)
+                .color(theme.colors.muted_text()),
+            text(value)
                 .size(typography::PERCENTAGE_SIZE + 2.0)
-                .font(typography::STRONG)
+                .font(typography::EMPHASIS)
                 .color(theme.colors.text()),
-            text(tokens)
+            text(detail)
                 .size(typography::METADATA_SIZE)
                 .font(typography::MEDIUM)
                 .color(theme.colors.muted_text()),
@@ -237,13 +667,9 @@ fn period_tile(
         .spacing(1),
     )
     .width(Fill)
-    .padding([6, 8])
+    .padding([7, 9])
     .style(move |_| container::Style {
-        background: Some(Background::Color(if theme.colors.is_light {
-            theme.colors.hover()
-        } else {
-            Color::from_rgba(1.0, 1.0, 1.0, 0.07)
-        })),
+        background: Some(Background::Color(theme.colors.hover())),
         border: Border {
             radius: 7.0.into(),
             ..Border::default()
@@ -253,94 +679,351 @@ fn period_tile(
     .into()
 }
 
-/// A bar for each day, today on the right.
-fn daily_chart(days: &[DayCost], theme: &'static ThemeDefinition) -> Element<'static, Message> {
-    let highest = days.iter().map(|day| day.cost_usd).fold(0.0_f64, f64::max);
-    // The green of the usage bars, so the chart reads the same in every theme.
-    let accent = if theme.colors.is_light {
-        Color::from_rgb8(27, 116, 69)
-    } else {
-        Color::from_rgb8(139, 205, 164)
-    };
-    let last = days.len().saturating_sub(1);
-    let bars = days.iter().enumerate().map(|(index, day)| {
-        let share = if highest > 0.0 {
-            (day.cost_usd / highest) as f32
-        } else {
-            0.0
-        };
-        let height = if day.cost_usd > 0.0 {
-            (share * CHART_HEIGHT).max(3.0)
-        } else {
-            2.0
-        };
-        let color = if day.cost_usd <= 0.0 {
-            theme.colors.border(0.5)
-        } else if index == last {
-            accent
-        } else {
-            Color { a: 0.55, ..accent }
-        };
-        container(Space::new().width(Fill).height(height))
-            .width(Fill)
-            .style(move |_| container::Style {
-                background: Some(Background::Color(color)),
-                border: Border {
-                    radius: 2.0.into(),
-                    ..Border::default()
-                },
-                ..Default::default()
-            })
-            .into()
-    });
-    container(row(bars).spacing(2).align_y(Alignment::End))
-        .width(Fill)
-        .height(CHART_HEIGHT)
-        .align_y(Alignment::End)
-        .into()
-}
-
-fn models_list(
-    cost: &ToolCost,
+/// The token classes behind the total, and what the cache saved.
+fn token_metrics(
+    report: &CostReport,
+    days: usize,
     theme: &'static ThemeDefinition,
     language: locale::Language,
 ) -> Element<'static, Message> {
-    let mut lines = vec![
-        text(locale::text(language, locale::Text::CostModels))
-            .size(typography::METADATA_SIZE)
-            .font(typography::EMPHASIS)
-            .color(theme.colors.muted_text())
-            .into(),
-    ];
-    for model in cost.models.iter().take(MODELS_SHOWN) {
-        let price = model.cost_usd.map_or_else(
-            || locale::text(language, locale::Text::CostUnpriced).to_owned(),
-            format_dollars,
+    let mut total = DayCost::default();
+    let mut active_days = 0;
+    let longest = report
+        .tools
+        .iter()
+        .map(|tool| tool.days.len())
+        .max()
+        .unwrap_or(0);
+    for offset in 0..days.min(longest) {
+        let mut day_tokens = 0;
+        for tool in &report.tools {
+            if let Some(day) = tool.days.iter().rev().nth(offset) {
+                total.cost_usd += day.cost_usd;
+                total.cache_savings_usd += day.cache_savings_usd;
+                total.tokens.add(&day.tokens);
+                day_tokens += day.tokens.total();
+            }
+        }
+        active_days += u64::from(day_tokens > 0);
+    }
+    let tokens = &total.tokens;
+    let input = tokens.input + tokens.cache_read;
+    let cached_share = if input > 0 {
+        tokens.cache_read as f64 / input as f64
+    } else {
+        0.0
+    };
+    let per_day = tokens.total() / active_days.max(1);
+    let english = language == locale::Language::English;
+    let processed = metric(
+        tr(language, "Processed tokens", "الرموز المعالجة"),
+        format_tokens(tokens.total()),
+        if english {
+            format!("{} per active day", format_tokens(per_day))
+        } else {
+            format!("{} لكل يوم نشط", format_tokens(per_day))
+        },
+        theme,
+    );
+    let cached = metric(
+        tr(language, "Cached input", "إدخال من الكاش"),
+        format_tokens(tokens.cache_read),
+        if english {
+            format!("{} of input", format_percent(cached_share))
+        } else {
+            format!("{} من الإدخال", format_percent(cached_share))
+        },
+        theme,
+    );
+    let uncached = metric(
+        tr(language, "Uncached input", "إدخال جديد"),
+        format_tokens(tokens.input),
+        if english {
+            format!("{} cache writes", format_tokens(tokens.cache_write))
+        } else {
+            format!("{} كتابة للكاش", format_tokens(tokens.cache_write))
+        },
+        theme,
+    );
+    let output = metric(
+        tr(language, "Output", "الإخراج"),
+        format_tokens(tokens.output),
+        if english {
+            format!("includes {} reasoning", format_tokens(tokens.reasoning))
+        } else {
+            format!("منه {} تفكير", format_tokens(tokens.reasoning))
+        },
+        theme,
+    );
+    let savings = metric(
+        tr(language, "Cache savings", "وفّر الكاش"),
+        format_dollars(total.cache_savings_usd),
+        if total.cost_usd > 0.0 {
+            let times = total.cache_savings_usd / total.cost_usd;
+            if english {
+                format!("{times:.1}× the raw token cost, against full input rates")
+            } else {
+                format!("{times:.1}× تكلفة الرموز، مقارنة بسعر الإدخال الكامل")
+            }
+        } else {
+            tr(
+                language,
+                "against full input rates",
+                "مقارنة بسعر الإدخال الكامل",
+            )
+            .to_owned()
+        },
+        theme,
+    );
+    column![
+        row![processed, cached].spacing(6),
+        row![uncached, output].spacing(6),
+        savings,
+    ]
+    .spacing(6)
+    .into()
+}
+
+/// A table row: a wide first cell, then right-aligned number cells.
+fn table_row(
+    first: Element<'static, Message>,
+    cells: Vec<(String, bool)>,
+    theme: &'static ThemeDefinition,
+    header: bool,
+) -> Element<'static, Message> {
+    let mut cells_row = row![first].spacing(4).align_y(Alignment::Center);
+    for (value, strong) in cells {
+        let color = if header || !strong {
+            theme.colors.muted_text()
+        } else {
+            theme.colors.text()
+        };
+        cells_row = cells_row.push(
+            text(value)
+                .size(if header {
+                    typography::METADATA_SIZE
+                } else {
+                    typography::LABEL_SIZE
+                })
+                .font(if strong && !header {
+                    typography::EMPHASIS
+                } else {
+                    typography::MEDIUM
+                })
+                .color(color)
+                .width(Length::Fixed(NUMBER_COLUMN))
+                .align_x(iced::alignment::Horizontal::Right),
         );
-        lines.push(
-            row![
+    }
+    let line = container(Space::new().width(Fill).height(1)).style(move |_| container::Style {
+        background: Some(Background::Color(theme.colors.border(if header {
+            0.6
+        } else {
+            0.25
+        }))),
+        ..Default::default()
+    });
+    column![container(cells_row).padding([5, 0]), line].into()
+}
+
+fn header_cell(label: &'static str, theme: &'static ThemeDefinition) -> Element<'static, Message> {
+    text(label)
+        .size(typography::METADATA_SIZE)
+        .font(typography::MEDIUM)
+        .color(theme.colors.muted_text())
+        .width(Fill)
+        .into()
+}
+
+/// The period by model (cost, share, tokens) or by day (each tool, total,
+/// tokens).
+fn breakdown(
+    report: &CostReport,
+    state: &CostTab,
+    theme: &'static ThemeDefinition,
+    language: locale::Language,
+) -> Element<'static, Message> {
+    let switch = segmented(
+        vec![
+            (
+                tr(language, "Model", "النموذج"),
+                !state.by_day,
+                Message::CostView(CostView::ByDay(false)),
+            ),
+            (
+                tr(language, "Day", "اليوم"),
+                state.by_day,
+                Message::CostView(CostView::ByDay(true)),
+            ),
+        ],
+        theme,
+    );
+    let title = row![
+        text(tr(language, "Breakdown", "التفصيل"))
+            .size(typography::LABEL_SIZE)
+            .font(typography::EMPHASIS)
+            .color(theme.colors.text())
+            .width(Fill),
+        switch,
+    ]
+    .align_y(Alignment::Center);
+    let days = state.period.days();
+    let mut rows = vec![title.into()];
+    let empty = tr(
+        language,
+        "No use in this period.",
+        "لا استخدام في هذه الفترة.",
+    );
+
+    if state.by_day {
+        let mut headers = report
+            .tools
+            .iter()
+            .map(|tool| {
+                let name = match tool.tool {
+                    CostTool::Codex => "Codex",
+                    CostTool::Claude => "Claude",
+                };
+                (name.to_owned(), false)
+            })
+            .collect::<Vec<_>>();
+        headers.push((tr(language, "Total", "المجموع").to_owned(), false));
+        headers.push((tr(language, "Tokens", "الرموز").to_owned(), false));
+        rows.push(table_row(
+            header_cell(tr(language, "Day", "اليوم"), theme),
+            headers,
+            theme,
+            true,
+        ));
+        let longest = report
+            .tools
+            .iter()
+            .map(|tool| tool.days.len())
+            .max()
+            .unwrap_or(0);
+        let mut shown = 0;
+        for offset in 0..days.min(longest) {
+            let per_tool = report
+                .tools
+                .iter()
+                .map(|tool| tool.days.iter().rev().nth(offset))
+                .collect::<Vec<_>>();
+            let tokens = per_tool
+                .iter()
+                .flatten()
+                .map(|day| day.tokens.total())
+                .sum::<u64>();
+            let Some(day) = per_tool.iter().flatten().next().map(|day| day.day) else {
+                continue;
+            };
+            if tokens == 0 {
+                continue;
+            }
+            let mut cells = per_tool
+                .iter()
+                .map(|day| (format_dollars(day.map_or(0.0, |day| day.cost_usd)), false))
+                .collect::<Vec<_>>();
+            let total = per_tool
+                .iter()
+                .flatten()
+                .map(|day| day.cost_usd)
+                .sum::<f64>();
+            cells.push((format_dollars(total), true));
+            cells.push((format_tokens(tokens), false));
+            rows.push(table_row(
+                text(format_day(day, language))
+                    .size(typography::LABEL_SIZE)
+                    .font(typography::MEDIUM)
+                    .color(theme.colors.text())
+                    .width(Fill)
+                    .into(),
+                cells,
+                theme,
+                false,
+            ));
+            shown += 1;
+            if shown == DAY_ROWS {
+                break;
+            }
+        }
+        if shown == 0 {
+            rows.push(muted_line(empty, theme));
+        }
+    } else {
+        rows.push(table_row(
+            header_cell(tr(language, "Model", "النموذج"), theme),
+            vec![
+                (tr(language, "Cost", "التكلفة").to_owned(), false),
+                (tr(language, "Share", "الحصة").to_owned(), false),
+                (tr(language, "Tokens", "الرموز").to_owned(), false),
+            ],
+            theme,
+            true,
+        ));
+        let mut models = report
+            .tools
+            .iter()
+            .flat_map(|tool| {
+                tool.models(days)
+                    .into_iter()
+                    .map(move |model| (tool.tool, model))
+            })
+            .filter(|(_, model)| model.tokens.total() > 0)
+            .collect::<Vec<_>>();
+        models.sort_by(|left, right| {
+            right
+                .1
+                .cost_usd
+                .unwrap_or(-1.0)
+                .total_cmp(&left.1.cost_usd.unwrap_or(-1.0))
+        });
+        let total = models
+            .iter()
+            .filter_map(|(_, model)| model.cost_usd)
+            .sum::<f64>();
+        if models.is_empty() {
+            rows.push(muted_line(empty, theme));
+        }
+        for (tool, model) in models {
+            let (cost, share) = match model.cost_usd {
+                Some(cost) => (
+                    format_dollars(cost),
+                    format_percent(if total > 0.0 { cost / total } else { 0.0 }),
+                ),
+                None => (
+                    tr(language, "no price", "بلا سعر").to_owned(),
+                    "–".to_owned(),
+                ),
+            };
+            let name = row![
+                image(provider_logo_handle(
+                    tool_provider(tool),
+                    theme.colors.is_light
+                ))
+                .width(13)
+                .height(13)
+                .content_fit(ContentFit::Contain),
                 text(model.model.clone())
                     .size(typography::LABEL_SIZE)
                     .font(typography::MEDIUM)
-                    .color(theme.colors.text())
-                    .width(Fill),
-                text(format_tokens(model.tokens.total()))
-                    .size(typography::METADATA_SIZE)
-                    .font(typography::MEDIUM)
-                    .color(theme.colors.muted_text()),
-                text(price)
-                    .size(typography::LABEL_SIZE)
-                    .font(typography::EMPHASIS)
-                    .color(theme.colors.text())
-                    .width(Length::Fixed(72.0))
-                    .align_x(iced::alignment::Horizontal::Right),
+                    .color(theme.colors.text()),
             ]
-            .spacing(8)
+            .spacing(6)
             .align_y(Alignment::Center)
-            .into(),
-        );
+            .width(Fill);
+            rows.push(table_row(
+                name.into(),
+                vec![
+                    (cost, true),
+                    (share, false),
+                    (format_tokens(model.tokens.total()), false),
+                ],
+                theme,
+                false,
+            ));
+        }
     }
-    column(lines).spacing(4).into()
+    column(rows).spacing(2).into()
 }
 
 fn footer(
@@ -365,29 +1048,23 @@ fn footer(
         (locale::Language::Arabic, false) => format!("أسعار مدمجة بتاريخ {updated}."),
     };
     let mut lines = vec![
-        muted_line(locale::text(language, locale::Text::CostNote), theme),
+        muted_line(
+            tr(
+                language,
+                "Read from this PC's Codex and Claude Code logs, all accounts together.",
+                "مقروءة من سجلات Codex وClaude Code على هذا الجهاز، لكل الحسابات معًا.",
+            ),
+            theme,
+        ),
         muted_line(&prices, theme),
     ];
     if scanning {
         lines.push(muted_line(
-            locale::text(language, locale::Text::CostReading),
+            tr(language, "Reading local logs…", "جارٍ قراءة السجلات المحلية…"),
             theme,
         ));
     }
-    // On image themes, a shade keeps the small print off the picture.
-    let shaded = theme.backdrop.is_some();
-    container(column(lines).spacing(2))
-        .width(Fill)
-        .padding([6, 8])
-        .style(move |_| container::Style {
-            background: shaded.then(|| Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.5))),
-            border: Border {
-                radius: 7.0.into(),
-                ..Border::default()
-            },
-            ..Default::default()
-        })
-        .into()
+    column(lines).spacing(2).into()
 }
 
 fn muted_line(message: &str, theme: &'static ThemeDefinition) -> Element<'static, Message> {
@@ -396,6 +1073,37 @@ fn muted_line(message: &str, theme: &'static ThemeDefinition) -> Element<'static
         .font(typography::MEDIUM)
         .color(theme.colors.muted_text())
         .into()
+}
+
+/// `Oct 3`, or `3 أكتوبر`.
+fn format_day(day: chrono::NaiveDate, language: locale::Language) -> String {
+    use chrono::Datelike;
+    const ENGLISH: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    const ARABIC: [&str; 12] = [
+        "يناير",
+        "فبراير",
+        "مارس",
+        "أبريل",
+        "مايو",
+        "يونيو",
+        "يوليو",
+        "أغسطس",
+        "سبتمبر",
+        "أكتوبر",
+        "نوفمبر",
+        "ديسمبر",
+    ];
+    let month = day.month0() as usize;
+    match language {
+        locale::Language::English => format!("{} {}", ENGLISH[month], day.day()),
+        locale::Language::Arabic => format!("{} {}", day.day(), ARABIC[month]),
+    }
+}
+
+fn format_percent(share: f64) -> String {
+    format!("{:.1}%", share * 100.0)
 }
 
 /// `$0.12`, `$11.01`, `$1,205`.
@@ -441,7 +1149,8 @@ pub(super) fn format_tokens(tokens: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_dollars, format_tokens};
+    use super::{format_day, format_dollars, format_percent, format_tokens};
+    use crate::locale::Language;
 
     #[test]
     fn amounts_and_token_counts_read_short() {
@@ -454,5 +1163,13 @@ mod tests {
         assert_eq!(format_tokens(5_157_518), "5.16M");
         assert_eq!(format_tokens(131_054_244), "131M");
         assert_eq!(format_tokens(1_466_920_434), "1.47B");
+        assert_eq!(format_percent(0.684), "68.4%");
+    }
+
+    #[test]
+    fn days_read_in_each_language() {
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 3).unwrap();
+        assert_eq!(format_day(day, Language::English), "Oct 3");
+        assert_eq!(format_day(day, Language::Arabic), "3 أكتوبر");
     }
 }

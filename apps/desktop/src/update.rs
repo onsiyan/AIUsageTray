@@ -331,6 +331,10 @@ impl App {
                 self.cost.finish(*result);
                 Task::none()
             }
+            Message::CostView(change) => {
+                self.cost.change(change);
+                Task::none()
+            }
             Message::RefreshAllUsage => {
                 let usage = self.start_usage_refresh(usage_refresh::RefreshTrigger::Manual);
                 if self.selected_tab == DashboardTab::Cost {

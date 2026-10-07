@@ -67,6 +67,14 @@ struct PriceFile {
     models: HashMap<String, ModelPrice>,
 }
 
+/// What tokens cost at list price.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Priced {
+    pub cost_usd: f64,
+    /// The cache reads at the full input rate, less what they cost.
+    pub cache_savings_usd: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct PriceTable {
     models: HashMap<String, ModelPrice>,
@@ -117,6 +125,18 @@ impl PriceTable {
         tokens: &TokenCounts,
         long_context: bool,
     ) -> Option<f64> {
+        self.price(tool, model, tokens, long_context)
+            .map(|priced| priced.cost_usd)
+    }
+
+    /// The list price of `tokens` and what their cache reads saved.
+    pub fn price(
+        &self,
+        tool: CostTool,
+        model: &str,
+        tokens: &TokenCounts,
+        long_context: bool,
+    ) -> Option<Priced> {
         let price = self.lookup(tool, model)?;
         let (input, output, cache_read, cache_write) = match &price.long {
             Some(long) if long_context => (
@@ -141,7 +161,11 @@ impl PriceTable {
             // Anthropic bills one-hour cache writes at twice the input rate.
             + tokens.cache_write_1h.min(tokens.cache_write) as f64 * input * 2.0
             + tokens.output as f64 * output;
-        Some(dollars / 1_000_000.0)
+        let savings = tokens.cache_read as f64 * (input - cache_read).max(0.0);
+        Some(Priced {
+            cost_usd: dollars / 1_000_000.0,
+            cache_savings_usd: savings / 1_000_000.0,
+        })
     }
 }
 

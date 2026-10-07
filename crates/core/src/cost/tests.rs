@@ -90,7 +90,13 @@ fn codex_counts_each_turn_once_and_follows_the_model() {
     // Past 272k input tokens, gpt-5.5's long-context rates apply.
     let long = (300_000.0 * 10.0 + 10.0 * 45.0) / 1e6;
     assert!((today_cost.cost_usd - (luna + long)).abs() < 1e-9);
-    assert_eq!(codex.models[0].model, "gpt-5.5");
+    let models = codex.models(1);
+    assert_eq!(models[0].model, "gpt-5.5");
+    assert_eq!(models.len(), 2);
+    // 400 cached tokens at $0.20 rather than $0.02 per million.
+    assert!((today_cost.cache_savings_usd - 400.0 * 0.18 / 1e6).abs() < 1e-12);
+    // The 60-day-old event is past the report and the kept days.
+    assert_eq!(codex.models(30).len(), 2);
 }
 
 #[test]
@@ -191,7 +197,7 @@ fn unknown_models_are_counted_but_not_priced() {
     let codex = report.tool(CostTool::Codex).unwrap();
     assert_eq!(codex.last(1).unpriced_tokens, 10);
     assert_eq!(codex.last(1).cost_usd, 0.0);
-    assert_eq!(codex.models[0].cost_usd, None);
+    assert_eq!(codex.models(1)[0].cost_usd, None);
 }
 
 #[test]

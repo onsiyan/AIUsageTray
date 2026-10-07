@@ -137,6 +137,16 @@ fn main() -> iced::Result {
                     ))),
                     Ok("add") => Some(Message::ToggleAccountAddMenu),
                     Ok("cost-tab") => Some(Message::SelectTab(DashboardTab::Cost)),
+                    Ok("cost-detail") => {
+                        boot.push(Task::done(Message::SelectTab(DashboardTab::Cost)));
+                        boot.push(Task::done(Message::CostView(cost_tab::CostView::Period(
+                            cost_tab::Period::Week,
+                        ))));
+                        boot.push(Task::done(Message::CostView(cost_tab::CostView::Tokens(
+                            true,
+                        ))));
+                        Some(Message::CostView(cost_tab::CostView::ByDay(true)))
+                    }
                     Ok("welcome") => Some(Message::WelcomePreview(false)),
                     Ok("custom-theme") => Some(Message::OpenCustomTheme),
                     Ok("welcome-accounts") => Some(Message::WelcomePreview(true)),
@@ -802,6 +812,7 @@ enum Message {
     CodexDesktopSwitchFinished(usage_monitor_core::accounts::AccountId, Result<(), String>),
     SelectTab(DashboardTab),
     CostScanned(Box<Result<usage_monitor_core::cost::CostReport, String>>),
+    CostView(cost_tab::CostView),
     ToggleTabManager,
     DismissTabManager,
     ToggleTabVisible(usize),

@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Days, Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
-pub use pricing::{PriceSource, PriceTable, refresh_prices_if_stale};
+pub use pricing::{PriceSource, PriceTable, Priced, refresh_prices_if_stale};
 pub use scan::LogRoots;
 
 /// Days a report covers, today included.
@@ -116,8 +116,8 @@ pub struct ToolCost {
     pub logs_found: bool,
     /// One entry per day, oldest first, ending today; quiet days are zero.
     pub days: Vec<DayCost>,
-    /// The report's models, most expensive first.
-    pub models: Vec<ModelCost>,
+    /// Each model's use per day, for totals over any part of the report.
+    pub model_days: Vec<ModelDay>,
 }
 
 impl ToolCost {
@@ -129,10 +129,45 @@ impl ToolCost {
         };
         for day in self.days.iter().rev().take(days) {
             total.cost_usd += day.cost_usd;
+            total.cache_savings_usd += day.cache_savings_usd;
             total.tokens.add(&day.tokens);
             total.unpriced_tokens += day.unpriced_tokens;
         }
         total
+    }
+
+    /// Each model's cost and tokens over the last `days` days, most
+    /// expensive first.
+    pub fn models(&self, days: usize) -> Vec<ModelCost> {
+        let first = self
+            .days
+            .len()
+            .checked_sub(days)
+            .and_then(|index| self.days.get(index))
+            .or(self.days.first())
+            .map_or(NaiveDate::MIN, |day| day.day);
+        let mut models: BTreeMap<&str, ModelCost> = BTreeMap::new();
+        for usage in self.model_days.iter().filter(|usage| usage.day >= first) {
+            let model = models.entry(&usage.model).or_insert_with(|| ModelCost {
+                model: usage.model.clone(),
+                cost_usd: Some(0.0),
+                tokens: TokenCounts::default(),
+            });
+            model.tokens.add(&usage.tokens);
+            model.cost_usd = model
+                .cost_usd
+                .zip(usage.cost_usd)
+                .map(|(total, cost)| total + cost);
+        }
+        let mut models = models.into_values().collect::<Vec<_>>();
+        models.sort_by(|left, right| {
+            right
+                .cost_usd
+                .unwrap_or(-1.0)
+                .total_cmp(&left.cost_usd.unwrap_or(-1.0))
+                .then(right.tokens.total().cmp(&left.tokens.total()))
+        });
+        models
     }
 
     pub fn has_usage(&self) -> bool {
@@ -144,9 +179,23 @@ impl ToolCost {
 pub struct DayCost {
     pub day: NaiveDate,
     pub cost_usd: f64,
+    /// What the cache reads saved against paying the full input rate.
+    #[serde(default)]
+    pub cache_savings_usd: f64,
     pub tokens: TokenCounts,
     /// Tokens of models without a known price, left out of `cost_usd`.
     pub unpriced_tokens: u64,
+}
+
+/// One model's use on one day.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelDay {
+    pub day: NaiveDate,
+    pub model: String,
+    /// `None` when the model has no known price.
+    pub cost_usd: Option<f64>,
+    pub cache_savings_usd: f64,
+    pub tokens: TokenCounts,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,44 +268,42 @@ fn build_tool_cost(
         );
         day = day.succ_opt().unwrap_or(today + Days::new(1));
     }
-    let mut models: BTreeMap<&str, ModelCost> = BTreeMap::new();
+    let mut model_days: BTreeMap<(NaiveDate, &str), ModelDay> = BTreeMap::new();
     for row in rows {
         let Some(day) = days.get_mut(&row.day) else {
             continue;
         };
-        let cost = prices.cost(tool, &row.model, &row.tokens, row.long_context);
+        let priced = prices.price(tool, &row.model, &row.tokens, row.long_context);
         day.tokens.add(&row.tokens);
-        let model = models.entry(&row.model).or_insert_with(|| ModelCost {
-            model: row.model.clone(),
-            cost_usd: Some(0.0),
-            tokens: TokenCounts::default(),
-        });
-        model.tokens.add(&row.tokens);
-        match cost {
-            Some(cost) => {
-                day.cost_usd += cost;
-                if let Some(total) = &mut model.cost_usd {
-                    *total += cost;
+        let usage = model_days
+            .entry((row.day, &row.model))
+            .or_insert_with(|| ModelDay {
+                day: row.day,
+                model: row.model.clone(),
+                cost_usd: Some(0.0),
+                cache_savings_usd: 0.0,
+                tokens: TokenCounts::default(),
+            });
+        usage.tokens.add(&row.tokens);
+        match priced {
+            Some(priced) => {
+                day.cost_usd += priced.cost_usd;
+                day.cache_savings_usd += priced.cache_savings_usd;
+                usage.cache_savings_usd += priced.cache_savings_usd;
+                if let Some(total) = &mut usage.cost_usd {
+                    *total += priced.cost_usd;
                 }
             }
             None => {
                 day.unpriced_tokens += row.tokens.total();
-                model.cost_usd = None;
+                usage.cost_usd = None;
             }
         }
     }
-    let mut models = models.into_values().collect::<Vec<_>>();
-    models.sort_by(|left, right| {
-        right
-            .cost_usd
-            .unwrap_or(-1.0)
-            .total_cmp(&left.cost_usd.unwrap_or(-1.0))
-            .then(right.tokens.total().cmp(&left.tokens.total()))
-    });
     ToolCost {
         tool,
         logs_found,
         days: days.into_values().collect(),
-        models,
+        model_days: model_days.into_values().collect(),
     }
 }

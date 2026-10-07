@@ -51,7 +51,7 @@ fn print_report(report: &CostReport) {
                 total.tokens.total()
             );
         }
-        for model in tool.models.iter().take(5) {
+        for model in tool.models(tool.days.len()).iter().take(5) {
             let cost = model
                 .cost_usd
                 .map_or_else(|| "unpriced".to_owned(), |cost| format!("${cost:.2}"));
