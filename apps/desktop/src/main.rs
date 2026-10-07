@@ -133,7 +133,6 @@ fn main() -> iced::Result {
                     Ok("zai") => Some(Message::ChooseAccountProvider(UsageProvider::Zai)),
                     Ok("xai") => Some(Message::ChooseAccountProvider(UsageProvider::Xai)),
                     Ok("minimax") => Some(Message::ChooseAccountProvider(UsageProvider::MiniMax)),
-                    Ok("mimo") => Some(Message::ChooseAccountProvider(UsageProvider::MiMo)),
                     Ok("openrouter") => {
                         Some(Message::ChooseAccountProvider(UsageProvider::OpenRouter))
                     }
@@ -375,10 +374,8 @@ const PROVIDER_TABS: &[ProviderTab] = &[
         provider: UsageProvider::MiniMax,
         label: "MiniMax",
     },
-    ProviderTab {
-        provider: UsageProvider::MiMo,
-        label: "Xiaomi MiMo",
-    },
+    // Xiaomi MiMo is hidden for now: it needs a pasted console cookie. Its
+    // provider code stays; listing it here again shows it everywhere.
 ];
 
 static PROVIDER_LOGOS: OnceLock<[image::Handle; 13]> = OnceLock::new();

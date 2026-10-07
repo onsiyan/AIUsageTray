@@ -75,12 +75,9 @@ All notable changes to this project are documented here. The format follows
   stdin). The key's region (api.minimax.io or api.minimaxi.com) is found when
   the account is added. The tab shows the 5-hour and weekly text quotas, the
   other model quotas the plan includes, and the points balance.
-- Xiaomi MiMo accounts, added by pasting the Cookie header of the signed-in
-  platform.xiaomimimo.com console (desktop dialog, or `usage account add mimo`
-  with `MIMO_COOKIE` or stdin). Only the MiMo session cookies are kept, in
-  Windows Credential Manager; browsers are never read. The tab shows the
-  balance, with paid and granted funds, and the monthly token plan when there
-  is one.
+- Xiaomi MiMo provider support (balance and monthly token plan, read with a
+  pasted platform.xiaomimimo.com console cookie). Hidden for now: the desktop
+  app does not offer it and the CLI does not list it.
 - "Team budgets" option under Account cards in the palette menu, off by
   default. When on, Codex team and business accounts show the workspace's
   remaining credit balance and the member's monthly credit limit, and Cursor

@@ -214,7 +214,7 @@ pub(super) async fn execute_account_add(
         return Err(CliFailure::new(
             "unsupported_provider",
             format!(
-                "Unsupported provider `{}`. Choose codex, claude, openrouter, opencode-go, antigravity, deepseek, copilot, cursor, kimi, zai, xai, minimax, or mimo.",
+                "Unsupported provider `{}`. Choose codex, claude, openrouter, opencode-go, antigravity, deepseek, copilot, cursor, kimi, zai, xai, or minimax.",
                 arguments.provider
             ),
             2,
@@ -238,7 +238,7 @@ pub(super) async fn execute_account_add(
     {
         return Err(CliFailure::new(
             "invalid_arguments",
-            "Stdin credential options can only be used with `account add openrouter`, `account add deepseek`, `account add kimi`, `account add zai`, `account add xai`, `account add minimax`, `account add mimo`, `account add copilot`, or `account add cursor`.",
+            "Stdin credential options can only be used with `account add openrouter`, `account add deepseek`, `account add kimi`, `account add zai`, `account add xai`, `account add minimax`, `account add copilot`, or `account add cursor`.",
             2,
         ));
     }
