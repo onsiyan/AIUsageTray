@@ -54,6 +54,7 @@ const ACCOUNT_ADD_CHILD_ENV: &str = "USAGE_MONITOR_CLI_CHILD";
 mod account;
 mod account_add;
 mod args;
+mod cost;
 mod output;
 mod selection;
 mod usage;
@@ -154,6 +155,7 @@ async fn execute(cli: Cli) -> Result<i32, CliFailure> {
             execute_usage_command(&database_path, command, json_output).await
         }
         Command::Status => execute_status(&database_path, json_output).await,
+        Command::Cost { offline } => cost::execute_cost(json_output, !offline).await,
     }
 }
 

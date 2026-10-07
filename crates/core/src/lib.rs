@@ -3,6 +3,7 @@ pub mod antigravity_desktop;
 pub mod auth;
 pub mod claude_oauth;
 pub mod codex_desktop;
+pub mod cost;
 pub mod oauth_loopback;
 pub mod oauth_service;
 pub mod opencode_go_oauth;

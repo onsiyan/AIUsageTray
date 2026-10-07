@@ -1,0 +1,429 @@
+{
+ "fetched_at": "2026-10-07T12:37:00Z",
+ "models": {
+  "anthropic/claude-fable-5": {
+   "input": 10,
+   "output": 50,
+   "cache_read": 1,
+   "cache_write": 12.5
+  },
+  "anthropic/claude-fable-5-1": {
+   "input": 10,
+   "output": 50,
+   "cache_read": 0.25,
+   "cache_write": 12.5
+  },
+  "anthropic/claude-haiku-4-5": {
+   "input": 1,
+   "output": 5,
+   "cache_read": 0.1,
+   "cache_write": 1.25
+  },
+  "anthropic/claude-haiku-4-5-20251001": {
+   "input": 1,
+   "output": 5,
+   "cache_read": 0.1,
+   "cache_write": 1.25
+  },
+  "anthropic/claude-opus-4-5": {
+   "input": 5,
+   "output": 25,
+   "cache_read": 0.5,
+   "cache_write": 6.25
+  },
+  "anthropic/claude-opus-4-5-20251101": {
+   "input": 5,
+   "output": 25,
+   "cache_read": 0.5,
+   "cache_write": 6.25
+  },
+  "anthropic/claude-opus-4-6": {
+   "input": 5,
+   "output": 25,
+   "cache_read": 0.5,
+   "cache_write": 6.25
+  },
+  "anthropic/claude-opus-4-7": {
+   "input": 5,
+   "output": 25,
+   "cache_read": 0.5,
+   "cache_write": 6.25
+  },
+  "anthropic/claude-opus-4-8": {
+   "input": 5,
+   "output": 25,
+   "cache_read": 0.5,
+   "cache_write": 6.25
+  },
+  "anthropic/claude-opus-5": {
+   "input": 5,
+   "output": 25,
+   "cache_read": 0.5,
+   "cache_write": 6.25
+  },
+  "anthropic/claude-opus-5-5": {
+   "input": 4,
+   "output": 20,
+   "cache_read": 0.2,
+   "cache_write": 5
+  },
+  "anthropic/claude-sonnet-4-5": {
+   "input": 3,
+   "output": 15,
+   "cache_read": 0.3,
+   "cache_write": 3.75
+  },
+  "anthropic/claude-sonnet-4-5-20250929": {
+   "input": 3,
+   "output": 15,
+   "cache_read": 0.3,
+   "cache_write": 3.75
+  },
+  "anthropic/claude-sonnet-4-6": {
+   "input": 3,
+   "output": 15,
+   "cache_read": 0.3,
+   "cache_write": 3.75
+  },
+  "anthropic/claude-sonnet-5": {
+   "input": 2,
+   "output": 10,
+   "cache_read": 0.2,
+   "cache_write": 2.5
+  },
+  "anthropic/claude-sonnet-5-5": {
+   "input": 2,
+   "output": 10,
+   "cache_read": 0.2,
+   "cache_write": 2.5
+  },
+  "openai/gpt-3.5-turbo": {
+   "input": 0.5,
+   "output": 1.5,
+   "cache_read": 0
+  },
+  "openai/gpt-4": {
+   "input": 30,
+   "output": 60
+  },
+  "openai/gpt-4-turbo": {
+   "input": 10,
+   "output": 30
+  },
+  "openai/gpt-4.1": {
+   "input": 2,
+   "output": 8,
+   "cache_read": 0.5
+  },
+  "openai/gpt-4.1-mini": {
+   "input": 0.4,
+   "output": 1.6,
+   "cache_read": 0.1
+  },
+  "openai/gpt-4.1-nano": {
+   "input": 0.1,
+   "output": 0.4,
+   "cache_read": 0.025
+  },
+  "openai/gpt-4o": {
+   "input": 2.5,
+   "output": 10,
+   "cache_read": 1.25
+  },
+  "openai/gpt-4o-2024-05-13": {
+   "input": 5,
+   "output": 15
+  },
+  "openai/gpt-4o-2024-08-06": {
+   "input": 2.5,
+   "output": 10,
+   "cache_read": 1.25
+  },
+  "openai/gpt-4o-2024-11-20": {
+   "input": 2.5,
+   "output": 10,
+   "cache_read": 1.25
+  },
+  "openai/gpt-4o-mini": {
+   "input": 0.15,
+   "output": 0.6,
+   "cache_read": 0.075
+  },
+  "openai/gpt-5": {
+   "input": 1.25,
+   "output": 10,
+   "cache_read": 0.125
+  },
+  "openai/gpt-5-mini": {
+   "input": 0.25,
+   "output": 2,
+   "cache_read": 0.025
+  },
+  "openai/gpt-5-nano": {
+   "input": 0.05,
+   "output": 0.4,
+   "cache_read": 0.005
+  },
+  "openai/gpt-5-pro": {
+   "input": 15,
+   "output": 120
+  },
+  "openai/gpt-5.1": {
+   "input": 1.25,
+   "output": 10,
+   "cache_read": 0.125
+  },
+  "openai/gpt-5.2": {
+   "input": 1.75,
+   "output": 14,
+   "cache_read": 0.175
+  },
+  "openai/gpt-5.2-chat-latest": {
+   "input": 1.75,
+   "output": 14,
+   "cache_read": 0.175
+  },
+  "openai/gpt-5.2-pro": {
+   "input": 21,
+   "output": 168
+  },
+  "openai/gpt-5.3-chat-latest": {
+   "input": 1.75,
+   "output": 14,
+   "cache_read": 0.175
+  },
+  "openai/gpt-5.3-codex": {
+   "input": 1.75,
+   "output": 14,
+   "cache_read": 0.175
+  },
+  "openai/gpt-5.3-codex-spark": {
+   "input": 1.75,
+   "output": 14,
+   "cache_read": 0.175
+  },
+  "openai/gpt-5.4": {
+   "input": 2.5,
+   "output": 15,
+   "cache_read": 0.25,
+   "long": {
+    "threshold": 272000,
+    "input": 5,
+    "output": 22.5,
+    "cache_read": 0.5
+   }
+  },
+  "openai/gpt-5.4-mini": {
+   "input": 0.75,
+   "output": 4.5,
+   "cache_read": 0.075
+  },
+  "openai/gpt-5.4-nano": {
+   "input": 0.2,
+   "output": 1.25,
+   "cache_read": 0.02
+  },
+  "openai/gpt-5.4-pro": {
+   "input": 30,
+   "output": 180,
+   "long": {
+    "threshold": 272000,
+    "input": 60,
+    "output": 270
+   }
+  },
+  "openai/gpt-5.5": {
+   "input": 5,
+   "output": 30,
+   "cache_read": 0.5,
+   "long": {
+    "threshold": 272000,
+    "input": 10,
+    "output": 45,
+    "cache_read": 1
+   }
+  },
+  "openai/gpt-5.5-pro": {
+   "input": 30,
+   "output": 180,
+   "long": {
+    "threshold": 272000,
+    "input": 60,
+    "output": 270
+   }
+  },
+  "openai/gpt-5.6": {
+   "input": 4,
+   "output": 20,
+   "cache_read": 0.4,
+   "cache_write": 5,
+   "long": {
+    "threshold": 272000,
+    "input": 8,
+    "output": 30,
+    "cache_read": 0.8,
+    "cache_write": 10
+   }
+  },
+  "openai/gpt-5.6-luna": {
+   "input": 0.2,
+   "output": 1.2,
+   "cache_read": 0.02,
+   "cache_write": 0.25,
+   "long": {
+    "threshold": 272000,
+    "input": 0.4,
+    "output": 1.8,
+    "cache_read": 0.04,
+    "cache_write": 0.5
+   }
+  },
+  "openai/gpt-5.6-sol": {
+   "input": 4,
+   "output": 20,
+   "cache_read": 0.4,
+   "cache_write": 5,
+   "long": {
+    "threshold": 272000,
+    "input": 8,
+    "output": 30,
+    "cache_read": 0.8,
+    "cache_write": 10
+   }
+  },
+  "openai/gpt-5.6-terra": {
+   "input": 2,
+   "output": 12,
+   "cache_read": 0.2,
+   "cache_write": 2.5,
+   "long": {
+    "threshold": 272000,
+    "input": 4,
+    "output": 18,
+    "cache_read": 0.4,
+    "cache_write": 5
+   }
+  },
+  "openai/gpt-6-astra": {
+   "input": 10,
+   "output": 50,
+   "cache_read": 1,
+   "cache_write": 12.5,
+   "long": {
+    "threshold": 272000,
+    "input": 20,
+    "output": 75,
+    "cache_read": 2,
+    "cache_write": 25
+   }
+  },
+  "openai/gpt-6-luna": {
+   "input": 0.1,
+   "output": 0.5,
+   "cache_read": 0.01,
+   "cache_write": 0.125,
+   "long": {
+    "threshold": 272000,
+    "input": 0.2,
+    "output": 0.75,
+    "cache_read": 0.02,
+    "cache_write": 0.25
+   }
+  },
+  "openai/gpt-6-sol": {
+   "input": 2,
+   "output": 10,
+   "cache_read": 0.2,
+   "cache_write": 2.5,
+   "long": {
+    "threshold": 272000,
+    "input": 4,
+    "output": 15,
+    "cache_read": 0.4,
+    "cache_write": 5
+   }
+  },
+  "openai/gpt-6.1-sol": {
+   "input": 2,
+   "output": 10,
+   "cache_read": 0.1,
+   "cache_write": 2.5,
+   "long": {
+    "threshold": 272000,
+    "input": 4,
+    "output": 15,
+    "cache_read": 0.2,
+    "cache_write": 5
+   }
+  },
+  "openai/gpt-daybreak-blue-latest": {
+   "input": 4,
+   "output": 20,
+   "cache_read": 0.4,
+   "cache_write": 5,
+   "long": {
+    "threshold": 272000,
+    "input": 8,
+    "output": 30,
+    "cache_read": 0.8,
+    "cache_write": 10
+   }
+  },
+  "openai/gpt-daybreak-red-latest": {
+   "input": 12.5,
+   "output": 75,
+   "cache_read": 1.25,
+   "cache_write": 15.625
+  },
+  "openai/gpt-image-2": {
+   "input": 5,
+   "output": 30,
+   "cache_read": 1.25
+  },
+  "openai/gpt-realtime-2.1": {
+   "input": 4,
+   "output": 24,
+   "cache_read": 0.4
+  },
+  "openai/o1": {
+   "input": 15,
+   "output": 60,
+   "cache_read": 7.5
+  },
+  "openai/o1-pro": {
+   "input": 150,
+   "output": 600
+  },
+  "openai/o3": {
+   "input": 2,
+   "output": 8,
+   "cache_read": 0.5
+  },
+  "openai/o3-mini": {
+   "input": 1.1,
+   "output": 4.4,
+   "cache_read": 0.55
+  },
+  "openai/o3-pro": {
+   "input": 20,
+   "output": 80
+  },
+  "openai/o4-mini": {
+   "input": 1.1,
+   "output": 4.4,
+   "cache_read": 0.275
+  },
+  "openai/text-embedding-3-large": {
+   "input": 0.13,
+   "output": 0
+  },
+  "openai/text-embedding-3-small": {
+   "input": 0.02,
+   "output": 0
+  },
+  "openai/text-embedding-ada-002": {
+   "input": 0.1,
+   "output": 0
+  }
+ }
+}
