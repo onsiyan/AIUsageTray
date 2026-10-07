@@ -75,6 +75,11 @@ All notable changes to this project are documented here. The format follows
   stdin). The key's region (api.minimax.io or api.minimaxi.com) is found when
   the account is added. The tab shows the 5-hour and weekly text quotas, the
   other model quotas the plan includes, and the points balance.
+- "Team budgets" option under Account cards in the palette menu, off by
+  default. When on, Codex team and business accounts show the workspace's
+  remaining credit balance and the member's monthly credit limit, and Cursor
+  team accounts show the member's spend against their per-user budget. These
+  are read only when the plan has them, and a failure never hides the usage.
 - `usage-monitor-cli` for people and agents, with stable account references
   and JSON output.
 

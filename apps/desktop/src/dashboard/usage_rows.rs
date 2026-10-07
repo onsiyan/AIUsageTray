@@ -54,6 +54,10 @@ pub(super) fn append_snapshot_rows(
         .metrics
         .iter()
         .filter(|metric| !is_openrouter_activity_metric(&snapshot.provider_id, metric))
+        .filter(|metric| {
+            crate::display_options::show_team_budgets()
+                || !crate::display_options::is_team_budget_key(&metric.key)
+        })
         .filter(|metric| !is_model_quota_metric(metric))
         .filter(|metric| !duplicates_rate_window(metric, &windows))
         .collect::<Vec<_>>();
@@ -123,6 +127,8 @@ pub(super) fn append_snapshot_source_diagnostics(
         .iter()
         .filter(|diagnostic| {
             !is_openrouter_activity_source(&snapshot.provider_id, &diagnostic.source)
+                && (crate::display_options::show_team_budgets()
+                    || !crate::display_options::is_team_budget_key(&diagnostic.source))
         })
         .count();
     if visible_diagnostic_count == 0 {

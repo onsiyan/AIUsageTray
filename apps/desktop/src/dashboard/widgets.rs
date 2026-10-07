@@ -169,6 +169,9 @@ pub(super) fn metric_display_name(metric: &UsageMetric, language: Language) -> S
         "spend.30d" => locale::text(language, Text::Last30Days).to_owned(),
         "spend.30d.partial" => locale::text(language, Text::Last30DaysPartial).to_owned(),
         "balance.points" => locale::text(language, Text::PointsBalance).to_owned(),
+        "team.workspace_balance" => locale::text(language, Text::WorkspaceBalance).to_owned(),
+        "team.monthly_limit" => locale::text(language, Text::MonthlyLimit).to_owned(),
+        "team.member_budget" => locale::text(language, Text::TeamBudget).to_owned(),
         _ => metric.name.clone(),
     }
 }

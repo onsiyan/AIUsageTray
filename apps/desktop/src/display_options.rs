@@ -1,5 +1,6 @@
 //! What each account card shows, for people who want a denser popup: the
-//! email and plan line, and which stored reset credits are listed.
+//! email and plan line, team budgets, and which stored reset credits are
+//! listed.
 
 use std::{
     fs, io,
@@ -12,6 +13,7 @@ use crate::theme::preference_directory;
 
 const ACCOUNT_DETAILS_FILE: &str = "account_details.txt";
 const RESET_CREDITS_FILE: &str = "reset_credits.txt";
+const TEAM_BUDGETS_FILE: &str = "team_budgets.txt";
 
 /// A reset credit expiring within this many days stays listed under
 /// [`ResetCreditVisibility::ExpiringSoon`].
@@ -19,6 +21,9 @@ pub const SOON_DAYS: i64 = 5;
 
 static SHOW_ACCOUNT_DETAILS: AtomicBool = AtomicBool::new(true);
 static RESET_CREDITS: AtomicU8 = AtomicU8::new(0);
+/// Team workspace amounts (Codex workspace balance and monthly limit,
+/// Cursor member budget) are hidden until asked for.
+static SHOW_TEAM_BUDGETS: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetCreditVisibility {
@@ -72,6 +77,20 @@ pub fn set_show_account_details(shown: bool) {
     SHOW_ACCOUNT_DETAILS.store(shown, Ordering::Relaxed);
 }
 
+pub fn show_team_budgets() -> bool {
+    SHOW_TEAM_BUDGETS.load(Ordering::Relaxed)
+}
+
+pub fn set_show_team_budgets(shown: bool) {
+    SHOW_TEAM_BUDGETS.store(shown, Ordering::Relaxed);
+}
+
+/// Whether a metric, or a diagnostic's source, is one of the team amounts
+/// behind [`show_team_budgets`].
+pub fn is_team_budget_key(key: &str) -> bool {
+    key.starts_with("team.")
+}
+
 pub fn reset_credits() -> ResetCreditVisibility {
     match RESET_CREDITS.load(Ordering::Relaxed) {
         1 => ResetCreditVisibility::ExpiringSoon,
@@ -94,6 +113,7 @@ pub fn load_saved() {
     set_show_account_details(
         read(ACCOUNT_DETAILS_FILE).is_none_or(|value| value.trim() != "hidden"),
     );
+    set_show_team_budgets(read(TEAM_BUDGETS_FILE).is_some_and(|value| value.trim() == "shown"));
     set_reset_credits(
         read(RESET_CREDITS_FILE)
             .and_then(|value| ResetCreditVisibility::from_key(value.trim()))
@@ -103,6 +123,10 @@ pub fn load_saved() {
 
 pub fn save_show_account_details(shown: bool) -> io::Result<()> {
     write(ACCOUNT_DETAILS_FILE, if shown { "shown" } else { "hidden" })
+}
+
+pub fn save_show_team_budgets(shown: bool) -> io::Result<()> {
+    write(TEAM_BUDGETS_FILE, if shown { "shown" } else { "hidden" })
 }
 
 pub fn save_reset_credits(mode: ResetCreditVisibility) -> io::Result<()> {
@@ -138,5 +162,12 @@ mod tests {
         assert!(expiring.shows(soon, now) && expiring.shows(edge, now));
         assert!(!expiring.shows(later, now) && !expiring.shows(None, now));
         assert!(!none.shows(soon, now));
+    }
+
+    #[test]
+    fn team_budgets_are_the_team_metrics() {
+        assert!(is_team_budget_key("team.workspace_balance"));
+        assert!(is_team_budget_key("team.monthly-usage"));
+        assert!(!is_team_budget_key("on_demand.team"));
     }
 }

@@ -713,6 +713,7 @@ enum Message {
     SelectPercentDisplay(PercentDisplay),
     SetMemorySaver(bool),
     SetShowAccountDetails(bool),
+    SetShowTeamBudgets(bool),
     SelectResetCredits(display_options::ResetCreditVisibility),
     SetUiZoom(f32),
     SwitchCodexDesktopAccount(usage_monitor_core::accounts::AccountId),

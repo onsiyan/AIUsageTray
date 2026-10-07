@@ -44,6 +44,13 @@ pub(super) fn theme_dropdown(
         Message::SetShowAccountDetails(!details_shown),
         active_theme,
     ));
+    let team_budgets_shown = display_options::show_team_budgets();
+    items.push(choice_row(
+        locale::text(language, locale::Text::ShowTeamBudgets),
+        team_budgets_shown,
+        Message::SetShowTeamBudgets(!team_budgets_shown),
+        active_theme,
+    ));
 
     items.push(menu_section_title(
         locale::text(language, locale::Text::ResetCreditsTitle),

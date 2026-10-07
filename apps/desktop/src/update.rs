@@ -575,6 +575,13 @@ impl App {
                 }
                 Task::none()
             }
+            Message::SetShowTeamBudgets(shown) => {
+                display_options::set_show_team_budgets(shown);
+                if let Err(error) = display_options::save_show_team_budgets(shown) {
+                    preview_log(format!("team budgets preference save failed: {error}"));
+                }
+                Task::none()
+            }
             Message::SelectResetCredits(mode) => {
                 display_options::set_reset_credits(mode);
                 if let Err(error) = display_options::save_reset_credits(mode) {
