@@ -22,7 +22,7 @@ All notable changes to this project are documented here. The format follows
 - An account whose saved sign-in the provider refused says "Sign-in
   expired" with the provider's reason (such as `refresh_token_reused`) and
   when its last reading was taken, with a "Sign in again" button.
-- Image themes put a deeper shade under the accounts, so the figures stand
+- Image themes put a deeper shade over the whole window, so the figures stand
   off the picture.
 - Cost page, opened from the $ button at the top left: what Codex and
   Claude Code use on this PC would cost at API list

@@ -81,12 +81,12 @@ impl App {
         let foreground: Element<'_, Message> = if let Some(welcome) = &self.welcome {
             self.welcome_view(welcome)
         } else {
-            column![
-                title_bar,
-                title_bar_separator,
-                provider_tab_bar,
-                account_add_status,
-                content_shade(
+            window_shade(
+                column![
+                    title_bar,
+                    title_bar_separator,
+                    provider_tab_bar,
+                    account_add_status,
                     if self.selected_tab == DashboardTab::Cost {
                         cost_tab::view(
                             &self.cost,
@@ -101,14 +101,14 @@ impl App {
                             active_theme,
                             self.language,
                         )
-                    },
-                    active_theme,
-                )
-            ]
-            .spacing(0)
-            .width(Fill)
-            .height(Fill)
-            .into()
+                    }
+                ]
+                .spacing(0)
+                .width(Fill)
+                .height(Fill)
+                .into(),
+                active_theme,
+            )
         };
 
         let backdrop: Element<'_, Message> = if let Some(backdrop_image) = &self.backdrop_image {
@@ -319,9 +319,9 @@ fn dialog_scrim<'a>() -> Element<'a, Message> {
         .into()
 }
 
-/// Image themes get a deeper shade under the page than under the bars, so
-/// the figures stand off the picture.
-fn content_shade<'a>(
+/// Image themes get a deeper shade under the whole window, bars included,
+/// so the figures stand off the picture.
+fn window_shade<'a>(
     content: Element<'a, Message>,
     active_theme: &'static ThemeDefinition,
 ) -> Element<'a, Message> {
@@ -332,9 +332,9 @@ fn content_shade<'a>(
         active_theme
             .colors
             .window_surface()
-            .scale_alpha(CONTENT_SHADE_OPACITY)
+            .scale_alpha(WINDOW_SHADE_OPACITY)
     } else {
-        Color::from_rgba(0.0, 0.0, 0.0, CONTENT_SHADE_OPACITY)
+        Color::from_rgba(0.0, 0.0, 0.0, WINDOW_SHADE_OPACITY)
     };
     container(content)
         .width(Fill)
@@ -342,7 +342,7 @@ fn content_shade<'a>(
         .style(move |_| container::Style {
             background: Some(Background::Color(shade)),
             border: Border {
-                radius: iced::border::Radius::default().bottom(WINDOW_FRAME_RADIUS),
+                radius: WINDOW_FRAME_RADIUS.into(),
                 ..Border::default()
             },
             ..Default::default()
@@ -350,4 +350,4 @@ fn content_shade<'a>(
         .into()
 }
 
-const CONTENT_SHADE_OPACITY: f32 = 0.75;
+const WINDOW_SHADE_OPACITY: f32 = 0.75;
