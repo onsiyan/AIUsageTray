@@ -202,6 +202,17 @@ pub(super) fn percent_line(
                 .size(typography::PERCENTAGE_SIZE)
                 .font(typography::STRONG)
                 .color(accent),
+            // Says which way the number reads: what is left or what is used.
+            text(locale::text(
+                language,
+                match crate::percent_display::current() {
+                    crate::percent_display::PercentDisplay::Remaining => Text::PercentLeft,
+                    crate::percent_display::PercentDisplay::Used => Text::PercentUsed,
+                },
+            ))
+            .size(typography::METADATA_SIZE)
+            .font(typography::MEDIUM)
+            .color(theme.colors.muted_text()),
         ]
         .spacing(6)
         .align_y(Alignment::Center)
