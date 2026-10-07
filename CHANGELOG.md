@@ -78,6 +78,10 @@ All notable changes to this project are documented here. The format follows
 - Xiaomi MiMo provider support (balance and monthly token plan, read with a
   pasted platform.xiaomimimo.com console cookie). Hidden for now: the desktop
   app does not offer it and the CLI does not list it.
+- First-run welcome: pick the services you use (each says how its account is
+  added; Cursor only from the Cursor app signed in on this computer), then add
+  accounts to each in turn or skip it. Only the chosen services' tabs show
+  afterwards. Shown once, and never to people who already have accounts.
 - "Team budgets" option under Account cards in the palette menu, off by
   default. When on, Codex team and business accounts show the workspace's
   remaining credit balance and the member's monthly credit limit, and Cursor

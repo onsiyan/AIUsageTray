@@ -4,7 +4,7 @@ pub enum Language {
     Arabic,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Text {
     LoadingAccounts,
     AccountsDatabaseUnavailable,
@@ -115,6 +115,30 @@ pub enum Text {
     RefreshUsage,
     RefreshingUsage,
     AddAccount,
+    WelcomeTitle,
+    WelcomeChooseHint,
+    WelcomeSkip,
+    WelcomeContinue,
+    WelcomeBrowserSignIn,
+    WelcomeGitHubSignIn,
+    WelcomeCursorApp,
+    WelcomeTwoKeys,
+    WelcomeCookie,
+    WelcomeApiKey,
+    WelcomeCursorMissing,
+    WelcomeBrowserSignInDetail,
+    WelcomeGitHubSignInDetail,
+    WelcomeCursorAppDetail,
+    WelcomeTwoKeysDetail,
+    WelcomeApiKeyDetail,
+    WelcomeCheckAgain,
+    WelcomeAddAnother,
+    WelcomeFinish,
+    WelcomeNext,
+    WelcomeSkipProvider,
+    WelcomeBackLabel,
+    WelcomeAddTitle,
+    WelcomeAddHint,
     Delete,
     DeleteAccount,
     ManageAccounts,
@@ -289,6 +313,44 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, RefreshUsage) => "Refresh all providers · selected provider first",
         (English, RefreshingUsage) => "Refreshing usage across providers…",
         (English, AddAccount) => "Add account",
+        (English, WelcomeTitle) => "Welcome to Usage Monitor",
+        (English, WelcomeChooseHint) => {
+            "Choose the services you use. Only their tabs will show; you can change this later from the tab manager."
+        }
+        (English, WelcomeSkip) => "Skip",
+        (English, WelcomeContinue) => "Continue",
+        (English, WelcomeBrowserSignIn) => "Sign in with your browser",
+        (English, WelcomeGitHubSignIn) => "Sign in with GitHub",
+        (English, WelcomeCursorApp) => "Only if the Cursor app is signed in on this computer",
+        (English, WelcomeTwoKeys) => "Management key and team ID",
+        (English, WelcomeCookie) => "Console cookie",
+        (English, WelcomeApiKey) => "API key",
+        (English, WelcomeCursorMissing) => {
+            "The Cursor app is not signed in on this computer, so Cursor cannot be added now. Sign in to the Cursor app and check again, or skip it."
+        }
+        (English, WelcomeBrowserSignInDetail) => {
+            "Your browser opens to sign in. Approve there and the account appears here."
+        }
+        (English, WelcomeGitHubSignInDetail) => {
+            "A short code is copied for you. Paste it on the GitHub page that opens and approve."
+        }
+        (English, WelcomeCursorAppDetail) => {
+            "The Cursor app is signed in on this computer; its account is added with one click."
+        }
+        (English, WelcomeTwoKeysDetail) => {
+            "Paste a Management key and your team ID from xAI's console."
+        }
+        (English, WelcomeApiKeyDetail) => "Paste an API key from the service's website.",
+        (English, WelcomeCheckAgain) => "Check again",
+        (English, WelcomeAddAnother) => "Add another",
+        (English, WelcomeFinish) => "Finish",
+        (English, WelcomeNext) => "Next",
+        (English, WelcomeSkipProvider) => "Skip",
+        (English, WelcomeBackLabel) => "Back",
+        (English, WelcomeAddTitle) => "Add your accounts",
+        (English, WelcomeAddHint) => {
+            "Add one or more accounts to each service, or skip it for now."
+        }
         (English, Delete) => "Delete",
         (English, DeleteAccount) => "Delete an account",
         (English, ManageAccounts) => "Manage saved accounts",
@@ -450,6 +512,40 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (Arabic, RefreshUsage) => "تحديث استخدام كل المزودين — المحدد أولًا",
         (Arabic, RefreshingUsage) => "جارٍ تحديث استخدام المزودين…",
         (Arabic, AddAccount) => "إضافة حساب",
+        (Arabic, WelcomeTitle) => "مرحبًا بك في Usage Monitor",
+        (Arabic, WelcomeChooseHint) => {
+            "اختر الخدمات التي تستخدمها. ستظهر تبويباتها فقط، ويمكنك تغيير ذلك لاحقًا من إدارة التبويبات."
+        }
+        (Arabic, WelcomeSkip) => "تخطَّ",
+        (Arabic, WelcomeContinue) => "متابعة",
+        (Arabic, WelcomeBrowserSignIn) => "تسجيل دخول من المتصفح",
+        (Arabic, WelcomeGitHubSignIn) => "تسجيل دخول عبر GitHub",
+        (Arabic, WelcomeCursorApp) => "فقط إن كان تطبيق Cursor مسجّل الدخول على جهازك",
+        (Arabic, WelcomeTwoKeys) => "مفتاح إدارة ورقم الفريق",
+        (Arabic, WelcomeCookie) => "ملف جلسة من اللوحة",
+        (Arabic, WelcomeApiKey) => "مفتاح API",
+        (Arabic, WelcomeCursorMissing) => {
+            "تطبيق Cursor غير مسجّل الدخول على هذا الجهاز، لذا لا يمكن إضافته الآن. سجّل الدخول في تطبيق Cursor ثم أعد التحقق، أو تخطَّه."
+        }
+        (Arabic, WelcomeBrowserSignInDetail) => {
+            "سيفتح المتصفح لتسجيل الدخول. وافق هناك وسيظهر الحساب هنا."
+        }
+        (Arabic, WelcomeGitHubSignInDetail) => {
+            "يُنسخ لك رمز قصير. الصقه في صفحة GitHub التي تفتح ووافق."
+        }
+        (Arabic, WelcomeCursorAppDetail) => {
+            "تطبيق Cursor مسجّل الدخول على هذا الجهاز؛ يُضاف حسابه بضغطة واحدة."
+        }
+        (Arabic, WelcomeTwoKeysDetail) => "الصق مفتاح الإدارة (Management) ورقم الفريق من لوحة xAI.",
+        (Arabic, WelcomeApiKeyDetail) => "الصق مفتاح API من موقع الخدمة.",
+        (Arabic, WelcomeCheckAgain) => "أعد التحقق",
+        (Arabic, WelcomeAddAnother) => "إضافة حساب آخر",
+        (Arabic, WelcomeFinish) => "إنهاء",
+        (Arabic, WelcomeNext) => "التالي",
+        (Arabic, WelcomeSkipProvider) => "تخطَّ",
+        (Arabic, WelcomeBackLabel) => "رجوع",
+        (Arabic, WelcomeAddTitle) => "أضف حساباتك",
+        (Arabic, WelcomeAddHint) => "أضف حسابًا أو أكثر لكل خدمة، أو تخطَّها الآن.",
         (Arabic, Delete) => "حذف",
         (Arabic, DeleteAccount) => "حذف حساب",
         (Arabic, ManageAccounts) => "إدارة الحسابات المحفوظة",

@@ -72,21 +72,26 @@ impl App {
             .map(|status| account_add_status_banner(status, active_theme, self.language))
             .unwrap_or_else(|| Space::new().width(Fill).height(0).into());
 
-        let foreground = column![
-            title_bar,
-            title_bar_separator,
-            provider_tab_bar,
-            account_add_status,
-            dashboard::view(
-                &self.dashboard,
-                self.selected_tab,
-                active_theme,
-                self.language,
-            )
-        ]
-        .spacing(0)
-        .width(Fill)
-        .height(Fill);
+        let foreground: Element<'_, Message> = if let Some(welcome) = &self.welcome {
+            self.welcome_view(welcome)
+        } else {
+            column![
+                title_bar,
+                title_bar_separator,
+                provider_tab_bar,
+                account_add_status,
+                dashboard::view(
+                    &self.dashboard,
+                    self.selected_tab,
+                    active_theme,
+                    self.language,
+                )
+            ]
+            .spacing(0)
+            .width(Fill)
+            .height(Fill)
+            .into()
+        };
 
         let backdrop: Element<'_, Message> = if let Some(backdrop_image) = &self.backdrop_image {
             image(backdrop_image.clone())

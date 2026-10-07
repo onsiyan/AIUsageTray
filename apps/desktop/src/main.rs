@@ -53,6 +53,7 @@ mod typography;
 mod update;
 mod usage_refresh;
 mod view;
+mod welcome;
 
 use account_add::*;
 use chrome::*;
@@ -126,6 +127,8 @@ fn main() -> iced::Result {
                         UsageProvider::DeepSeek,
                     ))),
                     Ok("add") => Some(Message::ToggleAccountAddMenu),
+                    Ok("welcome") => Some(Message::WelcomePreview(false)),
+                    Ok("welcome-accounts") => Some(Message::WelcomePreview(true)),
                     Ok("deepseek") => Some(Message::ChooseAccountProvider(UsageProvider::DeepSeek)),
                     Ok("copilot") => Some(Message::ChooseAccountProvider(UsageProvider::Copilot)),
                     Ok("cursor") => Some(Message::ChooseAccountProvider(UsageProvider::Cursor)),
@@ -420,6 +423,10 @@ struct App {
     memory_saver: bool,
     /// How much the popup is enlarged on the screen it is shown on.
     ui_zoom: f32,
+    /// The first-run welcome, while it is shown.
+    welcome: Option<welcome::Welcome>,
+    /// Whether the first account load decided about the welcome yet.
+    welcome_checked: bool,
 }
 
 impl App {
@@ -462,6 +469,8 @@ impl App {
             language: locale::default_language(),
             memory_saver: memory_saver::load_saved(),
             ui_zoom: 1.0,
+            welcome: None,
+            welcome_checked: false,
         }
     }
 
@@ -726,6 +735,12 @@ enum Message {
     SetMemorySaver(bool),
     SetShowAccountDetails(bool),
     SetShowTeamBudgets(bool),
+    WelcomeToggleProvider(UsageProvider),
+    WelcomeOpenStep(usize),
+    WelcomeBack,
+    WelcomeFinish,
+    /// Opens the welcome for screenshots; `true` starts at an accounts step.
+    WelcomePreview(bool),
     SelectResetCredits(display_options::ResetCreditVisibility),
     SetUiZoom(f32),
     SwitchCodexDesktopAccount(usage_monitor_core::accounts::AccountId),

@@ -172,6 +172,19 @@ impl TabLayout {
         }
     }
 
+    /// Shows the tabs of `providers` and hides the other providers' own
+    /// tabs, as the welcome leaves them. Favorites and custom tabs stay.
+    pub fn show_only_providers(&mut self, providers: &[UsageProvider]) {
+        if providers.is_empty() {
+            return;
+        }
+        for entry in &mut self.entries {
+            if let TabKind::Provider(provider) = entry.kind {
+                entry.visible = providers.contains(&provider);
+            }
+        }
+    }
+
     /// Moves a tab one place earlier (`-1`) or later (`1`) in the bar.
     pub fn move_tab(&mut self, index: usize, offset: isize) -> bool {
         let Some(target) = index

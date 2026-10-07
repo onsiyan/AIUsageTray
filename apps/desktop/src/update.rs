@@ -6,7 +6,82 @@ impl App {
     pub(super) fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::DashboardLoaded(Ok(accounts)) => {
+                let no_accounts = accounts.is_empty();
                 self.dashboard.set_accounts(accounts);
+                // The welcome is for a first run only: people who already
+                // have accounts never see it.
+                if !self.welcome_checked {
+                    self.welcome_checked = true;
+                    if !welcome::is_done() {
+                        if no_accounts {
+                            self.welcome = Some(welcome::Welcome::new());
+                            if !self.popup_visible {
+                                return self.show_window(None);
+                            }
+                        } else {
+                            welcome::mark_done();
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::WelcomeToggleProvider(provider) => {
+                if let Some(welcome) = self.welcome.as_mut() {
+                    welcome.toggle(provider);
+                }
+                Task::none()
+            }
+            Message::WelcomeOpenStep(index) => {
+                if let Some(welcome) = self.welcome.as_mut()
+                    && index < welcome.chosen.len()
+                    && !self.account_add_running
+                {
+                    welcome.open(index);
+                    self.account_add_status = None;
+                }
+                Task::none()
+            }
+            Message::WelcomeBack => {
+                if let Some(welcome) = self.welcome.as_mut()
+                    && !self.account_add_running
+                {
+                    welcome.step = welcome::Step::Choose;
+                    self.account_add_status = None;
+                }
+                Task::none()
+            }
+            Message::WelcomeFinish => {
+                if self.account_add_running {
+                    return Task::none();
+                }
+                if let Some(welcome) = self.welcome.take() {
+                    if let Some(first) = welcome.chosen.first() {
+                        self.tab_layout.show_only_providers(&welcome.chosen);
+                        self.save_tab_layout();
+                        self.selected_tab = self.tab_layout.resolve(DashboardTab::Provider(*first));
+                    }
+                    welcome::mark_done();
+                }
+                self.account_add_status = None;
+                Task::none()
+            }
+            Message::WelcomePreview(at_accounts) => {
+                let mut welcome = welcome::Welcome::new();
+                if at_accounts {
+                    for provider in [
+                        UsageProvider::Codex,
+                        UsageProvider::Cursor,
+                        UsageProvider::Xai,
+                    ] {
+                        welcome.toggle(provider);
+                    }
+                    welcome.open(1);
+                } else {
+                    welcome.toggle(UsageProvider::Codex);
+                    welcome.toggle(UsageProvider::Claude);
+                }
+                self.welcome_checked = true;
+                self.welcome = Some(welcome);
                 Task::none()
             }
             Message::DashboardLoaded(Err(error)) => {
