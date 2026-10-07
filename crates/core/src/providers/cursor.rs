@@ -13,6 +13,10 @@
 //! - `GET /api/usage?user=ID`: request counts on legacy request-based plans.
 //! - `POST /api/dashboard/get-sand-usage-status`: the weekly Grok Bot
 //!   allowance. Best effort: its failure never hides the monthly bars.
+//! - `POST /api/dashboard/teams` and `get-team-spend`: on team plans, the
+//!   member's own spend against their per-user budget. Best effort too; the
+//!   other members' spending is read only to find this member and is never
+//!   kept.
 //!
 //! The access token is never refreshed here. While the Cursor app stays
 //! signed in to the same account, each refresh prefers its newer token.
@@ -47,6 +51,12 @@ const APP_TOKEN_KEY: &str = "cursorAuth/accessToken";
 const DEFAULT_DEADLINE: Duration = Duration::from_secs(10);
 /// Optional lookups may not hold up the required usage summary for long.
 const OPTIONAL_DEADLINE: Duration = Duration::from_secs(5);
+/// Bounds the whole team budget lookup, pages included.
+const TEAM_BUDGET_DEADLINE: Duration = Duration::from_secs(10);
+const TEAM_SPEND_PAGE_SIZE: usize = 50;
+const TEAM_SPEND_MAX_PAGES: i64 = 20;
+/// The member's budget on a team plan; hosts may choose not to show it.
+pub const TEAM_BUDGET_KEY: &str = "team.member_budget";
 /// A token this close to expiry is treated as expired, as CodexBar does.
 const EXPIRY_MARGIN_SECONDS: i64 = 60;
 const USER_AGENT: &str =
@@ -373,6 +383,81 @@ impl CursorUsageAdapter {
             .map_err(|_| TransportError::Timeout("cursor usage".to_owned()))?
     }
 
+    /// A dashboard POST endpoint with a JSON body.
+    fn dashboard_request(
+        &self,
+        endpoint: &str,
+        body: Value,
+        session: &CursorSession,
+    ) -> Result<UsageHttpRequest, TransportError> {
+        let mut request = self.request(
+            Method::POST,
+            &format!("/api/dashboard/{endpoint}"),
+            None,
+            session,
+        )?;
+        request.body = Some(body.to_string());
+        if let Ok(referer) = self.base_url.join("/dashboard") {
+            request
+                .headers
+                .insert("Referer".to_owned(), referer.to_string());
+        }
+        Ok(request)
+    }
+
+    /// The member's spend and budget in dollars, found among the team's
+    /// members by email. Any doubt (several teams, a page that does not add
+    /// up, the email twice) gives no budget rather than someone else's.
+    async fn team_budget(&self, session: &CursorSession, email: &str) -> Option<(f64, f64)> {
+        let email = email.trim();
+        if email.is_empty() {
+            return None;
+        }
+        let teams = self
+            .optional_json(self.dashboard_request("teams", serde_json::json!({}), session))
+            .await?;
+        let team_id = sole_team_id(&teams)?;
+        let mut expected_pages = None;
+        let mut candidate = None;
+        for page in 1..=TEAM_SPEND_MAX_PAGES {
+            let body = serde_json::json!({
+                "teamId": team_id,
+                "page": page,
+                "pageSize": TEAM_SPEND_PAGE_SIZE,
+                "sortBy": "name",
+                "sortDirection": "asc",
+            });
+            let spend = self
+                .optional_json(self.dashboard_request("get-team-spend", body, session))
+                .await?;
+            let members = spend.get("teamMemberSpend")?.as_array()?;
+            let total_pages = spend.get("totalPages")?.as_i64()?;
+            let complete = (1..=TEAM_SPEND_MAX_PAGES).contains(&total_pages)
+                && expected_pages.is_none_or(|expected| expected == total_pages)
+                && !members.is_empty()
+                && members.len() <= TEAM_SPEND_PAGE_SIZE
+                && (page == total_pages || members.len() == TEAM_SPEND_PAGE_SIZE);
+            if !complete {
+                return None;
+            }
+            expected_pages = Some(total_pages);
+            for member in members.iter().filter(|member| {
+                json_string(member, &["email"])
+                    .is_some_and(|member_email| member_email.trim().eq_ignore_ascii_case(email))
+            }) {
+                if candidate.is_some() {
+                    return None;
+                }
+                candidate = Some(member_budget(member)?);
+            }
+            // A later page could still name the email again.
+            if page == total_pages {
+                return candidate;
+            }
+        }
+        None
+    }
+
     /// An optional endpoint's JSON, or `None` when it fails in any way.
     async fn optional_json(
         &self,
@@ -448,6 +533,16 @@ impl UsageAdapter for CursorUsageAdapter {
             .as_ref()
             .and_then(|user| json_string(user, &["email"]))
             .or_else(|| session.email.clone());
+        let team_budget = match (&email, summary.is_team_plan) {
+            (Some(email), true) => {
+                tokio::time::timeout(TEAM_BUDGET_DEADLINE, self.team_budget(&session, email))
+                    .await
+                    .ok()
+                    .flatten()
+            }
+            _ => None,
+        };
+        let reset_at = summary.billing_cycle_end;
         let usage = CursorUsage {
             summary,
             requests,
@@ -455,6 +550,20 @@ impl UsageAdapter for CursorUsageAdapter {
         };
         let mut snapshot = usage.snapshot(account, Utc::now());
         snapshot.observed_email = email.clone();
+        if let Some((used, limit)) = team_budget {
+            snapshot.metrics.push(UsageMetric {
+                key: TEAM_BUDGET_KEY.to_owned(),
+                name: "Team budget".to_owned(),
+                used_percent: None,
+                used_amount: Some(used),
+                limit_amount: Some(limit),
+                remaining_amount: None,
+                unit: Some("USD".to_owned()),
+                reset_at_utc: reset_at,
+                reset_label: None,
+                metadata: HashMap::new(),
+            });
+        }
         let identity = VerifiedIdentity {
             email,
             provider_account_id: Some(session.user_id),
@@ -554,7 +663,7 @@ fn parse_summary(body: &str) -> Result<UsageSummary, String> {
         .any(|kind| {
             matches!(
                 kind.to_ascii_lowercase().as_str(),
-                "team" | "enterprise" | "business"
+                "team" | "teams" | "enterprise" | "business"
             )
         });
     Ok(UsageSummary {
@@ -835,6 +944,32 @@ fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
         .parse::<i64>()
         .ok()
         .and_then(DateTime::from_timestamp_millis)
+}
+
+/// The one team the session belongs to. Without the dashboard's team
+/// selection cookie, several teams are ambiguous.
+fn sole_team_id(teams: &Value) -> Option<i64> {
+    let teams = teams.get("teams")?.as_array()?;
+    let ids = teams
+        .iter()
+        .map(|team| team.get("id")?.as_i64().filter(|id| *id > 0))
+        .collect::<Option<Vec<_>>>()?;
+    match ids.as_slice() {
+        [id] => Some(*id),
+        _ => None,
+    }
+}
+
+/// A member's spend and limit in dollars. An explicit zero effective limit
+/// means no per-user budget; it never falls back to the monthly limit.
+fn member_budget(member: &Value) -> Option<(f64, f64)> {
+    let used = number(member.get("overallSpendCents")).filter(|used| *used >= 0.0)? / 100.0;
+    let limit = match member.get("effectivePerUserLimitDollars") {
+        Some(value) if !value.is_null() => number(Some(value)),
+        _ => number(member.get("monthlyLimitDollars")),
+    }
+    .filter(|limit| *limit > 0.0)?;
+    Some((used, limit))
 }
 
 /// A number given as a JSON number or a numeric string.

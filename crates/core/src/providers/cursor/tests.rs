@@ -437,3 +437,110 @@ fn a_rejected_or_expired_session_asks_for_a_new_sign_in() {
     );
     assert!(requests.is_empty());
 }
+
+const TEAM_SUMMARY: &str = r#"{"membershipType":"enterprise","billingCycleEnd":"2099-02-01T00:00:00.000Z","individualUsage":{"plan":{"totalPercentUsed":10}}}"#;
+const ME: &str = r#"{"email":"Dev@Example.com","sub":"auth0|user_01J8ABCDEF"}"#;
+
+#[test]
+fn a_team_member_sees_their_own_budget() {
+    let (result, requests) = probe(
+        token_expiring_in(3600),
+        vec![
+            ("/api/usage-summary", 200, TEAM_SUMMARY),
+            ("/api/auth/me", 200, ME),
+            ("/api/dashboard/teams", 200, r#"{"teams":[{"id":42}]}"#),
+            (
+                "/api/dashboard/get-team-spend",
+                200,
+                r#"{"totalPages":1,"teamMemberSpend":[
+                    {"email":"other@example.com","overallSpendCents":9000,"monthlyLimitDollars":100},
+                    {"email":"dev@example.com","overallSpendCents":1234,"effectivePerUserLimitDollars":50,"monthlyLimitDollars":500}
+                ]}"#,
+            ),
+        ],
+    );
+    let snapshot = result.snapshot.unwrap();
+    let budget = snapshot
+        .metrics
+        .iter()
+        .find(|metric| metric.key == TEAM_BUDGET_KEY)
+        .unwrap();
+    assert_eq!(budget.used_amount, Some(12.34));
+    assert_eq!(budget.limit_amount, Some(50.0));
+    assert!(budget.reset_at_utc.is_some());
+    let spend = requests
+        .iter()
+        .find(|request| request.url.path() == "/api/dashboard/get-team-spend")
+        .unwrap();
+    let body: Value = serde_json::from_str(spend.body.as_deref().unwrap()).unwrap();
+    assert_eq!(body["teamId"], 42);
+    assert_eq!(body["pageSize"], 50);
+    assert_eq!(
+        spend.headers.get("Referer").map(String::as_str),
+        Some("https://cursor.com/dashboard")
+    );
+}
+
+#[test]
+fn an_unclear_team_budget_is_left_out() {
+    let budget_of = |teams: &'static str, spend: &'static str| {
+        let (result, _) = probe(
+            token_expiring_in(3600),
+            vec![
+                ("/api/usage-summary", 200, TEAM_SUMMARY),
+                ("/api/auth/me", 200, ME),
+                ("/api/dashboard/teams", 200, teams),
+                ("/api/dashboard/get-team-spend", 200, spend),
+            ],
+        );
+        result
+            .snapshot
+            .unwrap()
+            .metrics
+            .iter()
+            .any(|metric| metric.key == TEAM_BUDGET_KEY)
+    };
+    let one_team = r#"{"teams":[{"id":42}]}"#;
+    let member = r#"{"totalPages":1,"teamMemberSpend":[{"email":"dev@example.com","overallSpendCents":100,"monthlyLimitDollars":20}]}"#;
+    assert!(budget_of(one_team, member));
+    // Two teams and no selection: which one is unknown.
+    assert!(!budget_of(r#"{"teams":[{"id":42},{"id":7}]}"#, member));
+    // An explicit zero per-user limit is no budget, not the monthly one.
+    assert!(!budget_of(
+        one_team,
+        r#"{"totalPages":1,"teamMemberSpend":[{"email":"dev@example.com","overallSpendCents":100,"effectivePerUserLimitDollars":0,"monthlyLimitDollars":20}]}"#
+    ));
+    // The same email twice is ambiguous.
+    assert!(!budget_of(
+        one_team,
+        r#"{"totalPages":1,"teamMemberSpend":[
+            {"email":"dev@example.com","overallSpendCents":100,"monthlyLimitDollars":20},
+            {"email":"DEV@example.com","overallSpendCents":5,"monthlyLimitDollars":20}
+        ]}"#
+    ));
+    // A short page that claims more pages follow does not add up.
+    assert!(!budget_of(
+        one_team,
+        r#"{"totalPages":2,"teamMemberSpend":[{"email":"dev@example.com","overallSpendCents":100,"monthlyLimitDollars":20}]}"#
+    ));
+}
+
+#[test]
+fn personal_plans_never_ask_for_team_spend() {
+    let (_, requests) = probe(
+        token_expiring_in(3600),
+        vec![
+            (
+                "/api/usage-summary",
+                200,
+                r#"{"membershipType":"pro","individualUsage":{"plan":{"totalPercentUsed":10}}}"#,
+            ),
+            ("/api/auth/me", 200, ME),
+        ],
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.url.path().starts_with("/api/dashboard/teams"))
+    );
+}
