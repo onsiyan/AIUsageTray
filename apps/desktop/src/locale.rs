@@ -22,6 +22,10 @@ pub enum Text {
     CopilotEnterCode,
     CopilotWaiting,
     OpenGitHub,
+    CodexCodeTitle,
+    CodexEnterCode,
+    CodexWaiting,
+    OpenOpenAI,
     PremiumRequests,
     Chat,
     CreditsUsed,
@@ -231,6 +235,12 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         }
         (English, CopilotWaiting) => "Waiting for the code to be entered on GitHub…",
         (English, OpenGitHub) => "Open GitHub",
+        (English, CodexCodeTitle) => "Codex",
+        (English, CodexEnterCode) => {
+            "This computer blocks the usual sign-in, so enter this code on OpenAI's page instead. It is already copied."
+        }
+        (English, CodexWaiting) => "Waiting for the code to be entered on OpenAI…",
+        (English, OpenOpenAI) => "Open OpenAI",
         (English, PremiumRequests) => "Premium requests",
         (English, Chat) => "Chat",
         (English, CreditsUsed) => "Credits used",
@@ -453,6 +463,12 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (Arabic, CopilotEnterCode) => "أدخل هذا الرمز في GitHub لتسجيل الدخول. تم نسخه مسبقًا.",
         (Arabic, CopilotWaiting) => "بانتظار إدخال الرمز في GitHub…",
         (Arabic, OpenGitHub) => "افتح GitHub",
+        (Arabic, CodexCodeTitle) => "Codex",
+        (Arabic, CodexEnterCode) => {
+            "هذا الجهاز يمنع طريقة الدخول المعتادة، لذا أدخل هذا الرمز في صفحة OpenAI بدلًا منها. تم نسخه مسبقًا."
+        }
+        (Arabic, CodexWaiting) => "بانتظار إدخال الرمز في OpenAI…",
+        (Arabic, OpenOpenAI) => "افتح OpenAI",
         (Arabic, PremiumRequests) => "الطلبات المميزة",
         (Arabic, Chat) => "الدردشة",
         (Arabic, CreditsUsed) => "الرصيد المستهلك",

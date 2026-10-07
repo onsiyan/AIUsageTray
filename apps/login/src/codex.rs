@@ -1,14 +1,22 @@
-use std::{env, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    env,
+    io::{self, Read},
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
+use url::Url;
 use usage_monitor_core::{
     accounts::{AccountId, AccountRecord, AccountStore, OPENAI},
     auth::{
-        AccountAuthMaterialProvider, AccountOAuthMaterialProvider, OAuthCredentialProviderRegistry,
-        OAuthCredentialStore, StoredOAuthCredential,
+        AccountAuthMaterialProvider, AccountOAuthMaterialProvider, OAuthBrowserLauncher,
+        OAuthCredentialProviderRegistry, OAuthCredentialStore, OAuthLoginResult,
+        OAuthProviderDefinition, StoredOAuthCredential,
     },
-    oauth_loopback::CodexOAuthCallbackListenerFactory,
+    oauth_loopback::{CodexOAuthCallbackListenerFactory, is_callback_bind_failure},
     oauth_service::OAuthAuthorizationService,
     providers::registry::ProviderRegistryConfig,
-    providers::{codex_workspace::resolve_workspace_name, openai::oauth_definition},
+    providers::{codex_device, codex_workspace::resolve_workspace_name, openai::oauth_definition},
     refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
     runtime::UsageRuntime,
     storage::{SqliteStore, default_accounts_database_path},
@@ -30,10 +38,21 @@ type Authorization =
 struct Arguments {
     database: Option<PathBuf>,
     label: Option<String>,
+    /// The desktop app ran the device-code sign-in and passes the
+    /// authorization code and its verifier on stdin, one per line.
+    authorization_stdin: bool,
+    /// Fail instead of falling back to a device code when localhost cannot
+    /// be listened on; for callers that cannot show the code as it comes.
+    no_device_code: bool,
 }
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let Arguments { database, label } = parse_arguments()?;
+    let Arguments {
+        database,
+        label,
+        authorization_stdin,
+        no_device_code,
+    } = parse_arguments()?;
 
     let database_path = database.unwrap_or_else(default_accounts_database_path);
     if let Some(parent) = database_path.parent() {
@@ -49,11 +68,38 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let provisional =
         AccountRecord::create("Codex account", "pending@local.invalid", None, OPENAI, None)?;
 
-    println!("Opening OpenAI authorization in your default browser.");
-    println!("Complete sign-in there; the browser will return to this app on localhost.");
-    let login = authorization
-        .login(provisional.id, &provider, Duration::from_secs(300))
-        .await?;
+    let login = if authorization_stdin {
+        let (code, verifier) = read_stdin_authorization()?;
+        authorization
+            .login_with_authorization_code(
+                provisional.id,
+                &provider,
+                &code,
+                &device_redirect_uri(),
+                &verifier,
+            )
+            .await?
+    } else {
+        println!("Opening OpenAI authorization in your default browser.");
+        println!("Complete sign-in there; the browser will return to this app on localhost.");
+        match authorization
+            .login(provisional.id, &provider, Duration::from_secs(300))
+            .await
+        {
+            Ok(login) => login,
+            Err(error) if is_callback_bind_failure(&error) && !no_device_code => {
+                eprintln!("{error}");
+                sign_in_with_device_code(
+                    &authorization,
+                    transport.as_ref(),
+                    &provider,
+                    provisional.id,
+                )
+                .await?
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
     let Some(identity) = login.identity.as_ref() else {
         credential_store.remove(provisional.id).await?;
         return Err("OpenAI did not return a verifiable account identity".into());
@@ -136,6 +182,55 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
     Ok(())
+}
+
+fn device_redirect_uri() -> Url {
+    Url::parse(codex_device::REDIRECT_URI).expect("static Codex device redirect")
+}
+
+/// The sign-in for computers that cannot receive the reply on localhost:
+/// OpenAI shows a code that the user enters on its page.
+async fn sign_in_with_device_code(
+    authorization: &Authorization,
+    transport: &Transport,
+    provider: &OAuthProviderDefinition,
+    account_id: AccountId,
+) -> Result<OAuthLoginResult, Box<dyn std::error::Error>> {
+    println!("This computer blocks the usual sign-in reply, so sign in with a code instead.");
+    let code = codex_device::request_device_code(transport, &provider.client_id).await?;
+    println!(
+        "Open {} and enter this code: {}",
+        codex_device::VERIFICATION_URL,
+        code.user_code
+    );
+    let page = Url::parse(codex_device::VERIFICATION_URL)?;
+    if let Err(error) = WindowsDefaultBrowserLauncher.open(&page).await {
+        eprintln!("Could not open the browser: {error}");
+    }
+    let granted = codex_device::poll_for_authorization(transport, &code).await?;
+    Ok(authorization
+        .login_with_authorization_code(
+            account_id,
+            provider,
+            &granted.authorization_code,
+            &device_redirect_uri(),
+            &granted.code_verifier,
+        )
+        .await?)
+}
+
+fn read_stdin_authorization() -> Result<(String, String), Box<dyn std::error::Error>> {
+    let mut value = String::new();
+    io::stdin().read_to_string(&mut value)?;
+    parse_authorization(&value)
+}
+
+fn parse_authorization(value: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
+    let mut lines = value.lines().map(str::trim).filter(|line| !line.is_empty());
+    match (lines.next(), lines.next()) {
+        (Some(code), Some(verifier)) => Ok((code.to_owned(), verifier.to_owned())),
+        _ => Err("an authorization code and its verifier are needed on stdin".into()),
+    }
 }
 
 fn announce_cli_account_reference(account: &AccountRecord) {
@@ -382,9 +477,11 @@ fn parse_arguments_from(
                         .into_owned(),
                 );
             }
+            "--credentials-stdin" => arguments.authorization_stdin = true,
+            "--no-device-code" => arguments.no_device_code = true,
             "--help" | "-h" => {
                 println!(
-                    "Usage: usage-monitor-login codex [--database PATH] [--label LABEL]\n\nAdds a Codex account through OpenAI OAuth in the default browser and receives the authorization callback on localhost. OAuth credentials are stored per account in Windows Credential Manager, and the workspace name is read from OpenAI's account metadata. Usage is queried from WHAM with that account's bearer token. It does not read browser cookies, Codex auth files, or launch Codex CLI/app-server."
+                    "Usage: usage-monitor-login codex [--database PATH] [--label LABEL] [--credentials-stdin] [--no-device-code]\n\nAdds a Codex account through OpenAI OAuth in the default browser and receives the authorization callback on localhost. When this computer cannot listen on localhost, it signs in with a one-time code entered on OpenAI's page instead. With --credentials-stdin, an authorization code and its verifier from a device-code sign-in are read from stdin, one per line. --no-device-code fails instead of offering the code, for callers that cannot show it. OAuth credentials are stored per account in Windows Credential Manager, and the workspace name is read from OpenAI's account metadata. Usage is queried from WHAM with that account's bearer token. It does not read browser cookies, Codex auth files, or launch Codex CLI/app-server."
                 );
                 std::process::exit(0);
             }
@@ -396,7 +493,10 @@ fn parse_arguments_from(
 
 #[cfg(test)]
 mod tests {
-    use super::{format_metric_status, parse_arguments_from, persist_oauth_login_account};
+    use super::{
+        format_metric_status, parse_arguments_from, parse_authorization,
+        persist_oauth_login_account,
+    };
     use std::{collections::BTreeMap, ffi::OsString, sync::Arc};
     use usage_monitor_core::{
         accounts::{AccountRecord, AccountStore, InMemoryAccountStore, OPENAI},
@@ -437,6 +537,17 @@ mod tests {
             parse_arguments_from(["--resolve-workspace-names"].map(OsString::from)).is_err(),
             "maintenance modes are not part of the sign-in helper"
         );
+    }
+
+    #[test]
+    fn a_device_authorization_comes_on_stdin_as_two_lines() {
+        let arguments = parse_arguments_from(["--credentials-stdin"].map(OsString::from)).unwrap();
+        assert!(arguments.authorization_stdin);
+        assert_eq!(
+            parse_authorization("\n code-1 \nverifier-1\n").unwrap(),
+            ("code-1".to_owned(), "verifier-1".to_owned())
+        );
+        assert!(parse_authorization("code-only\n").is_err());
     }
 
     #[test]

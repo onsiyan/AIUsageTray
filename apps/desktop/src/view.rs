@@ -170,10 +170,10 @@ impl App {
                 .width(Fill)
                 .height(Fill)
                 .into()
-        } else if let Some(code) = &self.copilot_code {
+        } else if let Some(code) = &self.device_sign_in {
             // No click-away dismissal: a stray click must not end a sign-in
-            // the user is finishing on GitHub.
-            let dialog = container(copilot_sign_in_dialog(code, self.language, active_theme))
+            // the user is finishing in the browser.
+            let dialog = container(device_sign_in_dialog(code, self.language, active_theme))
                 .width(Fill)
                 .height(Fill)
                 .center(Fill);

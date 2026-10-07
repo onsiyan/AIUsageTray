@@ -9,6 +9,15 @@ use tokio::net::TcpListener;
 use tokio::time::{Duration as TokioDuration, Instant, timeout, timeout_at};
 use url::Url;
 
+/// How a failure to listen for the sign-in's reply begins, so callers can
+/// offer a sign-in that needs no listener.
+pub const CALLBACK_BIND_FAILURE: &str = "could not bind OAuth callback";
+
+/// Whether `error` is a failure to listen for the sign-in's reply.
+pub fn is_callback_bind_failure(error: &AuthError) -> bool {
+    matches!(error, AuthError::Callback(message) if message.starts_with(CALLBACK_BIND_FAILURE))
+}
+
 pub struct LoopbackOAuthCallbackListener {
     configured_uri: Url,
     actual_uri: Url,
@@ -96,19 +105,26 @@ impl OAuthCallbackListener for LoopbackOAuthCallbackListener {
                     listener = Some(bound);
                     break;
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                // Busy, or reserved by Windows (Hyper-V, WSL, and Docker
+                // reserve port ranges, refused with os error 10013).
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+                    ) =>
+                {
                     last_bind_error = Some(error);
                 }
                 Err(error) => {
                     return Err(AuthError::Callback(format!(
-                        "could not bind OAuth callback: {error}"
+                        "{CALLBACK_BIND_FAILURE}: {error}"
                     )));
                 }
             }
         }
         let listener = listener.ok_or_else(|| {
             AuthError::Callback(format!(
-                "could not bind OAuth callback: {}",
+                "{CALLBACK_BIND_FAILURE}: {}",
                 last_bind_error
                     .map(|error| error.to_string())
                     .unwrap_or_else(|| "no callback ports were available".to_owned())

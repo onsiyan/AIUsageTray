@@ -406,7 +406,7 @@ struct App {
     account_add_running: bool,
     account_add_cancel: Option<Sender<()>>,
     /// The GitHub code shown while a Copilot sign-in waits for the user.
-    copilot_code: Option<usage_monitor_core::providers::copilot::DeviceCode>,
+    device_sign_in: Option<DeviceSignIn>,
     account_add_status: Option<AccountAddStatus>,
     selected_tab: DashboardTab,
     /// The user's arrangement of the tab bar.
@@ -463,7 +463,7 @@ impl App {
             management_key_input: String::new(),
             account_add_running: false,
             account_add_cancel: None,
-            copilot_code: None,
+            device_sign_in: None,
             account_add_status: None,
             selected_tab: tab_layout.resolve(DashboardTab::Provider(UsageProvider::Codex)),
             tab_icons: tab_icons::load_saved(&tab_layout),
@@ -501,7 +501,7 @@ impl App {
         ];
 
         let blocking_dialog_open = app.credentials_provider.is_some()
-            || app.copilot_code.is_some()
+            || app.device_sign_in.is_some()
             || app.account_delete_dialog_open
             || app.tab_manager_open
             || app.custom_theme_open;
@@ -647,15 +647,21 @@ impl App {
         self.account_add_status = Some(AccountAddStatus::Running(provider));
         let (cancel_sender, cancel_receiver) = async_channel::bounded(1);
         self.account_add_cancel = Some(cancel_sender);
-        // Copilot first signs in on GitHub with a device code, shown in its
-        // own dialog while the worker waits for it to be entered.
+        // Copilot signs in on GitHub with a device code, and Codex may fall
+        // back to one; the code shows in its own dialog while the worker
+        // waits for it to be entered.
         let (code_sender, code_receiver) = async_channel::bounded(2);
-        let signs_in_on_github = provider == UsageProvider::Copilot && credentials.is_none();
+        let may_show_code = credentials.is_none()
+            && matches!(provider, UsageProvider::Copilot | UsageProvider::Codex);
         let completion_receiver = match spawn_account_add_worker(move || async move {
-            if signs_in_on_github {
-                add_copilot_account(code_sender, cancel_receiver).await
-            } else {
-                add_account(provider, credentials, cancel_receiver).await
+            match provider {
+                UsageProvider::Copilot if credentials.is_none() => {
+                    add_copilot_account(code_sender, cancel_receiver).await
+                }
+                UsageProvider::Codex if credentials.is_none() => {
+                    add_codex_account(code_sender, cancel_receiver).await
+                }
+                _ => add_account(provider, credentials, cancel_receiver).await,
             }
         }) {
             Ok(receiver) => receiver,
@@ -674,8 +680,11 @@ impl App {
             },
             move |result| Message::AccountAddCompleted(provider, result),
         );
-        if signs_in_on_github {
-            Task::batch([completion, Task::run(code_receiver, Message::CopilotCode)])
+        if may_show_code {
+            Task::batch([
+                completion,
+                Task::run(code_receiver, Message::DeviceSignInCode),
+            ])
         } else {
             completion
         }
@@ -737,9 +746,9 @@ enum Message {
     ManagementKeyChanged(String),
     SubmitCredentials,
     /// A Copilot sign-in's GitHub code, or `None` once it was entered.
-    CopilotCode(Option<usage_monitor_core::providers::copilot::DeviceCode>),
-    OpenCopilotPage,
-    CopyCopilotCode,
+    DeviceSignInCode(Option<DeviceSignIn>),
+    OpenDeviceCodePage,
+    CopyDeviceCode,
     OpenCursorSite,
     OpenMiMoSite,
     CancelCredentials,

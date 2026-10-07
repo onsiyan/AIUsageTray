@@ -91,11 +91,13 @@ impl AccountAddProvider {
         }
     }
 
-    /// Whether the credential may come from stdin: an API key, or the
-    /// GitHub token of a Copilot device-flow sign-in finished elsewhere, or
-    /// a Cursor session cookie copied from cursor.com.
+    /// Whether the credential may come from stdin: an API key, the
+    /// authorization of a Codex device-code sign-in or the GitHub token of a
+    /// Copilot device-flow sign-in finished elsewhere, or a Cursor session
+    /// cookie copied from cursor.com.
     pub(super) fn accepts_stdin_credentials(self) -> bool {
-        self.api_key_environment().is_some() || matches!(self, Self::Copilot | Self::Cursor)
+        self.api_key_environment().is_some()
+            || matches!(self, Self::Codex | Self::Copilot | Self::Cursor)
     }
 }
 
@@ -136,7 +138,12 @@ pub(super) fn build_account_add_arguments(
     }
 
     match provider {
-        AccountAddProvider::Codex => {}
+        // The desktop app passes a device-code sign-in's authorization on.
+        AccountAddProvider::Codex => {
+            if arguments.credentials_stdin {
+                result.push("--credentials-stdin".into());
+            }
+        }
         // The Claude probe owns its single official Claude Code OAuth login
         // flow and always uses the system-default browser.
         AccountAddProvider::Claude => {}
@@ -238,7 +245,7 @@ pub(super) async fn execute_account_add(
     {
         return Err(CliFailure::new(
             "invalid_arguments",
-            "Stdin credential options can only be used with `account add openrouter`, `account add deepseek`, `account add kimi`, `account add zai`, `account add xai`, `account add minimax`, `account add copilot`, or `account add cursor`.",
+            "Stdin credential options can only be used with `account add openrouter`, `account add deepseek`, `account add kimi`, `account add zai`, `account add xai`, `account add minimax`, `account add codex`, `account add copilot`, or `account add cursor`.",
             2,
         ));
     }
@@ -276,6 +283,12 @@ pub(super) async fn execute_account_add(
             database_path,
             &arguments,
         ))
+        // JSON output is read at the end, so a sign-in code printed on the
+        // way would never be seen; the caller runs that sign-in itself.
+        .args(
+            (json_output && provider == AccountAddProvider::Codex && !arguments.credentials_stdin)
+                .then_some("--no-device-code"),
+        )
         .env(ACCOUNT_ADD_CHILD_ENV, "1")
         .stdin(if account_add_uses_stdin(provider, &arguments) {
             Stdio::inherit()

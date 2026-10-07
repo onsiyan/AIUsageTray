@@ -150,6 +150,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Adding a Codex account no longer fails with "could not bind OAuth callback
+  (os error 10013)" on computers where Windows reserves OpenAI's sign-in port
+  (Hyper-V, WSL, Docker): the app then signs in with a code entered on
+  OpenAI's page, as `codex login --device-auth` does.
 - Opening the popup repeatedly no longer gets accounts rate limited (HTTP 429,
   seen with Claude): automatic refreshes skip accounts read in the last 45
   seconds, and an account answered with 429 is left alone for at least 3

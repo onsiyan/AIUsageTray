@@ -1,7 +1,20 @@
 //! Adds accounts by running the CLI's provider sign-in, and cancels it.
 
 use super::*;
-use usage_monitor_core::{providers::copilot, transport::ReqwestUsageHttpTransport};
+use usage_monitor_core::{
+    oauth_loopback::CALLBACK_BIND_FAILURE,
+    providers::{codex_device, copilot, openai},
+    transport::ReqwestUsageHttpTransport,
+};
+
+/// A one-time code the user enters on the provider's page while the app
+/// waits: GitHub's for Copilot, OpenAI's for Codex.
+#[derive(Debug, Clone)]
+pub(super) struct DeviceSignIn {
+    pub provider: UsageProvider,
+    pub user_code: String,
+    pub verification_uri: String,
+}
 
 pub(super) fn sibling_account_cli_path(current_executable: &Path) -> std::path::PathBuf {
     let extension = std::env::consts::EXE_EXTENSION;
@@ -143,7 +156,7 @@ pub(super) async fn add_account(
 /// with the token. `codes` receives the code to show, then `None` once it
 /// was entered.
 pub(super) async fn add_copilot_account(
-    codes: Sender<Option<copilot::DeviceCode>>,
+    codes: Sender<Option<DeviceSignIn>>,
     cancel: Receiver<()>,
 ) -> Result<(), String> {
     let transport = ReqwestUsageHttpTransport::new(std::time::Duration::from_secs(30))
@@ -152,7 +165,13 @@ pub(super) async fn add_copilot_account(
         code = copilot::request_device_code(&transport) => code.map_err(|error| error.to_string())?,
         Ok(()) = cancel.recv() => return Err(ACCOUNT_ADD_CANCELLED.to_owned()),
     };
-    let _ = codes.send(Some(code.clone())).await;
+    let _ = codes
+        .send(Some(DeviceSignIn {
+            provider: UsageProvider::Copilot,
+            user_code: code.user_code.clone(),
+            verification_uri: code.verification_uri.clone(),
+        }))
+        .await;
     let token = tokio::select! {
         token = copilot::poll_for_token(&transport, &code) => token.map_err(|error| error.to_string()),
         Ok(()) = cancel.recv() => Err(ACCOUNT_ADD_CANCELLED.to_owned()),
@@ -161,6 +180,45 @@ pub(super) async fn add_copilot_account(
     add_account(
         UsageProvider::Copilot,
         Some((token?, String::new())),
+        cancel,
+    )
+    .await
+}
+
+/// Adds a Codex account with the usual browser sign-in. When Windows will
+/// not let the app listen for its reply (a reserved port), signs in with a
+/// code entered on OpenAI's page instead, shown as `codes` receives it.
+pub(super) async fn add_codex_account(
+    codes: Sender<Option<DeviceSignIn>>,
+    cancel: Receiver<()>,
+) -> Result<(), String> {
+    match add_account(UsageProvider::Codex, None, cancel.clone()).await {
+        Err(error) if error.contains(CALLBACK_BIND_FAILURE) => {}
+        result => return result,
+    }
+    let transport = ReqwestUsageHttpTransport::new(std::time::Duration::from_secs(30))
+        .map_err(|error| format!("Could not reach OpenAI: {error}"))?;
+    let client_id = openai::oauth_definition().client_id;
+    let code = tokio::select! {
+        code = codex_device::request_device_code(&transport, &client_id) => code.map_err(|error| error.to_string())?,
+        Ok(()) = cancel.recv() => return Err(ACCOUNT_ADD_CANCELLED.to_owned()),
+    };
+    let _ = codes
+        .send(Some(DeviceSignIn {
+            provider: UsageProvider::Codex,
+            user_code: code.user_code.clone(),
+            verification_uri: codex_device::VERIFICATION_URL.to_owned(),
+        }))
+        .await;
+    let granted = tokio::select! {
+        granted = codex_device::poll_for_authorization(&transport, &code) => granted.map_err(|error| error.to_string()),
+        Ok(()) = cancel.recv() => Err(ACCOUNT_ADD_CANCELLED.to_owned()),
+    };
+    let _ = codes.send(None).await;
+    let granted = granted?;
+    add_account(
+        UsageProvider::Codex,
+        Some((granted.authorization_code, granted.code_verifier)),
         cancel,
     )
     .await

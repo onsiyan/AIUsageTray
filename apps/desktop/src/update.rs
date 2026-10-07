@@ -236,7 +236,7 @@ impl App {
             Message::RuntimeEvent(Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(keyboard::key::Named::Escape),
                 ..
-            })) if self.copilot_code.is_some() => self.update(Message::CancelAccountAdd),
+            })) if self.device_sign_in.is_some() => self.update(Message::CancelAccountAdd),
             Message::RuntimeEvent(Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(keyboard::key::Named::Escape),
                 ..
@@ -510,27 +510,28 @@ impl App {
                 self.credentials_provider = None;
                 self.begin_account_add(provider, Some((api_key, management_key)))
             }
-            Message::CopilotCode(code) => {
+            Message::DeviceSignInCode(code) => {
                 // A code arriving after a cancel belongs to no sign-in.
                 if !self.account_add_running {
-                    self.copilot_code = None;
+                    self.device_sign_in = None;
                     return Task::none();
                 }
-                // As CodexBar does, the code is copied, ready to paste on GitHub.
+                // As CodexBar does, the code is copied, ready to paste on the
+                // provider's page.
                 if let Some(code) = &code {
                     copy_to_clipboard(&code.user_code);
                 }
-                self.copilot_code = code;
+                self.device_sign_in = code;
                 Task::none()
             }
-            Message::CopyCopilotCode => {
-                if let Some(code) = &self.copilot_code {
+            Message::CopyDeviceCode => {
+                if let Some(code) = &self.device_sign_in {
                     copy_to_clipboard(&code.user_code);
                 }
                 Task::none()
             }
-            Message::OpenCopilotPage => {
-                if let Some(code) = &self.copilot_code {
+            Message::OpenDeviceCodePage => {
+                if let Some(code) = &self.device_sign_in {
                     copy_to_clipboard(&code.user_code);
                     open_in_browser(&code.verification_uri);
                 }
@@ -551,7 +552,7 @@ impl App {
             Message::AccountAddCompleted(provider, result) => {
                 self.account_add_running = false;
                 self.account_add_cancel = None;
-                self.copilot_code = None;
+                self.device_sign_in = None;
                 match result {
                     Err(error) if error == ACCOUNT_ADD_CANCELLED => {
                         self.account_add_status = None;
@@ -577,7 +578,7 @@ impl App {
                 }
             }
             Message::CancelAccountAdd => {
-                self.copilot_code = None;
+                self.device_sign_in = None;
                 if let Some(cancel) = self.account_add_cancel.take() {
                     let _ = cancel.try_send(());
                 }

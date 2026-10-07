@@ -1,5 +1,6 @@
 pub mod antigravity;
 pub mod claude;
+pub mod codex_device;
 pub(crate) mod codex_reset;
 pub mod codex_workspace;
 pub mod copilot;

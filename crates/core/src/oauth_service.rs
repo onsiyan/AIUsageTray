@@ -83,8 +83,28 @@ where
             .code
             .ok_or_else(|| AuthError::Callback("authorization code was missing".to_owned()))?;
 
+        self.login_with_authorization_code(
+            account_id,
+            provider,
+            &code,
+            &redirect_uri,
+            &pkce.verifier,
+        )
+        .await
+    }
+
+    /// Finishes a sign-in whose authorization code came by another route,
+    /// such as a device code: exchanges it and saves the credential.
+    pub async fn login_with_authorization_code(
+        &self,
+        account_id: AccountId,
+        provider: &OAuthProviderDefinition,
+        code: &str,
+        redirect_uri: &Url,
+        verifier: &str,
+    ) -> Result<OAuthLoginResult, AuthError> {
         let tokens = self
-            .exchange_authorization_code(provider, &code, &redirect_uri, &pkce.verifier)
+            .exchange_authorization_code(provider, code, redirect_uri, verifier)
             .await?;
         let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
             AuthError::TokenEndpoint("authorization did not return a refresh credential".to_owned())

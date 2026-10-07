@@ -526,13 +526,14 @@ pub(super) fn api_key_dialog<'a>(
     .into()
 }
 
-/// GitHub's device code for a Copilot sign-in, while the app waits for the
-/// user to enter it on GitHub.
-pub(super) fn copilot_sign_in_dialog(
-    code: &usage_monitor_core::providers::copilot::DeviceCode,
+/// The one-time code of a Copilot or Codex sign-in, while the app waits for
+/// the user to enter it on the provider's page.
+pub(super) fn device_sign_in_dialog(
+    code: &DeviceSignIn,
     language: locale::Language,
     active_theme: &'static ThemeDefinition,
 ) -> Element<'static, Message> {
+    let texts = DeviceSignInTexts::of(code.provider);
     let code_box = container(
         row![
             text(code.user_code.clone())
@@ -542,7 +543,7 @@ pub(super) fn copilot_sign_in_dialog(
                 .width(Fill)
                 .align_x(Alignment::Center),
             button(container(lucide_icons::iced::icon_copy().size(15)).center(Fill))
-                .on_press(Message::CopyCopilotCode)
+                .on_press(Message::CopyDeviceCode)
                 .width(30)
                 .height(30)
                 .padding(0)
@@ -577,25 +578,25 @@ pub(super) fn copilot_sign_in_dialog(
         column![
             row![
                 image(provider_logo_handle(
-                    UsageProvider::Copilot,
+                    code.provider,
                     active_theme.colors.is_light
                 ))
                 .width(22)
                 .height(22)
                 .content_fit(ContentFit::Contain),
-                text(locale::text(language, locale::Text::CopilotTitle))
+                text(locale::text(language, texts.title))
                     .size(typography::ACCOUNT_NAME_SIZE)
                     .font(typography::EMPHASIS)
                     .color(active_theme.colors.text()),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
-            text(locale::text(language, locale::Text::CopilotEnterCode))
+            text(locale::text(language, texts.enter_code))
                 .size(typography::METADATA_SIZE)
                 .font(typography::MEDIUM)
                 .color(active_theme.colors.muted_text()),
             code_box,
-            text(locale::text(language, locale::Text::CopilotWaiting))
+            text(locale::text(language, texts.waiting))
                 .size(typography::METADATA_SIZE)
                 .font(typography::MEDIUM)
                 .color(active_theme.colors.muted_text()),
@@ -609,11 +610,11 @@ pub(super) fn copilot_sign_in_dialog(
                     Message::CancelAccountAdd,
                 ),
                 account_dialog_button(
-                    locale::text(language, locale::Text::OpenGitHub),
+                    locale::text(language, texts.open_page),
                     true,
                     true,
                     active_theme,
-                    Message::OpenCopilotPage,
+                    Message::OpenDeviceCodePage,
                 ),
             ]
             .spacing(8)
@@ -627,6 +628,33 @@ pub(super) fn copilot_sign_in_dialog(
     .padding(16)
     .style(move |_| account_menu_surface_style(active_theme))
     .into()
+}
+
+struct DeviceSignInTexts {
+    title: locale::Text,
+    enter_code: locale::Text,
+    waiting: locale::Text,
+    open_page: locale::Text,
+}
+
+impl DeviceSignInTexts {
+    fn of(provider: UsageProvider) -> Self {
+        if provider == UsageProvider::Codex {
+            Self {
+                title: locale::Text::CodexCodeTitle,
+                enter_code: locale::Text::CodexEnterCode,
+                waiting: locale::Text::CodexWaiting,
+                open_page: locale::Text::OpenOpenAI,
+            }
+        } else {
+            Self {
+                title: locale::Text::CopilotTitle,
+                enter_code: locale::Text::CopilotEnterCode,
+                waiting: locale::Text::CopilotWaiting,
+                open_page: locale::Text::OpenGitHub,
+            }
+        }
+    }
 }
 
 pub(super) fn account_key_input_style(
