@@ -23,9 +23,16 @@ pub(super) fn tray_click_should_hide(
 
 pub(super) fn install_tray(sender: Sender<TrayIconEvent>) -> Result<(), String> {
     let icon = Icon::from_rgba(icon_pixels(), 32, 32).map_err(|error| error.to_string())?;
+    let menu = crate::tray_menu::build(
+        crate::locale::default_language(),
+        crate::memory_saver::load_saved(),
+    )?;
     let tray = TrayIconBuilder::new()
         .with_icon(icon)
         .with_tooltip("Usage Monitor")
+        // A left click opens the popup; the menu is for the right button.
+        .with_menu(Box::new(menu))
+        .with_menu_on_left_click(false)
         .build()
         .map_err(|error| error.to_string())?;
 

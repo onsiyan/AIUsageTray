@@ -2,9 +2,35 @@
 
 Usage Monitor tracks AI subscription usage across several accounts and
 providers from one Windows tray popup: Codex (ChatGPT), Claude, Antigravity,
-OpenCode Go, and OpenRouter. It shows each account's session, weekly, and
-model limits with their reset times, reset credits, and plan, and can switch
-the Codex and Antigravity desktop apps to any saved account.
+GitHub Copilot, Cursor, OpenCode Go, Kimi Code, z.ai, MiniMax, OpenRouter,
+DeepSeek, and xAI. It shows each account's session, weekly, and model limits
+with their reset times, reset credits, and plan, or the prepaid balance, and
+can switch the Codex and Antigravity desktop apps to any saved account.
+
+## Features
+
+- **Tray popup**: left-click the icon to open it. One tab per provider, plus
+  Favorites and your own tabs that gather several providers or single
+  accounts (Tabs button in the title bar).
+- **Tray menu**: right-click the icon to open the popup or the Cost page,
+  refresh every account, turn Start with Windows and Memory saver on or off,
+  or quit.
+- **Cost page** (the $ button): what Codex and Claude Code use would cost at
+  API list prices, read from their local session logs, against what your
+  plans cost. History is kept past the tools' own clean-up, by day, model,
+  and tool, and can include other machines reached over SSH with your keys.
+- **Themes**: built-in dark, light, and picture themes, or your own colors
+  and background picture.
+- **Command line**: `usage-monitor-cli` for people and agents, with stable
+  account references and JSON output.
+
+## Install
+
+Download `UsageMonitor-<version>-Setup.exe` and run it. Setup installs for
+the current Windows user without an administrator prompt (by default into
+`%LOCALAPPDATA%\Programs\UsageMonitor`) and lets you choose the folder,
+starting with Windows, and a desktop shortcut. Running a newer setup updates
+the app in place; remove it from Windows' Installed apps.
 
 ## Repository layout
 
@@ -56,7 +82,9 @@ the setup, install [Inno Setup 6](https://jrsoftware.org/isinfo.php)
 ```
 
 Accounts have stable references: `chN` (Codex), `ccN` (Claude), `agN`
-(Antigravity), `ocN` (OpenCode Go), and `orN` (OpenRouter). They survive
+(Antigravity), `ocN` (OpenCode Go), `orN` (OpenRouter), `cpN` (Copilot),
+`cuN` (Cursor), `kmN` (Kimi), `zaN` (z.ai), `mxN` (MiniMax), `dsN`
+(DeepSeek), and `xaN` (xAI). They survive
 restarts and renames and are never reused. An exact alias, label, or email also
 selects an account; `--provider` or `--workspace` disambiguates.
 
@@ -78,11 +106,19 @@ provider access.
 | Antigravity | Google OAuth + PKCE | Cloud Code APIs (models, grouped quota summary, project and tier) |
 | OpenCode Go | OpenCode Console device authorization | Console (the Zen Go API for an OpenCode API key) |
 | OpenRouter | API key (optional management key) via environment or stdin | `/key`, `/credits`, `/activity` |
+| GitHub Copilot | GitHub device code | Copilot quotas (premium requests, chat) |
+| Cursor | The Cursor app signed in on this computer, or a pasted session cookie | Cursor usage and on-demand spend |
+| Kimi Code | API key (`KIMI_CODE_API_KEY` or stdin) | 5-hour, weekly, and monthly quotas |
+| z.ai | API key (`Z_AI_API_KEY` or stdin) | GLM Coding Plan quotas |
+| MiniMax | Coding Plan API key (`MINIMAX_CODING_API_KEY` or stdin) | Coding Plan quotas and points |
+| DeepSeek | API key (`DEEPSEEK_API_KEY` or stdin) | `/user/balance` |
+| xAI | Management API key and team ID | Prepaid balance and spend |
 
 Every credential is scoped to one local account and is only read from that
 account's Credential Manager entry (or Codex's `auth.json` while that account
 is linked to Codex, below); environment variables, CLI sessions, and browser
-cookies are never used as usage credentials.
+cookies are never read on their own; a Cursor session cookie is used only when
+you paste it.
 
 ### Switching the desktop apps
 
@@ -140,3 +176,9 @@ cargo test --workspace --release live_refresh_latency -- --ignored --nocapture
 This diagnostic contacts the providers for the locally saved accounts and
 updates their stored snapshots. It reports cold and warm delivery times using
 account references, without printing credentials, and is excluded from normal tests.
+
+## License
+
+Usage Monitor is released under the [MIT License](LICENSE). Provider names
+and logos belong to their owners; see
+`apps/desktop/assets/providers/ATTRIBUTION.md`.

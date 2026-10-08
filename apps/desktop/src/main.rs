@@ -33,6 +33,7 @@ use tokio::{io::AsyncWriteExt, process::Command as TokioCommand};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 mod account_add;
+mod autostart;
 mod chrome;
 mod codex_switch;
 mod cost_tab;
@@ -54,6 +55,7 @@ mod tabs;
 mod theme;
 mod theme_menu;
 mod tray;
+mod tray_menu;
 mod typography;
 mod update;
 mod usage_refresh;
@@ -537,6 +539,7 @@ impl App {
         let mut subscriptions = vec![
             event::listen_with(runtime_event).map(Message::RuntimeEvent),
             Subscription::run(tray_event_stream),
+            Subscription::run(tray_menu::action_stream),
         ];
 
         let blocking_dialog_open = app.credentials_provider.is_some()
@@ -746,6 +749,38 @@ impl App {
         open_task
     }
 
+    fn tray_menu_action(&mut self, action: tray_menu::TrayAction) -> Task<Message> {
+        use tray_menu::TrayAction;
+        preview_log(format!("tray menu: {action:?}"));
+        let tray_rect = || TRAY_ICON.with(|tray| tray.borrow().as_ref().and_then(TrayIcon::rect));
+        match action {
+            TrayAction::Open => self.show_window(tray_rect()),
+            TrayAction::Cost => {
+                let show = self.show_window(tray_rect());
+                if self.selected_tab == DashboardTab::Cost {
+                    show
+                } else {
+                    show.chain(Task::done(Message::ToggleCostPage))
+                }
+            }
+            TrayAction::Refresh => self.update(Message::RefreshAllUsage),
+            TrayAction::StartWithWindows => {
+                let wanted = !autostart::is_enabled();
+                if let Err(error) = autostart::set(wanted) {
+                    preview_log(format!("start with Windows change failed: {error}"));
+                }
+                tray_menu::set_start_with_windows_checked(autostart::is_enabled());
+                Task::none()
+            }
+            TrayAction::MemorySaver => self.update(Message::SetMemorySaver(!self.memory_saver)),
+            TrayAction::Quit => {
+                // Removed first, so no stale icon is left in the tray.
+                TRAY_ICON.with(|tray| tray.borrow_mut().take());
+                iced::exit()
+            }
+        }
+    }
+
     /// Hides the popup. With the memory saver on, its window is closed
     /// instead: with no window left the renderer releases the GPU memory.
     fn hide_popup(&mut self) -> Task<Message> {
@@ -767,6 +802,8 @@ impl App {
 #[derive(Debug, Clone)]
 enum Message {
     TrayEvent(TrayIconEvent),
+    /// An item of the tray icon's right-click menu.
+    TrayMenu(tray_menu::TrayAction),
     TogglePopupFromTray(tray_icon::Rect, window::Mode),
     OpenPreview,
     RuntimeEvent(Event),

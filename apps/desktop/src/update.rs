@@ -189,6 +189,7 @@ impl App {
                 preview_log(format!("tray event ignored: {event:?}"));
                 Task::none()
             }
+            Message::TrayMenu(action) => self.tray_menu_action(action),
             Message::OpenPreview => {
                 preview_log("open preview requested");
                 let rect = TRAY_ICON.with(|tray| tray.borrow().as_ref().and_then(TrayIcon::rect));
@@ -689,6 +690,7 @@ impl App {
             }
             Message::SetMemorySaver(enabled) => {
                 self.memory_saver = enabled;
+                tray_menu::set_memory_saver_checked(enabled);
                 if let Err(error) = memory_saver::save(enabled) {
                     preview_log(format!("memory saver preference save failed: {error}"));
                 }

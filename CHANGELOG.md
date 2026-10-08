@@ -15,6 +15,10 @@ All notable changes to this project are documented here. The format follows
   add a desktop shortcut, and open the app at the end. It closes a running
   copy before updating it, replaces the earlier setup's install in place,
   and is removed from Windows' installed apps list like any other app.
+- A right-click menu on the tray icon: open the popup or the Cost page,
+  refresh all accounts, turn Start with Windows or Memory saver on and off,
+  and quit. It follows the dark or light Windows app mode.
+- MIT license.
 - An app icon, shown in the notification area, on the executable, and in
   setup.
 - Tray desktop app showing usage for Codex, Claude, Antigravity, OpenCode Go,
