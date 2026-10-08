@@ -6,8 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-08
+
 ### Added
 
+- A setup wizard (Inno Setup) that installs for the current Windows user
+  without an administrator prompt: choose the folder, start with Windows,
+  add a desktop shortcut, and open the app at the end. It closes a running
+  copy before updating it, replaces the earlier setup's install in place,
+  and is removed from Windows' installed apps list like any other app.
+- An app icon, shown in the notification area, on the executable, and in
+  setup.
 - Tray desktop app showing usage for Codex, Claude, Antigravity, OpenCode Go,
   and OpenRouter accounts, with reset times, reset credits, and plan.
 - Direct Claude OAuth sign-in, Claude plan detection, and Claude usage-limit

@@ -35,7 +35,10 @@ cargo build --workspace --release
 
 The desktop app, CLI, and sign-in helper must sit in the same directory; the
 app runs the CLI to add accounts, and the CLI runs the sign-in helper. To build
-an installer, run `apps/desktop/packaging/windows/build-installer.ps1`.
+the setup, install [Inno Setup 6](https://jrsoftware.org/isinfo.php)
+(`winget install JRSoftware.InnoSetup`) and run
+`apps/desktop/packaging/windows/build-installer.ps1`; it writes
+`target/dist/UsageMonitor-<version>-Setup.exe`.
 
 ## Command line
 

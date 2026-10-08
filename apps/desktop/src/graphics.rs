@@ -165,19 +165,11 @@ pub(super) fn draw_refresh_line(
     }
 }
 
+/// The tray icon: the app icon at 32 px, as RGBA.
 pub(super) fn icon_pixels() -> Vec<u8> {
-    let mut pixels = vec![0_u8; 32 * 32 * 4];
-    for y in 0..32 {
-        for x in 0..32 {
-            let dx = x as i32 - 16;
-            let dy = y as i32 - 16;
-            if dx * dx + dy * dy <= 14 * 14 {
-                let index = (y * 32 + x) * 4;
-                pixels[index..index + 4].copy_from_slice(&[126, 111, 250, 255]);
-            }
-        }
-    }
-    pixels
+    ::image::load_from_memory(include_bytes!("../assets/icon/tray-32.png"))
+        .map(|icon| icon.to_rgba8().into_raw())
+        .unwrap_or_else(|_| vec![0; 32 * 32 * 4])
 }
 
 pub(super) fn backdrop_image_handle(theme_id: ThemeId) -> Option<image::Handle> {
