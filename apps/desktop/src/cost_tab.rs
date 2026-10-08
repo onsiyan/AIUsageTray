@@ -318,7 +318,11 @@ fn read_report(machines: &[String]) -> Result<CostReport, String> {
 }
 
 /// English or Arabic, for the words only this page uses.
-fn tr(language: locale::Language, english: &'static str, arabic: &'static str) -> &'static str {
+pub(super) fn tr(
+    language: locale::Language,
+    english: &'static str,
+    arabic: &'static str,
+) -> &'static str {
     match language {
         locale::Language::English => english,
         locale::Language::Arabic => arabic,
@@ -422,7 +426,7 @@ pub(super) fn view(
 }
 
 /// A row of choices with the picked one filled.
-fn segmented(
+pub(super) fn segmented(
     options: Vec<(&'static str, bool, Message)>,
     theme: &'static ThemeDefinition,
 ) -> Element<'static, Message> {
@@ -1550,7 +1554,10 @@ fn footer(
     column(lines).spacing(2).into()
 }
 
-fn muted_line(message: &str, theme: &'static ThemeDefinition) -> Element<'static, Message> {
+pub(super) fn muted_line(
+    message: &str,
+    theme: &'static ThemeDefinition,
+) -> Element<'static, Message> {
     text(message.to_owned())
         .size(typography::METADATA_SIZE)
         .font(typography::MEDIUM)

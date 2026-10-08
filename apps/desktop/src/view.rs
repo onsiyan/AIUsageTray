@@ -21,6 +21,11 @@ impl App {
                     active_theme,
                     self.language,
                 ),
+                keys_page_button(
+                    self.selected_tab == DashboardTab::Keys,
+                    active_theme,
+                    self.language,
+                ),
                 mouse_area(Space::new().width(Fill).height(Length::Fill))
                     .on_press(Message::DragWindow),
                 add_account_button(self.account_add_running, active_theme, self.language),
@@ -94,6 +99,8 @@ impl App {
                             active_theme,
                             self.language,
                         )
+                    } else if self.selected_tab == DashboardTab::Keys {
+                        keys_tab::view(&self.keys, active_theme, self.language)
                     } else {
                         dashboard::view(
                             &self.dashboard,

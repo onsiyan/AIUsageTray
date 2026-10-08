@@ -129,6 +129,13 @@ impl AccountAuthMaterialStore for WindowsCredentialManagerAuthMaterialStore {
     }
 }
 
+/// An account's saved sign-in material, read without an async runtime, for
+/// showing and copying an API-key account's key.
+pub fn read_auth_material(account_id: AccountId) -> Result<Option<AccountAuthMaterial>, AuthError> {
+    let _guard = auth_material_store_lock()?;
+    load_auth_material(account_id)
+}
+
 fn auth_material_store_lock() -> Result<MutexGuard<'static, ()>, AuthError> {
     AUTH_MATERIAL_STORE_LOCK
         .get_or_init(|| Mutex::new(()))
@@ -235,8 +242,12 @@ fn load_blob_at(
     account_id: AccountId,
     max_blob_bytes: usize,
 ) -> Result<Option<Vec<u8>>, AuthError> {
-    let base = target_name(prefix, account_id);
-    let Some(primary) = read_raw(&base)? else {
+    load_named(&target_name(prefix, account_id), max_blob_bytes)
+}
+
+/// Reads the entry `base`, joining its parts when it was split.
+fn load_named(base: &str, max_blob_bytes: usize) -> Result<Option<Vec<u8>>, AuthError> {
+    let Some(primary) = read_raw(base)? else {
         return Ok(None);
     };
     let Some(count) = chunk_count(&primary) else {
@@ -254,7 +265,7 @@ fn load_blob_at(
     }
     let mut blob = Vec::new();
     for index in 0..count {
-        let part = read_raw(&part_name(&base, index))?.ok_or_else(|| {
+        let part = read_raw(&part_name(base, index))?.ok_or_else(|| {
             AuthError::CredentialStore("stored credential blob is incomplete".to_owned())
         })?;
         blob.extend_from_slice(&part);
@@ -273,33 +284,37 @@ fn save_blob(
     blob: &[u8],
     max_blob_bytes: usize,
 ) -> Result<(), AuthError> {
+    save_named(&target_name(prefix, account_id), blob, max_blob_bytes)
+}
+
+/// Writes the entry `base`, split into parts when it is too large for one.
+fn save_named(base: &str, blob: &[u8], max_blob_bytes: usize) -> Result<(), AuthError> {
     if blob.is_empty() || blob.len() > max_blob_bytes {
         return Err(AuthError::CredentialStore(
             "credential blob is empty or too large".to_owned(),
         ));
     }
-    let base = target_name(prefix, account_id);
-    let previous_parts = read_raw(&base)?
+    let previous_parts = read_raw(base)?
         .as_deref()
         .and_then(chunk_count)
         .unwrap_or(0);
     let new_parts = if blob.len() <= CRED_MAX_BLOB_BYTES && !blob.starts_with(CHUNK_HEADER) {
-        write_raw(&base, blob)?;
+        write_raw(base, blob)?;
         0
     } else {
         // Write every part before the header so a reader never follows a
         // header to parts that do not exist yet.
         let chunks = blob.chunks(CRED_MAX_BLOB_BYTES).collect::<Vec<_>>();
         for (index, chunk) in chunks.iter().enumerate() {
-            write_raw(&part_name(&base, index), chunk)?;
+            write_raw(&part_name(base, index), chunk)?;
         }
         let mut header = CHUNK_HEADER.to_vec();
         header.extend_from_slice(chunks.len().to_string().as_bytes());
-        write_raw(&base, &header)?;
+        write_raw(base, &header)?;
         chunks.len()
     };
     for index in new_parts..previous_parts {
-        delete_raw(&part_name(&base, index))?;
+        delete_raw(&part_name(base, index))?;
     }
     Ok(())
 }
@@ -312,16 +327,20 @@ fn remove_blob(prefix: &str, account_id: AccountId) -> Result<(), AuthError> {
 }
 
 fn remove_blob_at(prefix: &str, account_id: AccountId) -> Result<(), AuthError> {
-    let base = target_name(prefix, account_id);
-    let parts = read_raw(&base)
+    remove_named(&target_name(prefix, account_id))
+}
+
+/// Deletes the entry `base` and any parts it was split into.
+fn remove_named(base: &str) -> Result<(), AuthError> {
+    let parts = read_raw(base)
         .ok()
         .flatten()
         .as_deref()
         .and_then(chunk_count)
         .unwrap_or(0);
-    delete_raw(&base)?;
+    delete_raw(base)?;
     for index in 0..parts {
-        delete_raw(&part_name(&base, index))?;
+        delete_raw(&part_name(base, index))?;
     }
     Ok(())
 }
@@ -417,6 +436,8 @@ fn delete_raw(name: &str) -> Result<(), AuthError> {
     }
     Ok(())
 }
+
+pub mod vault;
 
 /// The Antigravity desktop app's own sign-in entry (see
 /// `usage_monitor_core::antigravity_desktop`).

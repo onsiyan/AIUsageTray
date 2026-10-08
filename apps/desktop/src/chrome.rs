@@ -111,11 +111,43 @@ pub(super) fn cost_page_button(
     active_theme: &'static ThemeDefinition,
     language: locale::Language,
 ) -> Element<'static, Message> {
-    let icon = icon_circle_dollar_sign::<Theme>()
-        .size(17)
-        .color(active_theme.colors.text());
+    page_button(
+        icon_circle_dollar_sign::<Theme>(),
+        Message::ToggleCostPage,
+        locale::text(language, locale::Text::CostTab),
+        open,
+        active_theme,
+    )
+}
+
+/// Opens or closes the page of kept API keys; lit while the page is open.
+pub(super) fn keys_page_button(
+    open: bool,
+    active_theme: &'static ThemeDefinition,
+    language: locale::Language,
+) -> Element<'static, Message> {
+    page_button(
+        lucide_icons::iced::icon_key_round::<Theme>(),
+        Message::ToggleKeysPage,
+        match language {
+            locale::Language::English => "API keys",
+            locale::Language::Arabic => "مفاتيح API",
+        },
+        open,
+        active_theme,
+    )
+}
+
+fn page_button(
+    icon: iced::widget::Text<'static, Theme>,
+    message: Message,
+    label: &'static str,
+    open: bool,
+    active_theme: &'static ThemeDefinition,
+) -> Element<'static, Message> {
+    let icon = icon.size(17).color(active_theme.colors.text());
     let button = button(container(icon).center(Fill))
-        .on_press(Message::ToggleCostPage)
+        .on_press(message)
         .width(30)
         .height(29)
         .padding(0)
@@ -134,11 +166,7 @@ pub(super) fn cost_page_button(
             style.shadow = Shadow::default();
             style
         });
-    hint::hint(
-        button,
-        locale::text(language, locale::Text::CostTab),
-        active_theme,
-    )
+    hint::hint(button, label, active_theme)
 }
 
 pub(super) fn refresh_button(

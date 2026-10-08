@@ -15,6 +15,14 @@ All notable changes to this project are documented here. The format follows
   add a desktop shortcut, and open the app at the end. It closes a running
   copy before updating it, replaces the earlier setup's install in place,
   and is removed from Windows' installed apps list like any other app.
+- API keys page, opened from the key button at the top left: keep any
+  service's API key (OpenAI, Anthropic, Gemini, or any other) under a name,
+  and copy it in one click as the key alone or ready for PowerShell, bash,
+  or a `.env` file. A pasted key's service and variable name are filled in
+  when its start shows them. The keys of API-key accounts already added
+  are listed too. Keys are kept in Windows Credential Manager; a copied key
+  stays out of clipboard history and cloud sync and is cleared from the
+  clipboard after 30 seconds.
 - The app icon on the taskbar button and its thumbnail when the popup is
   set to show in the taskbar.
 - A right-click menu on the tray icon: open the popup or the Cost page,

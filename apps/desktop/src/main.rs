@@ -44,6 +44,7 @@ mod dialogs;
 mod display_options;
 mod graphics;
 mod hint;
+mod keys_tab;
 mod locale;
 mod memory_saver;
 mod percent_display;
@@ -313,6 +314,8 @@ enum DashboardTab {
     Favorites,
     /// What Codex and Claude Code usage on this PC would cost.
     Cost,
+    /// The API keys kept to copy later.
+    Keys,
     Custom {
         id: u32,
         providers: tabs::ProviderSet,
@@ -326,8 +329,14 @@ impl DashboardTab {
             Self::Provider(provider) => provider.cli_name().to_owned(),
             Self::Favorites => "favorites".to_owned(),
             Self::Cost => "cost".to_owned(),
+            Self::Keys => "keys".to_owned(),
             Self::Custom { id, .. } => format!("custom-{id}"),
         }
+    }
+
+    /// A page opened from the title bar rather than a tab in the tab bar.
+    fn is_page(self) -> bool {
+        matches!(self, Self::Cost | Self::Keys)
     }
 
     /// The same tab, even if a custom tab's providers changed since.
@@ -342,7 +351,7 @@ impl DashboardTab {
     fn includes_provider(self, provider: UsageProvider) -> bool {
         match self {
             Self::Provider(own) => own == provider,
-            Self::Favorites | Self::Cost => false,
+            Self::Favorites | Self::Cost | Self::Keys => false,
             Self::Custom { providers, .. } => providers.contains(provider),
         }
     }
@@ -447,7 +456,7 @@ struct App {
     account_add_status: Option<AccountAddStatus>,
     selected_tab: DashboardTab,
     /// The tab to go back to when the Cost page closes.
-    tab_before_cost: DashboardTab,
+    tab_before_page: DashboardTab,
     /// The user's arrangement of the tab bar.
     tab_layout: tabs::TabLayout,
     tab_manager_open: bool,
@@ -463,6 +472,7 @@ struct App {
     last_focus_lost: Option<Instant>,
     dashboard: dashboard::DashboardState,
     cost: cost_tab::CostTab,
+    keys: keys_tab::KeysTab,
     language: locale::Language,
     memory_saver: bool,
     /// How much the popup is enlarged on the screen it is shown on.
@@ -506,7 +516,7 @@ impl App {
             device_sign_in: None,
             account_add_status: None,
             selected_tab: tab_layout.resolve(DashboardTab::Provider(UsageProvider::Codex)),
-            tab_before_cost: tab_layout.resolve(DashboardTab::Provider(UsageProvider::Codex)),
+            tab_before_page: tab_layout.resolve(DashboardTab::Provider(UsageProvider::Codex)),
             tab_icons: tab_icons::load_saved(&tab_layout),
             tab_icon_picking: false,
             tab_layout,
@@ -518,6 +528,7 @@ impl App {
             last_focus_lost: None,
             dashboard,
             cost: cost_tab::CostTab::load(),
+            keys: keys_tab::KeysTab::load(),
             language: locale::default_language(),
             memory_saver: memory_saver::load_saved(),
             ui_zoom: 1.0,
@@ -872,6 +883,8 @@ enum Message {
     /// Other machines were read over SSH.
     CostMachinesSynced(cost_tab::SyncResults),
     CostView(cost_tab::CostView),
+    ToggleKeysPage,
+    Keys(keys_tab::KeysChange),
     ToggleTabManager,
     DismissTabManager,
     ToggleTabVisible(usize),

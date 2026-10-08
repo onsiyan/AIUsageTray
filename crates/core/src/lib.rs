@@ -13,3 +13,4 @@ pub mod runtime;
 pub mod storage;
 pub mod transport;
 pub mod usage;
+pub mod vault;

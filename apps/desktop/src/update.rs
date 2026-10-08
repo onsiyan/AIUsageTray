@@ -3,6 +3,19 @@
 use super::*;
 
 impl App {
+    /// Opens a title-bar page, or closes it back to the tab shown before.
+    fn toggle_page(&mut self, page: DashboardTab) -> Task<Message> {
+        let tab = if self.selected_tab == page {
+            self.tab_layout.resolve(self.tab_before_page)
+        } else {
+            if !self.selected_tab.is_page() {
+                self.tab_before_page = self.selected_tab;
+            }
+            page
+        };
+        self.update(Message::SelectTab(tab))
+    }
+
     pub(super) fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::DashboardLoaded(Ok(accounts)) => {
@@ -316,6 +329,12 @@ impl App {
             | Message::TabIconChosen(_)
             | Message::RemoveTabIcon) => self.update_tabs(message),
             Message::SelectTab(tab) => {
+                if self.selected_tab == DashboardTab::Keys && tab != DashboardTab::Keys {
+                    self.keys.close();
+                }
+                if tab == DashboardTab::Keys && self.selected_tab != DashboardTab::Keys {
+                    self.keys.refresh(self.dashboard.account_entries());
+                }
                 self.selected_tab = tab;
                 self.theme_menu_open = false;
                 self.account_add_menu_open = false;
@@ -331,15 +350,9 @@ impl App {
                     Task::none()
                 }
             }
-            Message::ToggleCostPage => {
-                let tab = if self.selected_tab == DashboardTab::Cost {
-                    self.tab_layout.resolve(self.tab_before_cost)
-                } else {
-                    self.tab_before_cost = self.selected_tab;
-                    DashboardTab::Cost
-                };
-                self.update(Message::SelectTab(tab))
-            }
+            Message::ToggleCostPage => self.toggle_page(DashboardTab::Cost),
+            Message::ToggleKeysPage => self.toggle_page(DashboardTab::Keys),
+            Message::Keys(change) => self.keys.change(change, self.dashboard.account_entries()),
             Message::CostScanned(result) => self.cost.finish(*result),
             Message::CostMachinesSynced(results) => self.cost.finish_machine_sync(results),
             Message::CostView(change) => self.cost.change(change),

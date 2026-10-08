@@ -128,8 +128,8 @@ impl TabLayout {
 
     /// The tab to show when `tab` is hidden or gone: the first shown tab.
     pub fn resolve(&self, tab: DashboardTab) -> DashboardTab {
-        // The Cost page opens from the title bar, not from the tab bar.
-        if tab == DashboardTab::Cost {
+        // The Cost and Keys pages open from the title bar, not the tab bar.
+        if tab.is_page() {
             return tab;
         }
         self.visible_tabs()
