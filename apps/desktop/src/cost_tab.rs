@@ -426,7 +426,7 @@ pub(super) fn view(
 }
 
 /// A row of choices with the picked one filled.
-pub(super) fn segmented(
+fn segmented(
     options: Vec<(&'static str, bool, Message)>,
     theme: &'static ThemeDefinition,
 ) -> Element<'static, Message> {
@@ -1554,10 +1554,7 @@ fn footer(
     column(lines).spacing(2).into()
 }
 
-pub(super) fn muted_line(
-    message: &str,
-    theme: &'static ThemeDefinition,
-) -> Element<'static, Message> {
+fn muted_line(message: &str, theme: &'static ThemeDefinition) -> Element<'static, Message> {
     text(message.to_owned())
         .size(typography::METADATA_SIZE)
         .font(typography::MEDIUM)

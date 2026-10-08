@@ -7,20 +7,19 @@ use super::*;
 // Explicit, so it is not confused with the built-in column! macro.
 use iced::widget::column;
 use lucide_icons::iced::{
-    icon_check, icon_copy, icon_eye, icon_eye_off, icon_key_round, icon_pencil, icon_trash_2,
+    icon_check, icon_copy, icon_eye, icon_eye_off, icon_info, icon_key_round, icon_pencil,
+    icon_trash_2,
 };
 use usage_monitor_core::accounts::AccountId;
-use usage_monitor_core::vault::{self, CopyFormat, VaultKey};
+use usage_monitor_core::vault::{self, VaultKey};
 
-use crate::cost_tab::{muted_line, segmented, tr};
+use crate::cost_tab::tr;
 use crate::dashboard::{AccountUsageEntry, account_name, belongs_to_provider};
 
-/// A copied key is taken off the clipboard after this long, unless something
-/// else was copied since.
-const CLEAR_AFTER: Duration = Duration::from_secs(30);
+/// How long a row says its key was copied.
+const COPIED_FOR: Duration = Duration::from_secs(2);
 const NAME_INPUT: &str = "keys-name";
 const SECRET_INPUT: &str = "keys-secret";
-const FORMAT_FILE: &str = "keys-copy-format.txt";
 const ERROR_COLOR: Color = Color::from_rgb8(0xE0, 0x6C, 0x5F);
 
 /// Which key a row stands for.
@@ -51,19 +50,20 @@ impl std::fmt::Debug for Secret {
 #[derive(Debug, Clone)]
 pub(super) enum KeysChange {
     Query(String),
-    Format(CopyFormat),
     Hover(Option<KeyRef>),
     Copy(KeyRef),
-    /// The clipboard time ran out for the copy that left it at this number.
-    ClearClipboard(u32),
+    /// The "copied" mark of this copy has been shown long enough.
+    CopiedShown(u32),
     Reveal(KeyRef),
     Hide,
     /// Open the form for a new key, or to edit the key with this id.
     OpenForm(Option<String>),
     CloseForm,
     FormName(String),
+    /// Pick a listed service by its place in the list, or `None` for one
+    /// the user names.
+    PickService(Option<usize>),
     FormService(String),
-    FormEnvVar(String),
     FormSecret(Secret),
     Save,
     /// Ask before removing this key, or stop asking.
@@ -77,8 +77,25 @@ struct Row {
     reference: KeyRef,
     name: String,
     service: String,
-    env_var: String,
     masked: String,
+    logo: Option<RowLogo>,
+}
+
+/// The logo a row shows in place of the key icon.
+#[derive(Debug, Clone, Copy)]
+enum RowLogo {
+    Provider(UsageProvider),
+    /// A service's place in [`key_services::SERVICES`].
+    Service(usize),
+}
+
+impl RowLogo {
+    fn handle(self, light_theme: bool) -> iced::widget::image::Handle {
+        match self {
+            Self::Provider(provider) => provider_logo_handle(provider, light_theme),
+            Self::Service(index) => key_services::SERVICES[index].logo(light_theme),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -87,54 +104,30 @@ struct KeyForm {
     editing: Option<String>,
     name: String,
     service: String,
-    env_var: String,
     secret: String,
-    /// The service was typed or picked, so a pasted key no longer sets it.
+    /// The service is one the user names rather than a listed one.
+    other_service: bool,
+    /// The service was picked, so a pasted key no longer sets it.
     service_edited: bool,
-    /// The variable was typed, so the service no longer sets it.
-    env_var_edited: bool,
     problem: Option<String>,
 }
 
+#[derive(Default)]
 pub(super) struct KeysTab {
     vault: Vec<Row>,
     accounts: Vec<Row>,
     error: Option<String>,
     query: String,
-    format: CopyFormat,
     form: Option<KeyForm>,
     revealed: Option<(KeyRef, Secret)>,
     confirm_remove: Option<String>,
-    /// The last copy, and the clipboard's number right after it.
+    /// The last copy, and its number among the page's copies.
     copied: Option<(KeyRef, u32)>,
+    copies: u32,
     hovered: Option<KeyRef>,
 }
 
-impl Default for KeysTab {
-    fn default() -> Self {
-        Self {
-            vault: Vec::new(),
-            accounts: Vec::new(),
-            error: None,
-            query: String::new(),
-            format: CopyFormat::Plain,
-            form: None,
-            revealed: None,
-            confirm_remove: None,
-            copied: None,
-            hovered: None,
-        }
-    }
-}
-
 impl KeysTab {
-    pub(super) fn load() -> Self {
-        Self {
-            format: load_format(),
-            ..Self::default()
-        }
-    }
-
     /// Reads the list again, when the page opens or a key changed.
     pub(super) fn refresh(&mut self, entries: &[AccountUsageEntry]) {
         match store::list() {
@@ -166,18 +159,13 @@ impl KeysTab {
     ) -> Task<Message> {
         match change {
             KeysChange::Query(query) => self.query = query,
-            KeysChange::Format(format) => {
-                self.format = format;
-                save_format(format);
-            }
             KeysChange::Hover(reference) => self.hovered = reference,
             KeysChange::Copy(reference) => return self.copy(reference),
-            KeysChange::ClearClipboard(sequence) => {
-                crate::account_add::clear_clipboard_if_unchanged(sequence);
+            KeysChange::CopiedShown(copy) => {
                 if self
                     .copied
                     .as_ref()
-                    .is_some_and(|(_, copied)| *copied == sequence)
+                    .is_some_and(|(_, shown)| *shown == copy)
                 {
                     self.copied = None;
                 }
@@ -195,11 +183,11 @@ impl KeysTab {
                         Ok(Some(key)) => KeyForm {
                             editing: Some(id),
                             name: key.name,
+                            other_service: !key.service.is_empty()
+                                && key_services::find(&key.service).is_none(),
                             service: key.service,
-                            env_var: key.env_var,
                             secret: key.secret,
                             service_edited: true,
-                            env_var_edited: true,
                             problem: None,
                         },
                         Ok(None) => {
@@ -221,19 +209,27 @@ impl KeysTab {
                     form.name = name;
                 }
             }
-            KeysChange::FormService(service) => {
+            KeysChange::PickService(index) => {
                 if let Some(form) = &mut self.form {
-                    form.service = service;
-                    form.service_edited = !form.service.trim().is_empty();
-                    if !form.env_var_edited {
-                        form.env_var = vault::suggested_env_var(&form.service);
+                    form.service_edited = true;
+                    match index.and_then(|index| key_services::SERVICES.get(index)) {
+                        Some(service) => {
+                            form.other_service = false;
+                            form.service = service.name.to_owned();
+                        }
+                        None => {
+                            if !form.other_service {
+                                form.service.clear();
+                            }
+                            form.other_service = true;
+                        }
                     }
                 }
             }
-            KeysChange::FormEnvVar(env_var) => {
+            KeysChange::FormService(service) => {
                 if let Some(form) = &mut self.form {
-                    form.env_var = env_var;
-                    form.env_var_edited = !form.env_var.trim().is_empty();
+                    form.service = service;
+                    form.service_edited = true;
                 }
             }
             KeysChange::FormSecret(Secret(secret)) => {
@@ -243,22 +239,19 @@ impl KeysTab {
                     if !form.service_edited
                         && let Some(service) = vault::detect_service(&form.secret)
                     {
-                        form.service = service.to_owned();
-                        if !form.env_var_edited {
-                            form.env_var = vault::suggested_env_var(service);
-                        }
+                        let listed = key_services::find(service);
+                        form.other_service = listed.is_none();
+                        form.service = listed.map_or(service, |listed| listed.name).to_owned();
                     }
                 }
             }
             KeysChange::Save => {
                 if let Some(form) = &mut self.form {
                     let key = match &form.editing {
-                        None => {
-                            VaultKey::new(&form.name, &form.service, &form.env_var, &form.secret)
-                        }
+                        None => VaultKey::new(&form.name, &form.service, &form.secret),
                         Some(id) => match store::get(id) {
                             Ok(Some(mut key)) => key
-                                .edit(&form.name, &form.service, &form.env_var, &form.secret)
+                                .edit(&form.name, &form.service, &form.secret)
                                 .map(|()| key),
                             Ok(None) => Err("This key was removed.".to_owned()),
                             Err(error) => Err(error),
@@ -294,8 +287,7 @@ impl KeysTab {
         Task::none()
     }
 
-    /// Copies a key in the chosen format, marked to stay out of clipboard
-    /// history, and takes it off the clipboard after a while.
+    /// Copies a key and marks its row for a moment.
     fn copy(&mut self, reference: KeyRef) -> Task<Message> {
         let secret = match self.secret(&reference) {
             Ok(secret) => secret,
@@ -304,31 +296,18 @@ impl KeysTab {
                 return Task::none();
             }
         };
-        let env_var = self
-            .row(&reference)
-            .map(|row| row.env_var.clone())
-            .unwrap_or_default();
-        let text = vault::copy_text(self.format, &env_var, &secret);
-        let Some(sequence) = crate::account_add::copy_secret_to_clipboard(&text) else {
-            self.error = Some("Couldn't use the clipboard; try again.".to_owned());
-            return Task::none();
-        };
-        self.copied = Some((reference, sequence));
+        crate::account_add::copy_to_clipboard(&secret);
+        self.copies = self.copies.wrapping_add(1);
+        let copy = self.copies;
+        self.copied = Some((reference, copy));
         let (sender, receiver) = async_channel::bounded(1);
         std::thread::spawn(move || {
-            std::thread::sleep(CLEAR_AFTER);
+            std::thread::sleep(COPIED_FOR);
             let _ = sender.send_blocking(());
         });
         Task::perform(async move { receiver.recv().await }, move |_| {
-            Message::Keys(KeysChange::ClearClipboard(sequence))
+            Message::Keys(KeysChange::CopiedShown(copy))
         })
-    }
-
-    fn row(&self, reference: &KeyRef) -> Option<&Row> {
-        self.vault
-            .iter()
-            .chain(&self.accounts)
-            .find(|row| row.reference == *reference)
     }
 
     /// Reads a key from where it is kept.
@@ -348,30 +327,21 @@ fn vault_row(key: &VaultKey) -> Row {
         reference: KeyRef::Vault(key.id.clone()),
         name: key.name.clone(),
         service: key.service.clone(),
-        env_var: key.env_var.clone(),
         masked: key.masked(),
+        logo: key_services::index_of(&key.service).map(RowLogo::Service),
     }
 }
 
-/// The values an API-key provider's account keeps, with the variables the
-/// CLI reads them from.
-fn account_fields(
-    provider: UsageProvider,
-) -> &'static [(AccountField, &'static str, &'static str)] {
+/// The values an API-key provider's account keeps.
+fn account_fields(provider: UsageProvider) -> &'static [(AccountField, &'static str)] {
     use AccountField::{Primary, Secondary};
     match provider {
-        UsageProvider::DeepSeek => &[(Primary, "API key", "DEEPSEEK_API_KEY")],
-        UsageProvider::OpenRouter => &[
-            (Primary, "API key", "OPENROUTER_API_KEY"),
-            (Secondary, "Management key", "OPENROUTER_MANAGEMENT_API_KEY"),
-        ],
-        UsageProvider::Kimi => &[(Primary, "API key", "KIMI_CODE_API_KEY")],
-        UsageProvider::Zai => &[(Primary, "API key", "Z_AI_API_KEY")],
-        UsageProvider::MiniMax => &[(Primary, "API key", "MINIMAX_CODING_API_KEY")],
-        UsageProvider::Xai => &[
-            (Primary, "Management key", "XAI_MANAGEMENT_API_KEY"),
-            (Secondary, "Team ID", "XAI_TEAM_ID"),
-        ],
+        UsageProvider::DeepSeek
+        | UsageProvider::Kimi
+        | UsageProvider::Zai
+        | UsageProvider::MiniMax => &[(Primary, "API key")],
+        UsageProvider::OpenRouter => &[(Primary, "API key"), (Secondary, "Management key")],
+        UsageProvider::Xai => &[(Primary, "Management key"), (Secondary, "Team ID")],
         _ => &[],
     }
 }
@@ -386,7 +356,7 @@ fn account_rows(entries: &[AccountUsageEntry]) -> Vec<Row> {
         else {
             continue;
         };
-        for (field, label, env_var) in account_fields(provider) {
+        for (field, label) in account_fields(provider) {
             let value = match store::account_value(entry.account.id, *field) {
                 Ok(Some(value)) => value,
                 Ok(None) => continue,
@@ -399,44 +369,17 @@ fn account_rows(entries: &[AccountUsageEntry]) -> Vec<Row> {
                 reference: KeyRef::Account(entry.account.id, *field),
                 name: account_name(&entry.account),
                 service: format!("{} · {label}", provider.display_name()),
-                env_var: (*env_var).to_owned(),
                 // A team ID is not a secret; everything else is masked.
                 masked: if *label == "Team ID" {
                     value
                 } else {
                     vault::masked(&value)
                 },
+                logo: Some(RowLogo::Provider(provider)),
             });
         }
     }
     rows
-}
-
-fn load_format() -> CopyFormat {
-    let saved = crate::theme::preference_directory()
-        .ok()
-        .and_then(|directory| std::fs::read_to_string(directory.join(FORMAT_FILE)).ok());
-    match saved.as_deref().map(str::trim) {
-        Some("powershell") => CopyFormat::PowerShell,
-        Some("posix") => CopyFormat::Posix,
-        Some("dotenv") => CopyFormat::DotEnv,
-        _ => CopyFormat::Plain,
-    }
-}
-
-fn save_format(format: CopyFormat) {
-    let name = match format {
-        CopyFormat::Plain => "plain",
-        CopyFormat::PowerShell => "powershell",
-        CopyFormat::Posix => "posix",
-        CopyFormat::DotEnv => "dotenv",
-    };
-    if let Ok(directory) = crate::theme::preference_directory() {
-        let _ = std::fs::create_dir_all(&directory);
-        if let Err(error) = std::fs::write(directory.join(FORMAT_FILE), name) {
-            preview_log(format!("saving the copy format failed: {error}"));
-        }
-    }
 }
 
 #[cfg(windows)]
@@ -533,11 +476,7 @@ pub(super) fn view(
         );
     }
 
-    let total = state.vault.len() + state.accounts.len();
-    if total > 0 {
-        sections = sections.push(copy_format(state.format, theme, language));
-    }
-    if total > 6 {
+    if state.vault.len() + state.accounts.len() > 6 {
         sections = sections.push(
             text_input(
                 tr(
@@ -562,7 +501,7 @@ pub(super) fn view(
         rows.iter()
             .filter(|row| {
                 query.is_empty()
-                    || [&row.name, &row.service, &row.env_var]
+                    || [&row.name, &row.service]
                         .iter()
                         .any(|field| field.to_lowercase().contains(&query))
             })
@@ -571,18 +510,7 @@ pub(super) fn view(
     };
 
     let vault_rows = matching(&state.vault);
-    if state.vault.is_empty() {
-        if state.form.is_none() {
-            sections = sections.push(muted_line(
-                tr(
-                    language,
-                    "Keep any API key here to copy it in one click: OpenAI, Anthropic, Gemini, or any other service. Keys are stored in Windows Credential Manager for your Windows user only, and a copied key stays out of clipboard history and is cleared after 30 seconds.",
-                    "احفظ هنا أي مفتاح API لتنسخه بضغطة: OpenAI أو Anthropic أو Gemini أو أي خدمة أخرى. تُحفظ المفاتيح في Credential Manager لمستخدم Windows الخاص بك فقط، والمفتاح المنسوخ لا يدخل سجل الحافظة ويُمسح بعد 30 ثانية.",
-                ),
-                theme,
-            ));
-        }
-    } else {
+    if !state.vault.is_empty() {
         let mut list = column![].spacing(2);
         for row in vault_rows {
             list = list.push(key_row(row, state, true, theme, language));
@@ -638,13 +566,29 @@ fn header(
     theme: &'static ThemeDefinition,
     language: locale::Language,
 ) -> Element<'static, Message> {
+    let about = hint::hint(
+        container(
+            icon_info::<Theme>()
+                .size(14)
+                .color(theme.colors.muted_text()),
+        )
+        .padding(2),
+        tr(
+            language,
+            "A vault for your API keys, for quick access: keep them here and copy one in a click. The app reads no usage from these keys.",
+            "خزنة لمفاتيح API للوصول السريع: احفظها هنا وانسخ أيًّا منها بضغطة. البرنامج لا يجلب أي استخدام من هذه المفاتيح.",
+        ),
+        theme,
+    );
     let mut line = row![
         text(tr(language, "API keys", "مفاتيح API"))
             .size(typography::ACCOUNT_NAME_SIZE)
             .font(typography::EMPHASIS)
-            .color(theme.colors.text())
-            .width(Fill),
+            .color(theme.colors.text()),
+        about,
+        Space::new().width(Fill),
     ]
+    .spacing(6)
     .align_y(Alignment::Center);
     if state.form.is_none() {
         line = line.push(text_button(
@@ -655,34 +599,6 @@ fn header(
         ));
     }
     line.into()
-}
-
-fn copy_format(
-    format: CopyFormat,
-    theme: &'static ThemeDefinition,
-    language: locale::Language,
-) -> Element<'static, Message> {
-    let option = |label: &'static str, value: CopyFormat| {
-        (label, format == value, change(KeysChange::Format(value)))
-    };
-    row![
-        text(tr(language, "Copy as", "انسخ بصيغة"))
-            .size(typography::METADATA_SIZE)
-            .font(typography::MEDIUM)
-            .color(theme.colors.muted_text()),
-        segmented(
-            vec![
-                option(tr(language, "Key", "المفتاح"), CopyFormat::Plain),
-                option("PowerShell", CopyFormat::PowerShell),
-                option("bash", CopyFormat::Posix),
-                option(".env", CopyFormat::DotEnv),
-            ],
-            theme,
-        ),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center)
-    .into()
 }
 
 fn key_row(
@@ -696,8 +612,8 @@ fn key_row(
         reference,
         name,
         service,
-        env_var,
         masked,
+        logo,
     } = row_data;
     let hovered = state.hovered.as_ref() == Some(&reference);
     let copied = state
@@ -716,14 +632,10 @@ fn key_row(
     let confirming = id.is_some() && state.confirm_remove == id;
 
     let detail = if copied {
-        text(tr(
-            language,
-            "Copied · cleared from the clipboard in 30 s",
-            "نُسخ · يُمسح من الحافظة خلال 30 ثانية",
-        ))
-        .size(typography::COMPACT_SIZE)
-        .font(typography::MEDIUM)
-        .color(copied_color(theme))
+        text(tr(language, "Copied", "نُسخ"))
+            .size(typography::COMPACT_SIZE)
+            .font(typography::MEDIUM)
+            .color(copied_color(theme))
     } else {
         let key_text = revealed.clone().unwrap_or(masked);
         let mut parts = Vec::new();
@@ -736,21 +648,13 @@ fn key_row(
             .font(typography::MEDIUM)
             .color(theme.colors.muted_text())
     };
-    let mut label = column![
+    let label = column![
         text(name)
             .size(typography::LABEL_SIZE)
             .font(typography::EMPHASIS)
             .color(theme.colors.text()),
         detail,
     ];
-    if !env_var.is_empty() && hovered && !copied {
-        label = label.push(
-            text(env_var)
-                .size(typography::COMPACT_SIZE)
-                .font(typography::MEDIUM)
-                .color(theme.colors.muted_text().scale_alpha(0.8)),
-        );
-    }
 
     let mut actions = row![].spacing(2).align_y(Alignment::Center);
     if confirming && let Some(id) = &id {
@@ -821,14 +725,18 @@ fn key_row(
             ));
     }
 
+    let icon: Element<'static, Message> = match logo {
+        Some(logo) => iced::widget::image(logo.handle(theme.colors.is_light))
+            .width(20)
+            .height(20)
+            .into(),
+        None => icon_key_round::<Theme>()
+            .size(15)
+            .color(theme.colors.muted_text())
+            .into(),
+    };
     let line = row![
-        container(
-            icon_key_round::<Theme>()
-                .size(15)
-                .color(theme.colors.muted_text())
-        )
-        .width(18)
-        .center_x(18),
+        container(icon).width(22).center_x(22),
         label.width(Fill),
         actions,
     ]
@@ -908,22 +816,19 @@ fn key_form(
             .on_submit(change(KeysChange::Save))
             .into(),
         ),
-        field(
-            label("Service", "الخدمة").into(),
-            input("OpenAI, Anthropic, Gemini…", &form.service)
+        label("Service", "الخدمة"),
+        service_picker(form, theme, language),
+    ]
+    .spacing(6);
+    if form.other_service {
+        fields = fields.push(field(
+            label("Service name", "اسم الخدمة").into(),
+            input(tr(language, "Service name", "اسم الخدمة"), &form.service)
                 .on_input(|service| change(KeysChange::FormService(service)))
                 .on_submit(change(KeysChange::Save))
                 .into(),
-        ),
-        field(
-            label("Variable", "المتغير").into(),
-            input("OPENAI_API_KEY", &form.env_var)
-                .on_input(|env_var| change(KeysChange::FormEnvVar(env_var)))
-                .on_submit(change(KeysChange::Save))
-                .into(),
-        ),
-    ]
-    .spacing(6);
+        ));
+    }
     if let Some(problem) = &form.problem {
         fields = fields.push(
             text(problem.clone())
@@ -931,14 +836,6 @@ fn key_form(
                 .color(ERROR_COLOR),
         );
     }
-    fields = fields.push(muted_line(
-        tr(
-            language,
-            "The variable is used when copying for PowerShell, bash, or a .env file.",
-            "يُستخدم المتغير عند النسخ بصيغة PowerShell أو bash أو ملف .env.",
-        ),
-        theme,
-    ));
     fields = fields.push(
         row![
             Space::new().width(Fill),
@@ -969,6 +866,76 @@ fn key_form(
             ..Default::default()
         })
         .into()
+}
+
+/// The listed services as logo buttons that wrap across lines, then "Other".
+fn service_picker(
+    form: &KeyForm,
+    theme: &'static ThemeDefinition,
+    language: locale::Language,
+) -> Element<'static, Message> {
+    let picked = (!form.other_service)
+        .then(|| key_services::index_of(&form.service))
+        .flatten();
+    let chip = |content: Element<'static, Message>,
+                selected: bool,
+                message: Message|
+     -> Element<'static, Message> {
+        button(content)
+            .on_press(message)
+            .padding([4, 7])
+            .style(move |framework_theme: &Theme, status| {
+                let mut style = button::text(framework_theme, status);
+                let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+                style.background = (selected || hovered).then(|| {
+                    Background::Color(if selected {
+                        copied_color(theme).scale_alpha(0.22)
+                    } else {
+                        theme.colors.hover()
+                    })
+                });
+                style.border = Border {
+                    color: if selected {
+                        copied_color(theme)
+                    } else {
+                        theme.colors.border(0.3)
+                    },
+                    width: 1.0,
+                    radius: 7.0.into(),
+                };
+                style.shadow = Shadow::default();
+                style
+            })
+            .into()
+    };
+    let label = |name: &'static str| {
+        text(name)
+            .size(typography::METADATA_SIZE)
+            .font(typography::MEDIUM)
+            .color(theme.colors.text())
+    };
+    let mut chips = row![].spacing(5);
+    for (index, service) in key_services::SERVICES.iter().enumerate() {
+        chips = chips.push(chip(
+            row![
+                iced::widget::image(service.logo(theme.colors.is_light))
+                    .width(16)
+                    .height(16),
+                label(service.name),
+            ]
+            .spacing(5)
+            .align_y(Alignment::Center)
+            .into(),
+            picked == Some(index),
+            change(KeysChange::PickService(Some(index))),
+        ));
+    }
+    chips = chips.push(chip(
+        label(tr(language, "Other…", "أخرى…")).into(),
+        form.other_service,
+        change(KeysChange::PickService(None)),
+    ));
+    chips.wrap().vertical_spacing(5).into()
 }
 
 fn copied_color(theme: &'static ThemeDefinition) -> Color {

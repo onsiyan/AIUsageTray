@@ -126,11 +126,11 @@ mod tests {
     #[test]
     #[ignore]
     fn keys_round_trip_through_credential_manager() {
-        let mut key = VaultKey::new("Test key", "Test", "", &"k".repeat(4000)).unwrap();
+        let mut key = VaultKey::new("Test key", "Test", &"k".repeat(4000)).unwrap();
         save(&key).unwrap();
         assert_eq!(get(&key.id).unwrap().as_ref(), Some(&key));
         assert!(list().unwrap().iter().any(|listed| listed.id == key.id));
-        key.edit("Renamed", "Test", "", "short").unwrap();
+        key.edit("Renamed", "Test", "short").unwrap();
         save(&key).unwrap();
         assert_eq!(get(&key.id).unwrap().unwrap().secret, "short");
         remove(&key.id).unwrap();

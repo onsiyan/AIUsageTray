@@ -20,9 +20,9 @@ can switch the Codex and Antigravity desktop apps to any saved account.
   plans cost. History is kept past the tools' own clean-up, by day, model,
   and tool, and can include other machines reached over SSH with your keys.
 - **API keys page** (the key button): keep any service's API key under a
-  name and copy it in one click, alone or ready for PowerShell, bash, or a
-  `.env` file. Keys stay in Windows Credential Manager, and a copied key is
-  kept out of clipboard history and cleared after 30 seconds.
+  name, with its service's logo, and copy it in one click. Keys stay in
+  Windows Credential Manager; the page is quick access only and reads no
+  usage from them.
 - **Themes**: built-in dark, light, and picture themes, or your own colors
   and background picture.
 - **Command line**: `ai-usage-tray-cli` for people and agents, with stable

@@ -16,13 +16,13 @@ All notable changes to this project are documented here. The format follows
   copy before updating it, replaces the earlier setup's install in place,
   and is removed from Windows' installed apps list like any other app.
 - API keys page, opened from the key button at the top left: keep any
-  service's API key (OpenAI, Anthropic, Gemini, or any other) under a name,
-  and copy it in one click as the key alone or ready for PowerShell, bash,
-  or a `.env` file. A pasted key's service and variable name are filled in
-  when its start shows them. The keys of API-key accounts already added
-  are listed too. Keys are kept in Windows Credential Manager; a copied key
-  stays out of clipboard history and cloud sync and is cleared from the
-  clipboard after 30 seconds.
+  service's API key under a name and copy it in one click. The service is
+  picked from a list of the best-known AI companies with their logos
+  (OpenAI, Claude, Gemini, xAI, DeepSeek, Mistral, and more) or named
+  freely, and a pasted key's service is picked when its start shows it.
+  The keys of API-key accounts already added are listed too. Keys are
+  kept in Windows Credential Manager; the page is quick access only and
+  reads no usage from them.
 - The app icon on the taskbar button and its thumbnail when the popup is
   set to show in the taskbar.
 - A right-click menu on the tray icon: open the popup or the Cost page,

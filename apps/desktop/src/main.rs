@@ -44,6 +44,7 @@ mod dialogs;
 mod display_options;
 mod graphics;
 mod hint;
+mod key_services;
 mod keys_tab;
 mod locale;
 mod memory_saver;
@@ -528,7 +529,7 @@ impl App {
             last_focus_lost: None,
             dashboard,
             cost: cost_tab::CostTab::load(),
-            keys: keys_tab::KeysTab::load(),
+            keys: keys_tab::KeysTab::default(),
             language: locale::default_language(),
             memory_saver: memory_saver::load_saved(),
             ui_zoom: 1.0,

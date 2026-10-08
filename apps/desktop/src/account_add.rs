@@ -332,146 +332,53 @@ pub(super) fn open_in_browser(url: &str) {
 /// Written directly with the Win32 API: iced's clipboard is tied to one
 /// window and does nothing once the tray popup has been closed and reopened.
 pub(super) fn copy_to_clipboard(text: &str) {
-    write_clipboard(text, false);
-}
-
-/// Puts a secret on the clipboard, marked so that Windows keeps it out of
-/// clipboard history (Win+V), cloud clipboard sync, and clipboard monitors.
-/// Returns the clipboard's sequence number after the copy, for
-/// [`clear_clipboard_if_unchanged`].
-pub(super) fn copy_secret_to_clipboard(text: &str) -> Option<u32> {
-    write_clipboard(text, true)
-}
-
-/// Empties the clipboard if nothing was copied since the copy that left it
-/// at `sequence`, so a secret does not linger there.
-pub(super) fn clear_clipboard_if_unchanged(sequence: u32) {
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::System::DataExchange::{
-            CloseClipboard, EmptyClipboard, GetClipboardSequenceNumber,
-        };
-        // SAFETY: plain clipboard calls, with the clipboard closed again
-        // after it was opened.
-        unsafe {
-            if GetClipboardSequenceNumber() != sequence || !open_clipboard() {
-                return;
-            }
-            if GetClipboardSequenceNumber() == sequence {
-                EmptyClipboard();
-            }
-            CloseClipboard();
-        }
-    }
-    #[cfg(not(windows))]
-    let _ = sequence;
-}
-
-/// Opens the clipboard for one of the app's windows. With no owner window,
-/// EmptyClipboard leaves the clipboard ownerless and SetClipboardData then
-/// fails. Another program may hold the clipboard for a moment; try a few
-/// times.
-#[cfg(windows)]
-fn open_clipboard() -> bool {
-    use windows_sys::Win32::System::DataExchange::OpenClipboard;
-    let owner = own_window();
-    (0..5).any(|attempt| {
-        if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        // SAFETY: `owner` is one of this process's windows, or null.
-        unsafe { OpenClipboard(owner) != 0 }
-    })
-}
-
-fn write_clipboard(text: &str, private: bool) -> Option<u32> {
     #[cfg(windows)]
     {
         use windows_sys::Win32::{
-            Foundation::{GlobalFree, HANDLE},
+            Foundation::GlobalFree,
             System::{
-                DataExchange::{
-                    CloseClipboard, EmptyClipboard, GetClipboardSequenceNumber,
-                    RegisterClipboardFormatW, SetClipboardData,
-                },
+                DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
                 Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
             },
         };
         const CF_UNICODETEXT: u32 = 13;
-
-        /// Copies `bytes` into memory the clipboard can take, or null.
-        unsafe fn global_copy(bytes: &[u8]) -> HANDLE {
-            // SAFETY: the allocation is `bytes.len()` long and filled from
-            // `bytes`; the caller hands it to the clipboard or frees it.
-            unsafe {
-                let memory = GlobalAlloc(GMEM_MOVEABLE, bytes.len().max(1));
-                if memory.is_null() {
-                    return memory;
+        let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+        let bytes = wide.len() * std::mem::size_of::<u16>();
+        // SAFETY: the allocation is `bytes` long and filled from `wide`; once
+        // SetClipboardData succeeds the system owns it, otherwise it is freed.
+        unsafe {
+            // With no owner window, EmptyClipboard leaves the clipboard
+            // ownerless and SetClipboardData then fails, so one of the app's
+            // own windows takes ownership. Another program may hold the
+            // clipboard for a moment; try a few times.
+            let owner = own_window();
+            if !(0..5).any(|attempt| {
+                if attempt > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
                 }
-                let target = GlobalLock(memory).cast::<u8>();
+                OpenClipboard(owner) != 0
+            }) {
+                return;
+            }
+            EmptyClipboard();
+            let memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+            if !memory.is_null() {
+                let target = GlobalLock(memory).cast::<u16>();
                 if target.is_null() {
                     GlobalFree(memory);
-                    return std::ptr::null_mut();
+                } else {
+                    std::ptr::copy_nonoverlapping(wide.as_ptr(), target, wide.len());
+                    GlobalUnlock(memory);
+                    if SetClipboardData(CF_UNICODETEXT, memory).is_null() {
+                        GlobalFree(memory);
+                    }
                 }
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), target, bytes.len());
-                GlobalUnlock(memory);
-                memory
-            }
-        }
-        /// Sets `format` to `bytes`, freeing the memory if it is refused.
-        unsafe fn set(format: u32, bytes: &[u8]) -> bool {
-            // SAFETY: once SetClipboardData succeeds the system owns the
-            // memory, otherwise it is freed here.
-            unsafe {
-                let memory = global_copy(bytes);
-                if memory.is_null() {
-                    return false;
-                }
-                if SetClipboardData(format, memory).is_null() {
-                    GlobalFree(memory);
-                    return false;
-                }
-                true
-            }
-        }
-        fn format(name: &str) -> u32 {
-            let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
-            // SAFETY: the name is NUL-terminated.
-            unsafe { RegisterClipboardFormatW(name.as_ptr()) }
-        }
-
-        let wide: Vec<u8> = text
-            .encode_utf16()
-            .chain(Some(0))
-            .flat_map(u16::to_ne_bytes)
-            .collect();
-        if !open_clipboard() {
-            return None;
-        }
-        // SAFETY: the clipboard is open by this thread until CloseClipboard.
-        unsafe {
-            EmptyClipboard();
-            let copied = set(CF_UNICODETEXT, &wide);
-            if copied && private {
-                // The formats Windows reads to leave a copy out of history,
-                // cloud sync, and monitoring apps.
-                let zero = 0_u32.to_ne_bytes();
-                set(
-                    format("ExcludeClipboardContentFromMonitorProcessing"),
-                    &zero,
-                );
-                set(format("CanIncludeInClipboardHistory"), &zero);
-                set(format("CanUploadToCloudClipboard"), &zero);
             }
             CloseClipboard();
-            copied.then(|| GetClipboardSequenceNumber())
         }
     }
     #[cfg(not(windows))]
-    {
-        let _ = (text, private);
-        None
-    }
+    let _ = text;
 }
 
 /// A top-level window of this process, to own the clipboard.
