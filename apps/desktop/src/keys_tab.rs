@@ -368,7 +368,12 @@ fn account_rows(entries: &[AccountUsageEntry]) -> Vec<Row> {
             rows.push(Row {
                 reference: KeyRef::Account(entry.account.id, *field),
                 name: account_name(&entry.account),
-                service: format!("{} · {label}", provider.display_name()),
+                // Every row is an API key; only the other kinds are named.
+                service: if *label == "API key" {
+                    provider.display_name().to_string()
+                } else {
+                    format!("{} · {label}", provider.display_name())
+                },
                 // A team ID is not a secret; everything else is masked.
                 masked: if *label == "Team ID" {
                     value
