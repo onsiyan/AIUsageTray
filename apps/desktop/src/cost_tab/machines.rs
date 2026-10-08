@@ -204,17 +204,19 @@ impl Machines {
                     .map(|host| {
                         let cache_directory = &cache_directory;
                         scope.spawn(move || {
-                            let result = remote::fetch(host, remote::SYNC_TIMEOUT).map(|reading| {
-                                if let Err(error) =
-                                    remote::store(cache_directory, &host.name, &reading)
-                                {
-                                    preview_log(format!(
-                                        "keeping {}'s reading failed: {error}",
-                                        host.name
-                                    ));
-                                }
-                                reading.synced_at
-                            });
+                            let known = remote::stored(cache_directory, &host.name);
+                            let result = remote::fetch(host, known.as_ref(), remote::SYNC_TIMEOUT)
+                                .map(|reading| {
+                                    if let Err(error) =
+                                        remote::store(cache_directory, &host.name, &reading)
+                                    {
+                                        preview_log(format!(
+                                            "keeping {}'s reading failed: {error}",
+                                            host.name
+                                        ));
+                                    }
+                                    reading.synced_at
+                                });
                             (host.name.clone(), result)
                         })
                     })

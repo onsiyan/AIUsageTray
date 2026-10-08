@@ -138,7 +138,7 @@ mod windows {
         refresh::{RefreshCadence, RefreshCoordinatorConfig, RefreshReason, RefreshStatus},
         runtime::UsageRuntime,
         storage::{SqliteStore, default_accounts_database_path},
-        transport::{ReqwestUsageHttpTransport, UsageHttpTransport},
+        transport::{ReqwestUsageHttpTransport, USAGE_REQUEST_TIMEOUT, UsageHttpTransport},
         usage::{UsageAdapterErrorCode, UsageSnapshotStore},
     };
     use usage_monitor_windows::{
@@ -186,7 +186,7 @@ mod windows {
                 .map_err(|error| format!("could not open the accounts database: {error}"))?,
         );
         let transport = Arc::new(
-            ReqwestUsageHttpTransport::new(Duration::from_secs(45))
+            ReqwestUsageHttpTransport::new(USAGE_REQUEST_TIMEOUT)
                 .map_err(|error| format!("could not create the provider transport: {error}"))?,
         );
         let oauth_store = Arc::new(WindowsCredentialManagerStore);

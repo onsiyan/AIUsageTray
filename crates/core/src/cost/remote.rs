@@ -6,8 +6,11 @@
 //! `python3`; `remote/scan.ps1` for Windows, run by Windows PowerShell) that
 //! reads the machine's logs by the same rules as this PC's reader and prints
 //! the usage summed by half hour and model. Nothing is installed; the script
-//! keeps a small state file there so later runs read only what is new.
+//! keeps a small state file there so later runs read only what is new, and
+//! a reply carries a token: given back on the next sync, the machine sends
+//! only the rows that changed since. The connection is compressed.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -24,7 +27,7 @@ const WINDOWS_SCRIPT: &str = include_str!("remote/scan.ps1");
 /// Machines the user added, one per line: `name<TAB>target<TAB>os`.
 const HOSTS_FILE: &str = "ssh-hosts.txt";
 /// The reply's version, which the scripts print as `usage_monitor`.
-const REPLY_VERSION: u64 = 1;
+const REPLY_VERSION: u64 = 2;
 /// The line that ends the Windows script on the input.
 const WINDOWS_SCRIPT_END: &str = "#usage-monitor-end";
 /// Reads the Windows script up to [`WINDOWS_SCRIPT_END`] and runs it; exits
@@ -121,6 +124,10 @@ pub struct RemoteUsage {
     pub found: Vec<CostTool>,
     pub rows: Vec<RemoteRow>,
     pub synced_at: DateTime<Utc>,
+    /// The machine's name for this reading; the next sync gives it back to
+    /// get only what changed since.
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
 /// A model's usage in one half hour.
@@ -219,7 +226,17 @@ fn config_hosts(contents: &str) -> Vec<String> {
 }
 
 /// Reads one machine's usage. Blocking, for up to `timeout`.
-pub fn fetch(host: &SshHost, timeout: Duration) -> Result<RemoteUsage, RemoteError> {
+/// Reads `host`. With `known`, its last reading, the machine sends only
+/// what changed since, and the reply is merged into it.
+pub fn fetch(
+    host: &SshHost,
+    known: Option<&RemoteUsage>,
+    timeout: Duration,
+) -> Result<RemoteUsage, RemoteError> {
+    let token = known
+        .and_then(|known| known.token.as_deref())
+        .filter(|token| is_token(token))
+        .unwrap_or_default();
     let (remote_command, script) = match host.os {
         RemoteOs::Unix => ("python3 -".to_owned(), UNIX_SCRIPT),
         RemoteOs::Windows => {
@@ -242,12 +259,8 @@ pub fn fetch(host: &SshHost, timeout: Duration) -> Result<RemoteUsage, RemoteErr
         }
     };
     let script = match host.os {
-        RemoteOs::Unix => script.to_owned(),
-        RemoteOs::Windows => format!(
-            "{script}
-{WINDOWS_SCRIPT_END}
-"
-        ),
+        RemoteOs::Unix => format!("KNOWN = \"{token}\"\n{script}"),
+        RemoteOs::Windows => format!("$Known = '{token}'\n{script}\n{WINDOWS_SCRIPT_END}\n"),
     };
     let mut command = Command::new(ssh_program());
     command
@@ -258,6 +271,9 @@ pub fn fetch(host: &SshHost, timeout: Duration) -> Result<RemoteUsage, RemoteErr
             "ConnectTimeout=15",
             "-o",
             "ServerAliveInterval=20",
+            // The replies are JSON, which shrinks to about a quarter.
+            "-o",
+            "Compression=yes",
             "-T",
             "--",
             &host.target,
@@ -308,7 +324,7 @@ pub fn fetch(host: &SshHost, timeout: Duration) -> Result<RemoteUsage, RemoteErr
     let stdout = out_reader.join().unwrap_or_default();
     let stderr = err_reader.join().unwrap_or_default();
 
-    if let Some(usage) = parse_reply(&stdout, Utc::now()) {
+    if let Some(usage) = parse_reply(&stdout, known, Utc::now()) {
         return Ok(usage);
     }
     Err(classify_failure(status.code(), &stderr, host.os))
@@ -385,11 +401,26 @@ struct Reply {
     found: Vec<CostTool>,
     #[serde(default)]
     rows: Vec<ReplyRow>,
+    #[serde(default)]
+    token: String,
+    /// Only the rows that changed since the token the app gave.
+    #[serde(default)]
+    partial: bool,
+}
+
+/// A token the machine made: hex digits, so it is safe to put in the script.
+fn is_token(token: &str) -> bool {
+    !token.is_empty() && token.len() <= 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// The script's reply: the last output line that is one. Lines before it
-/// (a login banner, say) are skipped.
-fn parse_reply(stdout: &str, synced_at: DateTime<Utc>) -> Option<RemoteUsage> {
+/// (a login banner, say) are skipped. A partial reply is merged into
+/// `known`.
+fn parse_reply(
+    stdout: &str,
+    known: Option<&RemoteUsage>,
+    synced_at: DateTime<Utc>,
+) -> Option<RemoteUsage> {
     let reply = stdout
         .lines()
         .rev()
@@ -432,11 +463,32 @@ fn parse_reply(stdout: &str, synced_at: DateTime<Utc>) -> Option<RemoteUsage> {
             },
         )
         .collect();
+    let rows = if reply.partial {
+        merge_rows(&known?.rows, rows)
+    } else {
+        rows
+    };
     Some(RemoteUsage {
         found: reply.found,
         rows,
         synced_at,
+        token: Some(reply.token).filter(|token| is_token(token)),
     })
+}
+
+/// `known` with the changed rows put in; a row that is now zero is gone.
+fn merge_rows(known: &[RemoteRow], changed: Vec<RemoteRow>) -> Vec<RemoteRow> {
+    let key = |row: &RemoteRow| (row.tool, row.slot, row.model.clone(), row.long_context);
+    let mut rows = known
+        .iter()
+        .map(|row| (key(row), row.clone()))
+        .collect::<BTreeMap<_, _>>();
+    for row in changed {
+        rows.insert(key(&row), row);
+    }
+    rows.into_values()
+        .filter(|row| row.tokens != TokenCounts::default())
+        .collect()
 }
 
 /// Where a machine's last reading is kept, so the page shows it at once.
@@ -520,16 +572,46 @@ mod tests {
 
     #[test]
     fn replies_parse_past_a_login_banner() {
-        let stdout = "Welcome to the server\n{\"usage_monitor\":1,\"found\":[\"codex\"],\"rows\":[[\"codex\",1791408600,\"gpt-5.5\",1,10,20,0,0,5,2]]}\n";
-        let usage = parse_reply(stdout, Utc::now()).unwrap();
+        let stdout = "Welcome to the server\n{\"usage_monitor\":2,\"found\":[\"codex\"],\"rows\":[[\"codex\",1791408600,\"gpt-5.5\",1,10,20,0,0,5,2]]}\n";
+        let usage = parse_reply(stdout, None, Utc::now()).unwrap();
         assert_eq!(usage.found, vec![CostTool::Codex]);
         assert_eq!(usage.rows.len(), 1);
         let row = &usage.rows[0];
         assert!(row.long_context);
         assert_eq!(row.tokens.cache_read, 20);
         assert_eq!(row.tokens.reasoning, 2);
-        assert!(parse_reply("{\"usage_monitor\":2,\"rows\":[]}", Utc::now()).is_none());
-        assert!(parse_reply("bash: python3: command not found", Utc::now()).is_none());
+        assert!(parse_reply("{\"usage_monitor\":1,\"rows\":[]}", None, Utc::now()).is_none());
+        assert!(parse_reply("bash: python3: command not found", None, Utc::now()).is_none());
+    }
+
+    #[test]
+    fn partial_replies_merge_into_the_last_reading() {
+        let whole = concat!(
+            "{\"usage_monitor\":2,\"token\":\"ab12\",\"partial\":false,\"found\":[\"codex\"],\"rows\":[",
+            "[\"codex\",1800,\"a\",0,1,0,0,0,1,0],[\"codex\",3600,\"a\",0,2,0,0,0,2,0]]}"
+        );
+        let known = parse_reply(whole, None, Utc::now()).unwrap();
+        assert_eq!(known.token.as_deref(), Some("ab12"));
+
+        // The 3600 row grew, the 1800 one is gone, and a new one came.
+        let changed = concat!(
+            "{\"usage_monitor\":2,\"token\":\"cd34\",\"partial\":true,\"found\":[\"codex\"],\"rows\":[",
+            "[\"codex\",3600,\"a\",0,5,0,0,0,2,0],[\"codex\",1800,\"a\",0,0,0,0,0,0,0],",
+            "[\"codex\",5400,\"b\",0,7,0,0,0,1,0]]}"
+        );
+        let merged = parse_reply(changed, Some(&known), Utc::now()).unwrap();
+        let rows = merged
+            .rows
+            .iter()
+            .map(|row| (row.slot, row.model.as_str(), row.tokens.input))
+            .collect::<Vec<_>>();
+        assert_eq!(rows, [(3600, "a", 5), (5400, "b", 7)]);
+        assert_eq!(merged.token.as_deref(), Some("cd34"));
+
+        // Nothing to merge into: the reading is not used.
+        assert!(parse_reply(changed, None, Utc::now()).is_none());
+        // A token that is not hex never reaches the script.
+        assert!(!is_token("ab'; rm -rf ~"));
     }
 
     #[test]

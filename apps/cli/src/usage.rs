@@ -112,7 +112,7 @@ pub(super) async fn run_usage_scheduler(
     }
 
     let transport = Arc::new(
-        ReqwestUsageHttpTransport::new(Duration::from_secs(45))
+        ReqwestUsageHttpTransport::new(USAGE_REQUEST_TIMEOUT)
             .map_err(|error| CliFailure::runtime(error.to_string()))?,
     );
     let oauth_store = Arc::new(WindowsCredentialManagerStore);
@@ -244,7 +244,7 @@ pub(super) async fn collect_refresh_results(
     snapshot_store: &Arc<dyn UsageSnapshotStore>,
 ) -> Result<Vec<(AccountRecord, usage_monitor_core::refresh::RefreshOutcome)>, CliFailure> {
     let transport = Arc::new(
-        ReqwestUsageHttpTransport::new(Duration::from_secs(45))
+        ReqwestUsageHttpTransport::new(USAGE_REQUEST_TIMEOUT)
             .map_err(|error| CliFailure::runtime(error.to_string()))?,
     );
     let oauth_store = Arc::new(WindowsCredentialManagerStore);

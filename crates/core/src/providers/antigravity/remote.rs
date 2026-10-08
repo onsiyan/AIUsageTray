@@ -25,6 +25,35 @@ pub(super) fn cached_code_assist(account_id: AccountId) -> Option<CodeAssistInfo
         .cloned()
 }
 
+/// The endpoint that last answered each operation. It is tried first next
+/// time, so one that stalls is waited on once, not on every refresh.
+static ANSWERING_ENDPOINT: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+impl AntigravityUsageAdapter {
+    /// The endpoints in the order to try them for `operation`.
+    fn endpoints_for(&self, operation: &str) -> Vec<&Url> {
+        let answering = ANSWERING_ENDPOINT
+            .lock()
+            .ok()
+            .and_then(|endpoints| endpoints.get(operation).cloned());
+        let mut endpoints = self.base_urls.iter().collect::<Vec<_>>();
+        if let Some(index) = answering
+            .and_then(|answering| endpoints.iter().position(|url| url.as_str() == answering))
+        {
+            let answering = endpoints.remove(index);
+            endpoints.insert(0, answering);
+        }
+        endpoints
+    }
+}
+
+fn note_answering_endpoint(operation: &str, base_url: &Url) {
+    if let Ok(mut endpoints) = ANSWERING_ENDPOINT.lock() {
+        endpoints.insert(operation.to_owned(), base_url.as_str().to_owned());
+    }
+}
+
 pub(super) fn store_code_assist(account_id: AccountId, info: Option<CodeAssistInfo>) {
     if let Ok(mut cache) = CODE_ASSIST_CACHE.lock() {
         match info {
@@ -79,7 +108,7 @@ impl AntigravityUsageAdapter {
     ) -> Result<UsageHttpResponse, TransportError> {
         let mut last_response = None;
         let mut last_error = None;
-        for base_url in &self.base_urls {
+        for base_url in self.endpoints_for(operation) {
             match self
                 .post_to(base_url, operation, body.clone(), material)
                 .await
@@ -88,6 +117,9 @@ impl AntigravityUsageAdapter {
                     if response.is_success()
                         || !is_retryable_remote_status(response.status_code) =>
                 {
+                    if response.is_success() {
+                        note_answering_endpoint(operation, base_url);
+                    }
                     return Ok(response);
                 }
                 Ok(response) => {
@@ -115,7 +147,7 @@ impl AntigravityUsageAdapter {
     ) -> Result<UsageHttpResponse, TransportError> {
         let mut last_response = None;
         let mut last_error = None;
-        for base_url in &self.base_urls {
+        for base_url in self.endpoints_for(operation) {
             match self
                 .post_to_with_user_agent(
                     base_url,
@@ -126,7 +158,10 @@ impl AntigravityUsageAdapter {
                 )
                 .await
             {
-                Ok(response) if response.is_success() => return Ok(response),
+                Ok(response) if response.is_success() => {
+                    note_answering_endpoint(operation, base_url);
+                    return Ok(response);
+                }
                 Ok(response) => last_response = Some(response),
                 Err(error) => last_error = Some(error),
             }

@@ -3,8 +3,12 @@
 # Windows PowerShell; nothing is installed. Follows the same rules as the
 # app's own reader (crates/core/src/cost/scan.rs). A small state file under
 # %LOCALAPPDATA%\UsageMonitor lets the next run read only what the logs added.
+# The app puts `$Known = '<token>'` before the script: the token of the last
+# reply it kept. When it matches the one this machine last sent, only the
+# rows that changed since are sent.
 $ErrorActionPreference = 'Stop'
-$Version = 1
+$Version = 2
+if ($null -eq $Known) { $Known = '' }
 # Bumped when the state file's shape or what it keeps changes.
 $CacheVersion = 2
 $SlotSeconds = 1800
@@ -22,6 +26,8 @@ if ($env:CLAUDE_CONFIG_DIR -and $env:CLAUDE_CONFIG_DIR.Trim()) {
 }
 $cacheDir = Join-Path $env:LOCALAPPDATA 'UsageMonitor'
 $cachePath = Join-Path $cacheDir 'remote-scan.txt'
+# The token and rows of the last reply.
+$sentPath = Join-Path $cacheDir 'remote-sent.txt'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 $invariant = [Globalization.CultureInfo]::InvariantCulture
 
@@ -318,12 +324,50 @@ foreach ($record in $responses.Values) {
     for ($index = 0; $index -lt 6; $index++) { $total[$index] += $record[$index + 3] }
 }
 
+$sentToken = ''
+$sentRows = @{}
+try {
+    if (Test-Path -LiteralPath $sentPath) {
+        $lines = [IO.File]::ReadAllLines($sentPath, $utf8)
+        if ($lines.Length -gt 0) { $sentToken = $lines[0] }
+        for ($index = 1; $index -lt $lines.Length; $index++) {
+            $tab = $lines[$index].IndexOf("`t")
+            if ($tab -gt 0) { $sentRows[$lines[$index].Substring(0, $tab)] = $lines[$index].Substring($tab + 1) }
+        }
+    }
+} catch { $sentToken = ''; $sentRows = @{} }
+$partial = ($Known -ne '') -and ($Known -eq $sentToken)
+$token = -join (1..16 | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
+
+$changed = @{}
+foreach ($key in $totals.Keys) {
+    if (-not $partial -or $sentRows[$key] -ne ($totals[$key] -join "`t")) { $changed[$key] = $totals[$key] }
+}
+if ($partial) {
+    # A row that is gone is sent as zero, which the app drops.
+    foreach ($key in $sentRows.Keys) {
+        if (-not $totals.ContainsKey($key)) { $changed[$key] = New-Object 'int64[]' 6 }
+    }
+}
+try {
+    $builder = New-Object Text.StringBuilder
+    [void]$builder.Append("$token`n")
+    foreach ($key in $totals.Keys) { [void]$builder.Append("$key`t" + ($totals[$key] -join "`t") + "`n") }
+    [void](New-Item -ItemType Directory -Force -Path $cacheDir)
+    [IO.File]::WriteAllText($sentPath + '.tmp', $builder.ToString(), $utf8)
+    Move-Item -LiteralPath ($sentPath + '.tmp') -Destination $sentPath -Force
+} catch {
+    # Without a record of what was sent, the next reply must be whole.
+    $token = ''
+}
+
 $out = New-Object Text.StringBuilder
-[void]$out.Append('{"usage_monitor":' + $Version + ',"found":[')
+[void]$out.Append('{"usage_monitor":' + $Version + ',"token":"' + $token + '","partial":' +
+    $(if ($partial) { 'true' } else { 'false' }) + ',"found":[')
 [void]$out.Append((($found | ForEach-Object { '"' + $_ + '"' }) -join ','))
 [void]$out.Append('],"rows":[')
 $firstRow = $true
-foreach ($key in $totals.Keys) {
+foreach ($key in $changed.Keys) {
     $parts = $key.Split('|')
     $tool = $parts[0]
     $slot = $parts[1]
@@ -332,7 +376,7 @@ foreach ($key in $totals.Keys) {
     if (-not $firstRow) { [void]$out.Append(',') }
     $firstRow = $false
     [void]$out.Append('["' + $tool + '",' + $slot + ',' + (ConvertTo-JsonString $model) + ',' + $long + ',' +
-        ($totals[$key] -join ',') + ']')
+        ($changed[$key] -join ',') + ']')
 }
 [void]$out.Append(']}')
 [Console]::Out.WriteLine($out.ToString())

@@ -3,12 +3,15 @@
 # `python3 -`; nothing is installed. Follows the same rules as the app's own
 # reader (crates/core/src/cost/scan.rs). A small state file under
 # ~/.cache/usage-monitor lets the next run read only what the logs added.
+# The app puts `KNOWN = "<token>"` before the script: the token of the last
+# reply it kept. When it matches the one this machine last sent, only the
+# rows that changed since are sent.
 import json
 import os
 import sys
 from datetime import datetime
 
-VERSION = 1
+VERSION = 2
 # Bumped when the state file's shape or what it keeps changes.
 CACHE_VERSION = 2
 SLOT_SECONDS = 1800
@@ -32,6 +35,9 @@ else:
     ]
 cache_dir = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(home, ".cache"), "usage-monitor")
 cache_path = os.path.join(cache_dir, "remote-scan.json")
+# The token and rows of the last reply.
+sent_path = os.path.join(cache_dir, "remote-sent.json")
+known = globals().get("KNOWN", "")
 
 
 def slot_of(timestamp):
@@ -262,12 +268,40 @@ def main():
         for index, value in enumerate(record[3:9]):
             total[index] += value
 
+    try:
+        with open(sent_path, "r", encoding="utf-8") as handle:
+            sent = json.load(handle)
+        if not isinstance(sent, dict):
+            sent = {}
+    except (OSError, ValueError):
+        sent = {}
+    sent_rows = sent.get("rows", {}) if isinstance(sent.get("rows"), dict) else {}
+    partial = bool(known) and known == sent.get("token")
+    token = os.urandom(8).hex()
+
+    changed = {key: tokens for key, tokens in totals.items() if not partial or sent_rows.get(key) != tokens}
+    if partial:
+        # A row that is gone is sent as zero, which the app drops.
+        for key in sent_rows:
+            if key not in totals:
+                changed[key] = [0, 0, 0, 0, 0, 0]
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        temporary = sent_path + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump({"token": token, "rows": totals}, handle)
+        os.replace(temporary, sent_path)
+    except OSError:
+        # Without a record of what was sent, the next reply must be whole.
+        token = ""
+
     rows = []
-    for key, tokens in totals.items():
+    for key, tokens in changed.items():
         tool, slot, rest = key.split("|", 2)
         model, long_context = rest.rsplit("|", 1)
         rows.append([tool, int(slot), model, int(long_context)] + tokens)
-    sys.stdout.write(json.dumps({"usage_monitor": VERSION, "found": found, "rows": rows}, ensure_ascii=True))
+    reply = {"usage_monitor": VERSION, "found": found, "rows": rows, "token": token, "partial": partial}
+    sys.stdout.write(json.dumps(reply, ensure_ascii=True))
     sys.stdout.write("\n")
 
 

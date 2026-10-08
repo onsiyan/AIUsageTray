@@ -6,7 +6,6 @@ use std::{
     path::{Path, PathBuf},
     process::{self, Stdio},
     sync::Arc,
-    time::Duration,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, BufReader},
@@ -36,7 +35,9 @@ use usage_monitor_core::{
     },
     runtime::UsageRuntime,
     storage::{SqliteStore, default_accounts_database_path},
-    transport::{ReqwestUsageHttpTransport, TransportError, UsageHttpTransport},
+    transport::{
+        ReqwestUsageHttpTransport, TransportError, USAGE_REQUEST_TIMEOUT, UsageHttpTransport,
+    },
     usage::{
         UsageAdapter, UsageAdapterError, UsageProbeResult, UsageSnapshot, UsageSnapshotStore,
         UsageWindowKind,

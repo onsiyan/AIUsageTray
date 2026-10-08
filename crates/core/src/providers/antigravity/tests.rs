@@ -54,9 +54,11 @@ async fn quota_summary_tries_next_host_after_forbidden_response() {
     });
     let adapter =
         AntigravityUsageAdapter::new(transport.clone(), Arc::new(StaticAntigravityAuth)).unwrap();
+    // An operation of its own: the answering endpoint is remembered
+    // process-wide, and other tests must not see this one's.
     let response = adapter
         .post_remote_best_effort(
-            "v1internal:retrieveUserQuotaSummary",
+            "v1internal:fallbackOrderTest",
             json!({}),
             &AccountAuthMaterial {
                 bearer_token: Some("test-token".to_owned()),
@@ -78,6 +80,37 @@ async fn quota_summary_tries_next_host_after_forbidden_response() {
     assert_eq!(
         *transport.requested_user_agents.lock().unwrap(),
         [QUOTA_SUMMARY_USER_AGENT; 3]
+    );
+}
+
+#[tokio::test]
+async fn the_endpoint_that_answered_is_tried_first_next_time() {
+    let transport = Arc::new(QuotaSummaryFallbackTransport {
+        statuses: Mutex::new(VecDeque::from([503, 200, 200])),
+        requested_hosts: Mutex::new(Vec::new()),
+        requested_user_agents: Mutex::new(Vec::new()),
+    });
+    let adapter =
+        AntigravityUsageAdapter::new(transport.clone(), Arc::new(StaticAntigravityAuth)).unwrap();
+    let material = AccountAuthMaterial {
+        bearer_token: Some("test-token".to_owned()),
+        ..AccountAuthMaterial::default()
+    };
+    for _ in 0..2 {
+        let response = adapter
+            .post_remote("v1internal:answeringEndpointTest", json!({}), &material)
+            .await
+            .unwrap();
+        assert_eq!(response.status_code, 200);
+    }
+
+    assert_eq!(
+        *transport.requested_hosts.lock().unwrap(),
+        [
+            "daily-cloudcode-pa.sandbox.googleapis.com",
+            "daily-cloudcode-pa.googleapis.com",
+            "daily-cloudcode-pa.googleapis.com",
+        ]
     );
 }
 

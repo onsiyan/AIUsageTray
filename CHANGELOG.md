@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- A usage request gives up after 15 seconds instead of 45, so one provider
+  that stalls no longer holds the whole refresh.
+- Antigravity starts with the server that answered last time instead of
+  always trying the test server first.
+- Syncing another machine sends only the half hours that changed since the
+  last sync, over a compressed connection: about 100 bytes a sync instead
+  of the machine's whole history.
+
 ## [0.2.0] - 2026-10-08
 
 ### Added

@@ -44,6 +44,10 @@ pub trait UsageHttpTransport: Send + Sync {
     async fn send(&self, request: UsageHttpRequest) -> Result<UsageHttpResponse, TransportError>;
 }
 
+/// How long a usage refresh waits for one request. Providers answer within
+/// a few seconds; one that stalls should not hold up the whole refresh.
+pub const USAGE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 pub struct ReqwestUsageHttpTransport {
     client: Client,
 }

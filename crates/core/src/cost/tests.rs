@@ -297,6 +297,7 @@ fn other_machines_join_the_report_on_this_pcs_calendar() {
         // Yesterday's noon, and 40 days before it.
         rows: vec![row(noon - noon % 1800, 10), row(noon - 40 * 86_400, 99)],
         synced_at: Utc::now(),
+        token: None,
     };
     let report = scan_report_with(
         &roots(home.path()),
