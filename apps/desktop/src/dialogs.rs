@@ -468,13 +468,13 @@ pub(super) fn api_key_dialog<'a>(
         _ => locale::text(language, locale::Text::OpenRouterTitle),
     };
     let hint = if is_cursor {
-        locale::Text::CursorSessionHint
+        Some(locale::Text::CursorSessionHint)
     } else if is_xai {
-        locale::Text::XaiHint
+        Some(locale::Text::XaiHint)
     } else if is_mimo {
-        locale::Text::MiMoHint
+        Some(locale::Text::MiMoHint)
     } else {
-        locale::Text::OpenRouterCredentialHint
+        None
     };
     // Cursor's and MiMo's cookies are copied from their signed-in sites.
     let open_site = if is_cursor {
@@ -502,12 +502,14 @@ pub(super) fn api_key_dialog<'a>(
                 .size(typography::ACCOUNT_NAME_SIZE)
                 .font(typography::EMPHASIS)
                 .color(active_theme.colors.text()),
+        ]
+        .push(hint.map(|hint| {
             text(locale::text(language, hint))
                 .size(typography::METADATA_SIZE)
                 .font(typography::MEDIUM)
-                .color(active_theme.colors.muted_text()),
-            api_key_input,
-        ]
+                .color(active_theme.colors.muted_text())
+        }))
+        .push(api_key_input)
         .push(management_key_input)
         .push(
             row![]

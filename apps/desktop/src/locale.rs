@@ -186,7 +186,6 @@ pub enum Text {
     DeepSeekTitle,
     OpenRouterApiKey,
     OpenRouterManagementKey,
-    OpenRouterCredentialHint,
     AccountAddRunning,
     AccountAdded,
     AccountAddFailed,
@@ -265,7 +264,7 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, OffPeakRate) => "Off-peak hours: normal quota rate",
         (English, XaiTitle) => "Add xAI account",
         (English, XaiHint) => {
-            "Use a Management key from console.x.ai (Settings > Management Keys) and its team ID. Keys are passed securely and are never placed in command-line arguments."
+            "Use a Management key from console.x.ai (Settings > Management Keys) and its team ID."
         }
         (English, XaiManagementKey) => "Management API key",
         (English, XaiTeamId) => "Team ID",
@@ -437,9 +436,6 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, DeepSeekTitle) => "Add DeepSeek account",
         (English, OpenRouterApiKey) => "API key",
         (English, OpenRouterManagementKey) => "Management key (optional)",
-        (English, OpenRouterCredentialHint) => {
-            "Keys are passed securely and are never placed in command-line arguments."
-        }
         (English, AccountAddRunning) => "Finish signing in to",
         (English, AccountAdded) => "Account added for",
         (English, AccountAddFailed) => "Could not add account",
@@ -501,7 +497,7 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (Arabic, OffPeakRate) => "خارج الذروة: استهلاك الحد عادي",
         (Arabic, XaiTitle) => "إضافة حساب xAI",
         (Arabic, XaiHint) => {
-            "استخدم مفتاح إدارة من console.x.ai (Settings > Management Keys) مع معرّف الفريق. تُمرَّر المفاتيح بأمان ولا توضع في وسائط سطر الأوامر."
+            "استخدم مفتاح إدارة من console.x.ai (Settings > Management Keys) مع معرّف الفريق."
         }
         (Arabic, XaiManagementKey) => "مفتاح Management API",
         (Arabic, XaiTeamId) => "معرّف الفريق (Team ID)",
@@ -667,7 +663,6 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (Arabic, DeepSeekTitle) => "إضافة حساب DeepSeek",
         (Arabic, OpenRouterApiKey) => "مفتاح API",
         (Arabic, OpenRouterManagementKey) => "مفتاح الإدارة (اختياري)",
-        (Arabic, OpenRouterCredentialHint) => "تُمرر المفاتيح بأمان ولا توضع ضمن معاملات سطر الأوامر.",
         (Arabic, AccountAddRunning) => "أكمل تسجيل الدخول إلى",
         (Arabic, AccountAdded) => "أُضيف الحساب لمزود",
         (Arabic, AccountAddFailed) => "تعذرت إضافة الحساب",
