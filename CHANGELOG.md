@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-08
+
+### Added
+
+- API keys page, opened from the key button at the top left: keep any
+  service's API key under a name and copy it in one click. The service is
+  picked from a list of the best-known AI companies with their logos
+  (OpenAI, Claude, Gemini, xAI, DeepSeek, Mistral, and more) or named
+  freely, and a pasted key's service is picked when its start shows it.
+  The keys of API-key accounts already added are listed too. Keys are
+  kept in Windows Credential Manager; the page is quick access only and
+  reads no usage from them.
+
 ## [0.1.0] - 2026-10-08
 
 ### Added
@@ -15,14 +28,6 @@ All notable changes to this project are documented here. The format follows
   add a desktop shortcut, and open the app at the end. It closes a running
   copy before updating it, replaces the earlier setup's install in place,
   and is removed from Windows' installed apps list like any other app.
-- API keys page, opened from the key button at the top left: keep any
-  service's API key under a name and copy it in one click. The service is
-  picked from a list of the best-known AI companies with their logos
-  (OpenAI, Claude, Gemini, xAI, DeepSeek, Mistral, and more) or named
-  freely, and a pasted key's service is picked when its start shows it.
-  The keys of API-key accounts already added are listed too. Keys are
-  kept in Windows Credential Manager; the page is quick access only and
-  reads no usage from them.
 - The app icon on the taskbar button and its thumbnail when the popup is
   set to show in the taskbar.
 - A right-click menu on the tray icon: open the popup or the Cost page,
