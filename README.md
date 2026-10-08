@@ -19,6 +19,10 @@ can switch the Codex and Antigravity desktop apps to any saved account.
   API list prices, read from their local session logs, against what your
   plans cost. History is kept past the tools' own clean-up, by day, model,
   and tool, and can include other machines reached over SSH with your keys.
+- **API keys page** (the key button): keep any service's API key under a
+  name and copy it in one click, alone or ready for PowerShell, bash, or a
+  `.env` file. Keys stay in Windows Credential Manager, and a copied key is
+  kept out of clipboard history and cleared after 30 seconds.
 - **Themes**: built-in dark, light, and picture themes, or your own colors
   and background picture.
 - **Command line**: `ai-usage-tray-cli` for people and agents, with stable
@@ -148,6 +152,7 @@ it is replaced.
 | API keys and console sessions | Credential Manager `UsageMonitor/Auth/<account-id>` |
 | Codex link and `auth.json` backups | `%LOCALAPPDATA%\UsageMonitor\` |
 | Desktop preferences | `%APPDATA%\UsageMonitor\` |
+| Kept API keys | Credential Manager `UsageMonitor/Vault/<id>` |
 
 Credentials larger than Credential Manager's 2,560-byte limit are split across
 `#partN` entries. Access tokens live only in memory. Data written under the
