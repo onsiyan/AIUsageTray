@@ -116,7 +116,7 @@ const API_KEY_ENVIRONMENT: &[&str] = &[
 ];
 
 /// The sign-in helper shipped next to the CLI.
-pub(super) const LOGIN_HELPER_BINARY: &str = "usage-monitor-login";
+pub(super) const LOGIN_HELPER_BINARY: &str = "ai-usage-tray-login";
 
 pub(super) fn build_account_add_arguments(
     provider: AccountAddProvider,
@@ -269,7 +269,7 @@ pub(super) async fn execute_account_add(
         return Err(CliFailure::new(
             "provider_login_helper_missing",
             format!(
-                "The provider login helper is missing next to the CLI: {}. Build or install the complete workspace so its provider helpers are bundled with usage-monitor-cli.",
+                "The provider login helper is missing next to the CLI: {}. Build or install the complete workspace so its provider helpers are bundled with ai-usage-tray-cli.",
                 probe_path.display()
             ),
             1,

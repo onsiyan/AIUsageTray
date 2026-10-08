@@ -272,7 +272,7 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
             "--credentials-stdin" => arguments.credentials_stdin = true,
             "--help" | "-h" => {
                 println!(
-                    "Usage: usage-monitor-login openrouter [--database PATH] [--label LABEL] [--new] [--api-key-stdin | --credentials-stdin]\n\nReads OpenRouter credentials without printing them, stores them in Windows Credential Manager, and runs the account's usage probe. Set OPENROUTER_MANAGEMENT_API_KEY optionally for Activity. With --credentials-stdin, line 1 is the primary key and line 2 is the optional management key."
+                    "Usage: ai-usage-tray-login openrouter [--database PATH] [--label LABEL] [--new] [--api-key-stdin | --credentials-stdin]\n\nReads OpenRouter credentials without printing them, stores them in Windows Credential Manager, and runs the account's usage probe. Set OPENROUTER_MANAGEMENT_API_KEY optionally for Activity. With --credentials-stdin, line 1 is the primary key and line 2 is the optional management key."
                 );
                 std::process::exit(0);
             }

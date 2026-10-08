@@ -25,7 +25,7 @@ use std::{
 use url::Url;
 
 const DEFAULT_API_URL: &str = "https://openrouter.ai/api/v1/";
-const USER_AGENT: &str = "UsageMonitor/0.1";
+const USER_AGENT: &str = "AIUsageTray/0.1";
 const DEFAULT_KEY_DEADLINE: StdDuration = StdDuration::from_secs(4);
 const DEFAULT_OPTIONAL_DEADLINE: StdDuration = StdDuration::from_secs(4);
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;

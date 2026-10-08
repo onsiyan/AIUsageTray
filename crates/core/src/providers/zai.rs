@@ -33,7 +33,7 @@ use std::{
 use url::Url;
 
 const QUOTA_PATH: &str = "/api/monitor/usage/quota/limit";
-const USER_AGENT: &str = "UsageMonitor/0.1";
+const USER_AGENT: &str = "AIUsageTray/0.1";
 const DEFAULT_DEADLINE: Duration = Duration::from_secs(8);
 /// Clock skew allowed on a five-hour reset.
 const SKEW_SECONDS: i64 = 60;

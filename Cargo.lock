@@ -18,6 +18,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai-usage-tray"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "chrono",
+ "iced",
+ "image",
+ "lucide-icons",
+ "serde_json",
+ "tokio",
+ "tray-icon",
+ "usage-monitor-core",
+ "usage-monitor-windows",
+ "windows-sys 0.61.2",
+ "winresource",
+]
+
+[[package]]
+name = "ai-usage-tray-cli"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "clap",
+ "serde_json",
+ "tokio",
+ "usage-monitor-core",
+ "usage-monitor-windows",
+]
+
+[[package]]
+name = "ai-usage-tray-login"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "url",
+ "usage-monitor-core",
+ "usage-monitor-windows",
+]
+
+[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3699,37 +3743,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "usage-monitor"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "chrono",
- "iced",
- "image",
- "lucide-icons",
- "serde_json",
- "tokio",
- "tray-icon",
- "usage-monitor-core",
- "usage-monitor-windows",
- "windows-sys 0.61.2",
- "winresource",
-]
-
-[[package]]
-name = "usage-monitor-cli"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "clap",
- "serde_json",
- "tokio",
- "usage-monitor-core",
- "usage-monitor-windows",
-]
-
-[[package]]
 name = "usage-monitor-core"
 version = "0.1.0"
 dependencies = [
@@ -3749,19 +3762,6 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
-]
-
-[[package]]
-name = "usage-monitor-login"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "reqwest",
- "serde_json",
- "tokio",
- "url",
- "usage-monitor-core",
- "usage-monitor-windows",
 ]
 
 [[package]]

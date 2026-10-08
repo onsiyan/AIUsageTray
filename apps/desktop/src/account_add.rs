@@ -19,9 +19,9 @@ pub(super) struct DeviceSignIn {
 pub(super) fn sibling_account_cli_path(current_executable: &Path) -> std::path::PathBuf {
     let extension = std::env::consts::EXE_EXTENSION;
     let filename = if extension.is_empty() {
-        "usage-monitor-cli".to_owned()
+        "ai-usage-tray-cli".to_owned()
     } else {
-        format!("usage-monitor-cli.{extension}")
+        format!("ai-usage-tray-cli.{extension}")
     };
     current_executable
         .parent()

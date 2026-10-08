@@ -353,3 +353,8 @@ fn tray_icon_is_the_app_icon_at_32_pixels() {
     assert_eq!(pixels.len(), 32 * 32 * 4);
     assert!(pixels.chunks(4).any(|pixel| pixel[3] == 255));
 }
+
+#[test]
+fn the_window_has_the_app_icon() {
+    assert!(crate::graphics::window_icon().is_some());
+}

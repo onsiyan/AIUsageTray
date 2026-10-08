@@ -1,4 +1,4 @@
-# Usage Monitor desktop app
+# AI Usage Tray desktop app
 
 The tray app users run. It starts hidden in the notification area; one click
 on the icon shows the popup near the tray (or brings it forward), and Close
@@ -7,7 +7,7 @@ reset times, reset credits, and plan.
 
 From the popup you can:
 
-- add accounts (the app runs `usage-monitor-cli account add`, which runs the
+- add accounts (the app runs `ai-usage-tray-cli account add`, which runs the
   provider sign-in in the default browser; OpenRouter keys are typed into
   masked fields and passed through standard input) and cancel a sign-in;
 - refresh all providers, starting with the selected tab;
@@ -28,7 +28,7 @@ helper sit next to the app:
 
 ```powershell
 cargo build --workspace --release
-.\target\release\usage-monitor.exe
+.\target\release\ai-usage-tray.exe
 ```
 
 `packaging/windows/build-installer.ps1` tests and builds the workspace and

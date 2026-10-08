@@ -1,9 +1,10 @@
-; Usage Monitor setup, built with Inno Setup 6 by build-installer.ps1, which
+; AI Usage Tray setup, built with Inno Setup 6 by build-installer.ps1, which
 ; passes the version and the folder holding the release build:
-;   ISCC /DAppVersion=0.1.0 /DReleaseDir=...\target\release UsageMonitor.iss
+;   ISCC /DAppVersion=0.1.0 /DReleaseDir=...\target\release AIUsageTray.iss
 ;
-; Installs for the current Windows user, with no administrator prompt, into
-; the same folder the earlier IExpress setup used, so an update replaces it.
+; Installs for the current Windows user, with no administrator prompt. An
+; update keeps the folder of the install it replaces, and clears what the app
+; left there under its earlier name, Usage Monitor.
 
 #ifndef AppVersion
   #error AppVersion must be passed with /DAppVersion=
@@ -15,8 +16,11 @@
   #define OutputDir ReleaseDir
 #endif
 
-#define AppName "Usage Monitor"
-#define AppExe "usage-monitor.exe"
+#define AppName "AI Usage Tray"
+#define AppExe "ai-usage-tray.exe"
+; The name and program the app had before 0.1.0.
+#define OldAppName "Usage Monitor"
+#define OldAppExe "usage-monitor.exe"
 #define AssetDir "..\..\assets\icon"
 
 [Setup]
@@ -28,7 +32,7 @@ AppVerName={#AppName} {#AppVersion}
 VersionInfoVersion={#AppVersion}
 VersionInfoProductName={#AppName}
 VersionInfoDescription={#AppName} Setup
-DefaultDirName={localappdata}\Programs\UsageMonitor
+DefaultDirName={localappdata}\Programs\AIUsageTray
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 DisableWelcomePage=no
@@ -48,7 +52,7 @@ WizardSmallImageFileDynamicDark={#AssetDir}\setup-small.png
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
 OutputDir={#OutputDir}
-OutputBaseFilename=UsageMonitor-{#AppVersion}-Setup
+OutputBaseFilename=AIUsageTray-{#AppVersion}-Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 ; Close a running copy before its files are replaced, and start it again.
@@ -60,16 +64,16 @@ ShowLanguageDialog=no
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Messages]
-WelcomeLabel2=This will install [name/ver] on your computer.%n%nUsage Monitor sits in the notification area and shows how much of your AI subscriptions you have left: Codex, Claude, Antigravity, and more.%n%nIt is recommended that you close Usage Monitor before continuing.
+WelcomeLabel2=This will install [name/ver] on your computer.%n%nAI Usage Tray sits in the notification area and shows how much of your AI subscriptions you have left: Codex, Claude, Antigravity, and more.%n%nIt is recommended that you close AI Usage Tray before continuing.
 
 [Tasks]
-Name: "startup"; Description: "Start Usage Monitor when I sign in to Windows"; GroupDescription: "Startup:"
+Name: "startup"; Description: "Start AI Usage Tray when I sign in to Windows"; GroupDescription: "Startup:"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
 
 [Files]
-Source: "{#ReleaseDir}\usage-monitor.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#ReleaseDir}\usage-monitor-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#ReleaseDir}\usage-monitor-login.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ReleaseDir}\ai-usage-tray.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ReleaseDir}\ai-usage-tray-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ReleaseDir}\ai-usage-tray-login.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app}"
@@ -80,18 +84,37 @@ Name: "{userdesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app
 ; the task clears it.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#AppName}"; ValueData: """{app}\{#AppExe}"""; Flags: uninsdeletevalue; Tasks: startup
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "{#AppName}"; Flags: deletevalue dontcreatekey; Tasks: not startup
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "{#OldAppName}"; Flags: deletevalue dontcreatekey
 
 [Run]
-Filename: "{app}\{#AppExe}"; Description: "Open Usage Monitor now"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExe}"; Description: "Open AI Usage Tray now"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM {#AppExe}"; Flags: runhidden; RunOnceId: "StopApp"
 
 [InstallDelete]
-; Left by the earlier IExpress setup.
+; Left by the earlier IExpress setup, and the programs and shortcuts the app
+; had under its earlier name.
 Type: files; Name: "{app}\Uninstall.ps1"
+Type: files; Name: "{app}\usage-monitor*.exe"
+Type: files; Name: "{localappdata}\Programs\UsageMonitor\Uninstall.ps1"
+Type: files; Name: "{localappdata}\Programs\UsageMonitor\usage-monitor*.exe"
+Type: dirifempty; Name: "{localappdata}\Programs\UsageMonitor"
+Type: filesandordirs; Name: "{userprograms}\{#OldAppName}"
+Type: files; Name: "{userprograms}\{#OldAppName}.lnk"
+Type: files; Name: "{userdesktop}\{#OldAppName}.lnk"
 
 [Code]
+// A running copy under the earlier name holds files setup removes; stop it
+// first, as CloseApplications does for the current program.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#OldAppExe}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := '';
+end;
+
 // The earlier IExpress setup registered its own uninstall entry; remove it
 // so Windows lists the app once.
 procedure CurStepChanged(CurStep: TSetupStep);

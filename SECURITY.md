@@ -1,6 +1,6 @@
 # Security
 
-Usage Monitor signs in to AI providers on the user's behalf and keeps their
+AI Usage Tray signs in to AI providers on the user's behalf and keeps their
 credentials, so it treats credential handling as a security boundary.
 
 ## How credentials are handled

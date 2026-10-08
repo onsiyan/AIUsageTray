@@ -112,13 +112,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let account_ref = account.account_ref.as_deref().unwrap_or("the account");
         if let Some(error) = outcome.error {
             return Err(format!(
-                "OpenCode Go usage validation failed: {:?}: {}. The account and OAuth credentials were preserved; retry with `usage-monitor-cli usage refresh {account_ref}`.",
+                "OpenCode Go usage validation failed: {:?}: {}. The account and OAuth credentials were preserved; retry with `ai-usage-tray-cli usage refresh {account_ref}`.",
                 error.code, error.message
             )
             .into());
         }
         return Err(format!(
-            "OpenCode Go usage validation failed: {:?}. The account and OAuth credentials were preserved; retry with `usage-monitor-cli usage refresh {account_ref}`.",
+            "OpenCode Go usage validation failed: {:?}. The account and OAuth credentials were preserved; retry with `ai-usage-tray-cli usage refresh {account_ref}`.",
             outcome.status
         )
         .into());
@@ -217,7 +217,7 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: usage-monitor-login opencode-go [--database PATH] [--label LABEL]\n\nStarts OpenCode Console device authorization, opens the verification page in the Windows default browser, and waits for approval. The resulting OAuth access and refresh tokens are stored in Windows Credential Manager."
+                    "Usage: ai-usage-tray-login opencode-go [--database PATH] [--label LABEL]\n\nStarts OpenCode Console device authorization, opens the verification page in the Windows default browser, and waits for approval. The resulting OAuth access and refresh tokens are stored in Windows Credential Manager."
                 );
                 std::process::exit(0);
             }
@@ -453,7 +453,7 @@ async fn send_json(
     let url = Url::parse(OPENCODE_CONSOLE_BASE_URL)?.join(path)?;
     let mut headers = std::collections::BTreeMap::from([
         ("Accept".to_owned(), "application/json".to_owned()),
-        ("User-Agent".to_owned(), "UsageMonitor/0.1".to_owned()),
+        ("User-Agent".to_owned(), "AIUsageTray/0.1".to_owned()),
     ]);
     let body = body.map(|value| value.to_string());
     if body.is_some() {

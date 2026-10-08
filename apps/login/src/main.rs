@@ -1,4 +1,4 @@
-//! Provider sign-in helper. The CLI runs `usage-monitor-login <provider>
+//! Provider sign-in helper. The CLI runs `ai-usage-tray-login <provider>
 //! [options]` to add or re-authenticate an account; each provider's flow
 //! lives in its own module and reads its options after the provider name.
 
@@ -12,7 +12,7 @@ mod deepseek;
 mod opencode_go;
 mod openrouter;
 
-const USAGE: &str = "Usage: usage-monitor-login <codex|claude|antigravity|opencode-go|openrouter|deepseek|copilot|cursor|kimi|zai|xai|minimax|mimo> [options]";
+const USAGE: &str = "Usage: ai-usage-tray-login <codex|claude|antigravity|opencode-go|openrouter|deepseek|copilot|cursor|kimi|zai|xai|minimax|mimo> [options]";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -711,7 +711,7 @@ pub async fn fetch_identity(
             headers: BTreeMap::from([
                 ("Authorization".to_owned(), format!("token {token}")),
                 ("Accept".to_owned(), "application/json".to_owned()),
-                ("User-Agent".to_owned(), "UsageMonitor/0.1".to_owned()),
+                ("User-Agent".to_owned(), "AIUsageTray/0.1".to_owned()),
             ]),
             body: None,
         })

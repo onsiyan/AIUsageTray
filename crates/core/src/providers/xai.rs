@@ -33,7 +33,7 @@ use std::{
 use url::Url;
 
 const BILLING_URL: &str = "https://management-api.x.ai/v1/billing/teams/";
-const USER_AGENT: &str = "UsageMonitor/0.1";
+const USER_AGENT: &str = "AIUsageTray/0.1";
 const DEFAULT_DEADLINE: Duration = Duration::from_secs(10);
 const HISTORY_DAYS: i64 = 30;
 

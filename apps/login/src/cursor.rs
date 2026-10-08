@@ -204,7 +204,7 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
             "--api-key-stdin" | "--credentials-stdin" => arguments.session_stdin = true,
             "--help" | "-h" => {
                 println!(
-                    "Usage: usage-monitor-login cursor [--database PATH] [--label LABEL] [--credentials-stdin]\n\nTakes the session of the Cursor app signed in on this computer (or, with --credentials-stdin, a WorkosCursorSessionToken cookie from cursor.com), stores it in Windows Credential Manager, and reads the account's Cursor usage once."
+                    "Usage: ai-usage-tray-login cursor [--database PATH] [--label LABEL] [--credentials-stdin]\n\nTakes the session of the Cursor app signed in on this computer (or, with --credentials-stdin, a WorkosCursorSessionToken cookie from cursor.com), stores it in Windows Credential Manager, and reads the account's Cursor usage once."
                 );
                 std::process::exit(0);
             }

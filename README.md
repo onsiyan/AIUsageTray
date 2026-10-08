@@ -1,6 +1,6 @@
-# Usage Monitor
+# AI Usage Tray
 
-Usage Monitor tracks AI subscription usage across several accounts and
+AI Usage Tray tracks AI subscription usage across several accounts and
 providers from one Windows tray popup: Codex (ChatGPT), Claude, Antigravity,
 GitHub Copilot, Cursor, OpenCode Go, Kimi Code, z.ai, MiniMax, OpenRouter,
 DeepSeek, and xAI. It shows each account's session, weekly, and model limits
@@ -21,12 +21,12 @@ can switch the Codex and Antigravity desktop apps to any saved account.
   and tool, and can include other machines reached over SSH with your keys.
 - **Themes**: built-in dark, light, and picture themes, or your own colors
   and background picture.
-- **Command line**: `usage-monitor-cli` for people and agents, with stable
+- **Command line**: `ai-usage-tray-cli` for people and agents, with stable
   account references and JSON output.
 
 ## Install
 
-Download `UsageMonitor-<version>-Setup.exe` and run it. Setup installs for
+Download `AIUsageTray-<version>-Setup.exe` and run it. Setup installs for
 the current Windows user without an administrator prompt (by default into
 `%LOCALAPPDATA%\Programs\UsageMonitor`) and lets you choose the folder,
 starting with Windows, and a desktop shortcut. Running a newer setup updates
@@ -37,8 +37,8 @@ the app in place; remove it from Windows' Installed apps.
 ```
 apps/
   desktop/              Tray app (iced) — the product users run
-  cli/                  usage-monitor-cli: account and usage commands for people and agents
-  login/                usage-monitor-login: per-provider sign-in flows run by the CLI
+  cli/                  ai-usage-tray-cli: account and usage commands for people and agents
+  login/                ai-usage-tray-login: per-provider sign-in flows run by the CLI
 crates/
   core/                 Provider-neutral accounts, OAuth, storage, refresh, and provider adapters
   platform-windows/     Credential Manager and desktop-app integration
@@ -56,7 +56,7 @@ Requires Windows and the Rust toolchain pinned in `rust-toolchain.toml`.
 
 ```powershell
 cargo build --workspace --release
-.\target\release\usage-monitor.exe
+.\target\release\ai-usage-tray.exe
 ```
 
 The desktop app, CLI, and sign-in helper must sit in the same directory; the
@@ -64,21 +64,21 @@ app runs the CLI to add accounts, and the CLI runs the sign-in helper. To build
 the setup, install [Inno Setup 6](https://jrsoftware.org/isinfo.php)
 (`winget install JRSoftware.InnoSetup`) and run
 `apps/desktop/packaging/windows/build-installer.ps1`; it writes
-`target/dist/UsageMonitor-<version>-Setup.exe`.
+`target/dist/AIUsageTray-<version>-Setup.exe`.
 
 ## Command line
 
 ```powershell
-.\target\release\usage-monitor-cli.exe account add codex --alias "Personal"
-.\target\release\usage-monitor-cli.exe account add claude
-.\target\release\usage-monitor-cli.exe account add antigravity
-.\target\release\usage-monitor-cli.exe account add opencode-go
-.\target\release\usage-monitor-cli.exe account add openrouter --api-key-stdin
-.\target\release\usage-monitor-cli.exe account list
-.\target\release\usage-monitor-cli.exe usage get ch1 --json
-.\target\release\usage-monitor-cli.exe usage refresh --all --provider codex --json
-.\target\release\usage-monitor-cli.exe usage watch
-.\target\release\usage-monitor-cli.exe account remove ch1 --yes
+.\target\release\ai-usage-tray-cli.exe account add codex --alias "Personal"
+.\target\release\ai-usage-tray-cli.exe account add claude
+.\target\release\ai-usage-tray-cli.exe account add antigravity
+.\target\release\ai-usage-tray-cli.exe account add opencode-go
+.\target\release\ai-usage-tray-cli.exe account add openrouter --api-key-stdin
+.\target\release\ai-usage-tray-cli.exe account list
+.\target\release\ai-usage-tray-cli.exe usage get ch1 --json
+.\target\release\ai-usage-tray-cli.exe usage refresh --all --provider codex --json
+.\target\release\ai-usage-tray-cli.exe usage watch
+.\target\release\ai-usage-tray-cli.exe account remove ch1 --yes
 ```
 
 Accounts have stable references: `chN` (Codex), `ccN` (Claude), `agN`
@@ -179,6 +179,6 @@ account references, without printing credentials, and is excluded from normal te
 
 ## License
 
-Usage Monitor is released under the [MIT License](LICENSE). Provider names
+AI Usage Tray is released under the [MIT License](LICENSE). Provider names
 and logos belong to their owners; see
 `apps/desktop/assets/providers/ATTRIBUTION.md`.

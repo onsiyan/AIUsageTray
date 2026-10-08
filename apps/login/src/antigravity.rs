@@ -144,7 +144,7 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
             "--new" | "--login-new" => arguments.force_new_account = true,
             "--help" | "-h" => {
                 println!(
-                    "Usage: usage-monitor-login antigravity [--database PATH] [--label LABEL] [--new]\n\nAdds an Antigravity account through Google OAuth in the default browser, then probes its account-scoped usage."
+                    "Usage: ai-usage-tray-login antigravity [--database PATH] [--label LABEL] [--new]\n\nAdds an Antigravity account through Google OAuth in the default browser, then probes its account-scoped usage."
                 );
                 std::process::exit(0);
             }

@@ -36,7 +36,7 @@ use std::{
 };
 use url::Url;
 
-const USER_AGENT: &str = "UsageMonitor/0.1";
+const USER_AGENT: &str = "AIUsageTray/0.1";
 const DEFAULT_DEADLINE: Duration = Duration::from_secs(8);
 const TOKEN_PLAN_PATH: &str = "v1/token_plan/remains";
 const CODING_PLAN_PATH: &str = "v1/api/openplatform/coding_plan/remains";
@@ -121,7 +121,7 @@ async fn fetch_remains(
                     ("Authorization".to_owned(), format!("Bearer {api_key}")),
                     ("Accept".to_owned(), "application/json".to_owned()),
                     ("Content-Type".to_owned(), "application/json".to_owned()),
-                    ("MM-API-Source".to_owned(), "UsageMonitor".to_owned()),
+                    ("MM-API-Source".to_owned(), "AIUsageTray".to_owned()),
                     ("User-Agent".to_owned(), USER_AGENT.to_owned()),
                 ]),
                 body: None,

@@ -32,7 +32,7 @@ use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use url::Url;
 
-const USER_AGENT: &str = "UsageMonitor/0.1";
+const USER_AGENT: &str = "AIUsageTray/0.1";
 const DEFAULT_DEADLINE: Duration = Duration::from_secs(8);
 const FIVE_HOURS: i64 = 5 * 60 * 60;
 const WEEK: i64 = 7 * 24 * 60 * 60;

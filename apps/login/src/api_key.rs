@@ -34,7 +34,7 @@ use usage_monitor_core::{
 use usage_monitor_windows::WindowsCredentialManagerAuthMaterialStore;
 
 pub struct ApiKeyProvider {
-    /// The `usage-monitor-login` subcommand.
+    /// The `ai-usage-tray-login` subcommand.
     pub command: &'static str,
     pub provider_id: &'static str,
     pub name: &'static str,
@@ -336,7 +336,7 @@ fn parse_arguments(provider: &ApiKeyProvider) -> Result<Arguments, Box<dyn std::
                     )
                 });
                 println!(
-                    "Usage: usage-monitor-login {} [--database PATH] [--label LABEL] [--new] [--api-key-stdin]\n\nReads a {} API key from {} or stdin without printing it, stores it in Windows Credential Manager, and reads the account's usage once.{second}",
+                    "Usage: ai-usage-tray-login {} [--database PATH] [--label LABEL] [--new] [--api-key-stdin]\n\nReads a {} API key from {} or stdin without printing it, stores it in Windows Credential Manager, and reads the account's usage once.{second}",
                     provider.command, provider.name, provider.key_variable
                 );
                 std::process::exit(0);

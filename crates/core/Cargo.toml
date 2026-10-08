@@ -1,6 +1,6 @@
 [package]
 name = "usage-monitor-core"
-description = "Provider-neutral account, credential, and usage-refresh core for Usage Monitor."
+description = "Provider-neutral account, credential, and usage-refresh core for AI Usage Tray."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

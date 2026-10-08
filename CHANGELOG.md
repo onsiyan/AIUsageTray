@@ -15,6 +15,8 @@ All notable changes to this project are documented here. The format follows
   add a desktop shortcut, and open the app at the end. It closes a running
   copy before updating it, replaces the earlier setup's install in place,
   and is removed from Windows' installed apps list like any other app.
+- The app icon on the taskbar button and its thumbnail when the popup is
+  set to show in the taskbar.
 - A right-click menu on the tray icon: open the popup or the Cost page,
   refresh all accounts, turn Start with Windows or Memory saver on and off,
   and quit. It follows the dark or light Windows app mode.
@@ -56,7 +58,7 @@ All notable changes to this project are documented here. The format follows
   cache reads and fresh input, thinking, what the cache saved, and where the
   use went by model. Logs are read once and then only
   where they grew; prices come from models.dev, updated daily, with a
-  built-in table for offline use. `usage-monitor-cli cost` prints the same.
+  built-in table for offline use. `ai-usage-tray-cli cost` prints the same.
 - Favorites tab, third in the tab bar, gathering accounts starred from any
   provider. The star sits with the rename and move controls on each account;
   favorites keep their own order and are refreshed first while shown.
@@ -136,11 +138,15 @@ All notable changes to this project are documented here. The format follows
   remaining credit balance and the member's monthly credit limit, and Cursor
   team accounts show the member's spend against their per-user budget. These
   are read only when the plan has them, and a failure never hides the usage.
-- `usage-monitor-cli` for people and agents, with stable account references
+- `ai-usage-tray-cli` for people and agents, with stable account references
   and JSON output.
 
 ### Changed
 
+- The app is now called AI Usage Tray (`ai-usage-tray.exe`,
+  `ai-usage-tray-cli`). Setup replaces a copy installed as Usage Monitor,
+  with its shortcuts and Start with Windows entry; accounts and settings
+  stay where they were.
 - Codex, Claude, and Antigravity account cards are named by their email
   (unless renamed), and the email is not repeated under the name.
 - The Favorites tab sits in the middle of the tab bar.
@@ -167,7 +173,7 @@ All notable changes to this project are documented here. The format follows
 - Smooth mouse-wheel scrolling in account lists, account management, and model
   menus, with immediate direction reversal and direct precision-touchpad input.
 - Repository restructured into `apps/` and `crates/`; the five provider login
-  helpers are merged into `usage-monitor-login`.
+  helpers are merged into `ai-usage-tray-login`.
 - Data, preferences, and credentials moved to the `UsageMonitor` names; data
   from the previous `CodexUsageMonitor-Rust` and `UsageMonitorPreview` names is
   migrated automatically.

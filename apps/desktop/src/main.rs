@@ -187,7 +187,7 @@ fn main() -> iced::Result {
         App::update,
         App::popup_view,
     )
-    .title("Usage Monitor")
+    .title("AI Usage Tray")
     .theme(|_: &App, _: window::Id| Theme::Dark)
     .scale_factor(|app: &App, _: window::Id| app.ui_zoom)
     .style(|_, theme| {
@@ -227,6 +227,7 @@ fn popup_window_settings() -> window::Settings {
         transparent: true,
         level: window::Level::Normal,
         exit_on_close_request: false,
+        icon: graphics::window_icon(),
         platform_specific: window::settings::PlatformSpecific {
             skip_taskbar: !display_options::show_in_taskbar(),
             ..Default::default()
@@ -937,7 +938,7 @@ fn preview_log(message: impl std::fmt::Display) {
         return;
     }
 
-    let path = std::env::temp_dir().join(format!("usage-monitor-{}.log", std::process::id()));
+    let path = std::env::temp_dir().join(format!("ai-usage-tray-{}.log", std::process::id()));
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{message}");
     }

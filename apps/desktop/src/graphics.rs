@@ -172,6 +172,15 @@ pub(super) fn icon_pixels() -> Vec<u8> {
         .unwrap_or_else(|_| vec![0; 32 * 32 * 4])
 }
 
+/// The window's icon, shown on the taskbar button and its thumbnail when the
+/// popup is set to show in the taskbar. 64 px so it stays sharp on scaled
+/// screens.
+pub(super) fn window_icon() -> Option<iced::window::Icon> {
+    let icon = ::image::load_from_memory(include_bytes!("../assets/icon/window-64.png")).ok()?;
+    let (width, height) = (icon.width(), icon.height());
+    iced::window::icon::from_rgba(icon.to_rgba8().into_raw(), width, height).ok()
+}
+
 pub(super) fn backdrop_image_handle(theme_id: ThemeId) -> Option<image::Handle> {
     let backdrop = theme_id.definition().backdrop?;
     // The custom theme's picture is the one the user saved.

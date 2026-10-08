@@ -1,6 +1,6 @@
 [package]
 name = "usage-monitor-windows"
-description = "Windows integration for Usage Monitor: Credential Manager storage, the default browser, and desktop-app sign-in."
+description = "Windows integration for AI Usage Tray: Credential Manager storage, the default browser, and desktop-app sign-in."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

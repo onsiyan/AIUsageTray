@@ -3,21 +3,23 @@
 
 #[cfg(windows)]
 mod imp {
-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
     use windows_sys::Win32::System::Registry::{
         HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
     };
 
     const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-    const VALUE_NAME: &str = "Usage Monitor";
+    const VALUE_NAME: &str = "AI Usage Tray";
+    /// The value written while the app was called Usage Monitor.
+    const LEGACY_VALUE_NAME: &str = "Usage Monitor";
 
     fn wide(text: &str) -> Vec<u16> {
         text.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
-    pub fn is_enabled() -> bool {
+    fn has_value(name: &str) -> bool {
         let key = wide(RUN_KEY);
-        let name = wide(VALUE_NAME);
+        let name = wide(name);
         let mut size = 0_u32;
         // SAFETY: the key and value names are NUL-terminated, and with no
         // buffer the call only reports the value's size.
@@ -35,10 +37,29 @@ mod imp {
         status == ERROR_SUCCESS && size > 2
     }
 
-    pub fn set(enabled: bool) -> Result<(), String> {
+    fn delete_value(name: &str) -> u32 {
         let key = wide(RUN_KEY);
-        let name = wide(VALUE_NAME);
+        let name = wide(name);
+        // SAFETY: the key and value names are NUL-terminated.
+        let status = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr()) };
+        // Already gone is what was asked for.
+        if status == ERROR_FILE_NOT_FOUND {
+            ERROR_SUCCESS
+        } else {
+            status
+        }
+    }
+
+    pub fn is_enabled() -> bool {
+        has_value(VALUE_NAME) || has_value(LEGACY_VALUE_NAME)
+    }
+
+    pub fn set(enabled: bool) -> Result<(), String> {
+        // Either way the old name's value goes; a kept one is written anew.
+        let _ = delete_value(LEGACY_VALUE_NAME);
         let status = if enabled {
+            let key = wide(RUN_KEY);
+            let name = wide(VALUE_NAME);
             let executable = std::env::current_exe().map_err(|error| error.to_string())?;
             let command = wide(&format!("\"{}\"", executable.display()));
             let bytes = u32::try_from(command.len() * 2).map_err(|error| error.to_string())?;
@@ -55,15 +76,7 @@ mod imp {
                 )
             }
         } else {
-            // SAFETY: the key and value names are NUL-terminated.
-            let status =
-                unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr()) };
-            // Already gone is what was asked for.
-            if status == windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND {
-                ERROR_SUCCESS
-            } else {
-                status
-            }
+            delete_value(VALUE_NAME)
         };
         if status == ERROR_SUCCESS {
             Ok(())

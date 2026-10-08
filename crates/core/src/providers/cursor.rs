@@ -60,7 +60,7 @@ pub const TEAM_BUDGET_KEY: &str = "team.member_budget";
 /// A token this close to expiry is treated as expired.
 const EXPIRY_MARGIN_SECONDS: i64 = 60;
 const USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) UsageMonitor";
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) AIUsageTray";
 
 pub const TOTAL_WINDOW_NAME: &str = "Total";
 pub const AUTO_WINDOW_NAME: &str = "Auto + Composer";

@@ -29,7 +29,7 @@ pub(super) fn install_tray(sender: Sender<TrayIconEvent>) -> Result<(), String> 
     )?;
     let tray = TrayIconBuilder::new()
         .with_icon(icon)
-        .with_tooltip("Usage Monitor")
+        .with_tooltip("AI Usage Tray")
         // A left click opens the popup; the menu is for the right button.
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)

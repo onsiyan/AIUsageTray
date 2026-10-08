@@ -7,14 +7,14 @@ param(
 )
 
 # Tests and builds the release, then packages it with Inno Setup 6
-# (winget install JRSoftware.InnoSetup) into UsageMonitor-<version>-Setup.exe.
+# (winget install JRSoftware.InnoSetup) into AIUsageTray-<version>-Setup.exe.
 
 $ErrorActionPreference = 'Stop'
 $rustRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..\..'))
 $targetDirectory = Join-Path $rustRoot 'target'
 $releaseDirectory = Join-Path $targetDirectory 'release'
 $workspaceManifest = Join-Path $rustRoot 'Cargo.toml'
-$setupScript = Join-Path $PSScriptRoot 'UsageMonitor.iss'
+$setupScript = Join-Path $PSScriptRoot 'AIUsageTray.iss'
 if (-not $OutputDirectory) {
     $OutputDirectory = Join-Path $targetDirectory 'dist'
 }
@@ -36,7 +36,7 @@ if (-not $compiler) {
     throw 'Inno Setup 6 is not installed. Install it with: winget install JRSoftware.InnoSetup'
 }
 
-$setupPath = Join-Path $OutputDirectory "UsageMonitor-$version-Setup.exe"
+$setupPath = Join-Path $OutputDirectory "AIUsageTray-$version-Setup.exe"
 if (Test-Path -LiteralPath $setupPath) {
     throw "Refusing to overwrite an existing installer: $setupPath"
 }
@@ -54,7 +54,7 @@ if (-not $SkipTests) {
 }
 Invoke-Cargo (@('build') + $cargoArguments)
 
-foreach ($file in 'usage-monitor.exe', 'usage-monitor-cli.exe', 'usage-monitor-login.exe') {
+foreach ($file in 'ai-usage-tray.exe', 'ai-usage-tray-cli.exe', 'ai-usage-tray-login.exe') {
     if (-not (Test-Path -LiteralPath (Join-Path $releaseDirectory $file) -PathType Leaf)) {
         throw "Release build did not produce required package file '$file'."
     }

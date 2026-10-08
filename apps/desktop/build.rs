@@ -7,8 +7,8 @@ fn main() {
         let mut resource = winresource::WindowsResource::new();
         resource
             .set_icon("assets/icon/app.ico")
-            .set("ProductName", "Usage Monitor")
-            .set("FileDescription", "Usage Monitor");
+            .set("ProductName", "AI Usage Tray")
+            .set("FileDescription", "AI Usage Tray");
         if let Err(error) = resource.compile() {
             panic!("could not embed the Windows resources: {error}");
         }

@@ -376,7 +376,7 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, CustomThemeDimMedium) => "Medium",
         (English, CustomThemeDimStrong) => "Strong",
         (English, CustomThemeDone) => "Done",
-        (English, WelcomeTitle) => "Welcome to Usage Monitor",
+        (English, WelcomeTitle) => "Welcome to AI Usage Tray",
         (English, WelcomeChooseHint) => {
             "Choose the services you use. Only their tabs will show; you can change this later from the tab manager."
         }
@@ -609,7 +609,7 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (Arabic, CustomThemeDimMedium) => "متوسط",
         (Arabic, CustomThemeDimStrong) => "قوي",
         (Arabic, CustomThemeDone) => "تم",
-        (Arabic, WelcomeTitle) => "مرحبًا بك في Usage Monitor",
+        (Arabic, WelcomeTitle) => "مرحبًا بك في AI Usage Tray",
         (Arabic, WelcomeChooseHint) => {
             "اختر الخدمات التي تستخدمها. ستظهر تبويباتها فقط، ويمكنك تغيير ذلك لاحقًا من إدارة التبويبات."
         }

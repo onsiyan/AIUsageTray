@@ -208,7 +208,7 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
             "--api-key-stdin" | "--credentials-stdin" => arguments.token_stdin = true,
             "--help" | "-h" => {
                 println!(
-                    "Usage: usage-monitor-login copilot [--database PATH] [--label LABEL] [--credentials-stdin]\n\nSigns in to GitHub with a device code (or reads a GitHub token from stdin), stores the token in Windows Credential Manager, and reads the account's Copilot quotas once."
+                    "Usage: ai-usage-tray-login copilot [--database PATH] [--label LABEL] [--credentials-stdin]\n\nSigns in to GitHub with a device code (or reads a GitHub token from stdin), stores the token in Windows Credential Manager, and reads the account's Copilot quotas once."
                 );
                 std::process::exit(0);
             }

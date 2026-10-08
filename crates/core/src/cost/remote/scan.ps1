@@ -1,4 +1,4 @@
-# Usage Monitor: reads Codex and Claude Code token usage on this machine and
+# AI Usage Tray: reads Codex and Claude Code token usage on this machine and
 # prints it summed by half hour (UTC) and model. Sent over SSH and run by
 # Windows PowerShell; nothing is installed. Follows the same rules as the
 # app's own reader (crates/core/src/cost/scan.rs). A small state file under

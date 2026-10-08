@@ -1,6 +1,6 @@
 [package]
-name = "usage-monitor-login"
-description = "Provider sign-in helper for Usage Monitor, run by the CLI to add accounts."
+name = "ai-usage-tray-login"
+description = "Provider sign-in helper for AI Usage Tray, run by the CLI to add accounts."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ publish.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "usage-monitor-login"
+name = "ai-usage-tray-login"
 path = "src/main.rs"
 
 [dependencies]

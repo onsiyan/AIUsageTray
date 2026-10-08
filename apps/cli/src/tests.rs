@@ -107,7 +107,7 @@ fn ambiguous_email_requires_provider_or_workspace_qualifier() {
 #[test]
 fn command_line_accepts_json_after_subcommands_and_refresh_all() {
     let parsed =
-        Cli::try_parse_from(["usage-monitor-cli", "usage", "refresh", "--all", "--json"]).unwrap();
+        Cli::try_parse_from(["ai-usage-tray-cli", "usage", "refresh", "--all", "--json"]).unwrap();
     assert!(parsed.json);
     assert!(matches!(
         parsed.command,
@@ -121,7 +121,7 @@ fn command_line_accepts_json_after_subcommands_and_refresh_all() {
 fn account_remove_accepts_stable_reference_confirmation_and_delete_alias() {
     for verb in ["remove", "delete"] {
         let parsed = Cli::try_parse_from([
-            "usage-monitor-cli",
+            "ai-usage-tray-cli",
             "account",
             verb,
             "ch2",
@@ -210,7 +210,7 @@ async fn local_account_removal_clears_account_and_both_credential_stores() {
 #[test]
 fn account_add_accepts_supported_provider_names_and_json_mode() {
     let parsed = Cli::try_parse_from([
-        "usage-monitor-cli",
+        "ai-usage-tray-cli",
         "account",
         "add",
         "openrouter",

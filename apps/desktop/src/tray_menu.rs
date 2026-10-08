@@ -49,7 +49,7 @@ impl TrayAction {
 
     fn label(self, language: Language) -> &'static str {
         let (english, arabic) = match self {
-            Self::Open => ("Open Usage Monitor", "فتح Usage Monitor"),
+            Self::Open => ("Open AI Usage Tray", "فتح AI Usage Tray"),
             Self::Cost => ("API value of your use", "قيمة استخدامك بأسعار API"),
             Self::Refresh => ("Refresh all", "تحديث الكل"),
             Self::StartWithWindows => ("Start with Windows", "التشغيل مع بدء Windows"),
@@ -84,7 +84,7 @@ pub(crate) fn build(language: Language, memory_saver: bool) -> Result<Menu, Stri
         CheckMenuItem::with_id(action.id(), action.label(language), true, checked, None)
     };
     let title = MenuItem::new(
-        concat!("Usage Monitor ", env!("CARGO_PKG_VERSION")),
+        concat!("AI Usage Tray ", env!("CARGO_PKG_VERSION")),
         false,
         None,
     );

@@ -25,7 +25,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use url::Url;
 
 const BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
-const USER_AGENT: &str = "UsageMonitor/0.1";
+const USER_AGENT: &str = "AIUsageTray/0.1";
 const DEFAULT_DEADLINE: Duration = Duration::from_secs(6);
 
 pub struct DeepSeekUsageAdapter {

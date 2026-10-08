@@ -186,7 +186,7 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
             "--api-key-stdin" | "--credentials-stdin" => arguments.key_stdin = true,
             "--help" | "-h" => {
                 println!(
-                    "Usage: usage-monitor-login deepseek [--database PATH] [--label LABEL] [--new] [--api-key-stdin]\n\nReads a DeepSeek API key without printing it, stores it in Windows Credential Manager, and reads the account's balance once."
+                    "Usage: ai-usage-tray-login deepseek [--database PATH] [--label LABEL] [--new] [--api-key-stdin]\n\nReads a DeepSeek API key without printing it, stores it in Windows Credential Manager, and reads the account's balance once."
                 );
                 std::process::exit(0);
             }

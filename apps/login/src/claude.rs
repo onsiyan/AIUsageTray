@@ -208,7 +208,7 @@ fn parse_arguments() -> Result<Arguments, Box<dyn std::error::Error>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: usage-monitor-login claude [--database PATH] [--label LABEL]\n\nSigns in to Claude with OAuth in the default browser, verifies the account with Claude's OAuth profile endpoint, stores per-account credentials in Windows Credential Manager, and probes OAuth usage."
+                    "Usage: ai-usage-tray-login claude [--database PATH] [--label LABEL]\n\nSigns in to Claude with OAuth in the default browser, verifies the account with Claude's OAuth profile endpoint, stores per-account credentials in Windows Credential Manager, and probes OAuth usage."
                 );
                 std::process::exit(0);
             }

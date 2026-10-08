@@ -4,7 +4,7 @@ use super::*;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "usage-monitor-cli",
+    name = "ai-usage-tray-cli",
     version,
     about = "Manage locally saved provider accounts and usage"
 )]
