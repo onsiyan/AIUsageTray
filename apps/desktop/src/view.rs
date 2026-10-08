@@ -28,6 +28,9 @@ impl App {
                 ),
                 mouse_area(Space::new().width(Fill).height(Length::Fill))
                     .on_press(Message::DragWindow),
+                // Grouped: refresh, accounts, customizing, then close.
+                refresh_button(self.dashboard_refresh_running, active_theme, self.language),
+                Space::new().width(GROUP_GAP),
                 add_account_button(self.account_add_running, active_theme, self.language),
                 delete_account_button(
                     self.account_delete_dialog_open,
@@ -37,9 +40,10 @@ impl App {
                     active_theme,
                     self.language,
                 ),
-                refresh_button(self.dashboard_refresh_running, active_theme, self.language,),
+                Space::new().width(GROUP_GAP),
                 tab_manager_button(self.tab_manager_open, active_theme, self.language),
                 theme_button(active_theme),
+                Space::new().width(GROUP_GAP * 1.5),
                 close_window_button(active_theme),
             ]
             .spacing(4)
@@ -358,3 +362,6 @@ fn window_shade<'a>(
 }
 
 const WINDOW_SHADE_OPACITY: f32 = 0.75;
+
+/// Space between groups of title-bar buttons, on top of the row spacing.
+const GROUP_GAP: f32 = 8.0;
