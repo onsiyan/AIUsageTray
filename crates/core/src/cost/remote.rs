@@ -25,6 +25,20 @@ const WINDOWS_SCRIPT: &str = include_str!("remote/scan.ps1");
 const HOSTS_FILE: &str = "ssh-hosts.txt";
 /// The reply's version, which the scripts print as `usage_monitor`.
 const REPLY_VERSION: u64 = 1;
+/// The line that ends the Windows script on the input.
+const WINDOWS_SCRIPT_END: &str = "#usage-monitor-end";
+/// Reads the Windows script up to [`WINDOWS_SCRIPT_END`] and runs it; exits
+/// with 3 if a minute passes without a line.
+const WINDOWS_BOOTSTRAP: &str = concat!(
+    "$r=New-Object IO.StreamReader([Console]::OpenStandardInput(),",
+    "(New-Object Text.UTF8Encoding($false)));",
+    "$b=New-Object Text.StringBuilder;$t=$r.ReadLineAsync();",
+    "while($t.Wait(60000)){$x=$t.Result;",
+    "if($null -eq $x -or $x -eq '#usage-monitor-end'){break};",
+    "[void]$b.AppendLine($x);$t=$r.ReadLineAsync()};",
+    "if(-not $t.IsCompleted){exit 3};",
+    "& ([scriptblock]::Create($b.ToString()))"
+);
 /// A first read of large logs can take minutes on the other machine.
 pub const SYNC_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
@@ -210,8 +224,11 @@ pub fn fetch(host: &SshHost, timeout: Duration) -> Result<RemoteUsage, RemoteErr
         RemoteOs::Unix => ("python3 -".to_owned(), UNIX_SCRIPT),
         RemoteOs::Windows => {
             // The script is too long for a command line, so a short command
-            // reads it from the input instead.
-            let bootstrap = "& ([scriptblock]::Create([Console]::In.ReadToEnd()))"
+            // reads it from the input instead, up to an end line rather than
+            // the input's end: through some SSH servers the end of input never
+            // arrives, and PowerShell would wait for it forever. A minute
+            // without a line ends the wait.
+            let bootstrap = WINDOWS_BOOTSTRAP
                 .encode_utf16()
                 .flat_map(u16::to_le_bytes)
                 .collect::<Vec<_>>();
@@ -223,6 +240,14 @@ pub fn fetch(host: &SshHost, timeout: Duration) -> Result<RemoteUsage, RemoteErr
                 WINDOWS_SCRIPT,
             )
         }
+    };
+    let script = match host.os {
+        RemoteOs::Unix => script.to_owned(),
+        RemoteOs::Windows => format!(
+            "{script}
+{WINDOWS_SCRIPT_END}
+"
+        ),
     };
     let mut command = Command::new(ssh_program());
     command
@@ -254,7 +279,6 @@ pub fn fetch(host: &SshHost, timeout: Duration) -> Result<RemoteUsage, RemoteErr
     })?;
 
     let mut stdin = child.stdin.take();
-    let script = script.to_owned();
     let writer = std::thread::spawn(move || {
         if let Some(stdin) = &mut stdin {
             let _ = stdin.write_all(script.as_bytes());
@@ -476,6 +500,23 @@ fn base64_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_bootstrap_waits_for_the_end_line_and_fits_a_command_line() {
+        assert!(WINDOWS_BOOTSTRAP.contains(&format!("'{WINDOWS_SCRIPT_END}'")));
+        assert!(
+            !WINDOWS_SCRIPT
+                .lines()
+                .any(|line| line == WINDOWS_SCRIPT_END)
+        );
+        let encoded = base64_encode(
+            &WINDOWS_BOOTSTRAP
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>(),
+        );
+        assert!(encoded.len() < 2_000);
+    }
 
     #[test]
     fn replies_parse_past_a_login_banner() {
