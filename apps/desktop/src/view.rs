@@ -28,7 +28,7 @@ impl App {
                 ),
                 mouse_area(Space::new().width(Fill).height(Length::Fill))
                     .on_press(Message::DragWindow),
-                add_account_button(self.account_add_running, active_theme, self.language),
+                refresh_button(self.dashboard_refresh_running, active_theme, self.language,),
                 delete_account_button(
                     self.account_delete_dialog_open,
                     self.account_add_running
@@ -37,7 +37,7 @@ impl App {
                     active_theme,
                     self.language,
                 ),
-                refresh_button(self.dashboard_refresh_running, active_theme, self.language,),
+                add_account_button(self.account_add_running, active_theme, self.language),
                 tab_manager_button(self.tab_manager_open, active_theme, self.language),
                 theme_button(active_theme),
                 close_window_button(active_theme),
