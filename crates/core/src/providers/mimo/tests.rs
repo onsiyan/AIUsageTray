@@ -1,4 +1,4 @@
-//! Payload cases follow CodexBar's MiMo tests.
+//! Payload cases follow MiMo's observed responses.
 
 use super::*;
 use crate::auth::AccountAuthMaterial;

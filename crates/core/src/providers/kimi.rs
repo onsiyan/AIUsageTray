@@ -4,7 +4,7 @@
 //! `api.kimi.com` for keys from kimi.com (China, the default) or
 //! `api.kimi.ai` for keys from kimi.ai (International). The region that
 //! accepts the key is found when the account is added and kept as the
-//! account's secondary token. Following CodexBar, two response shapes are
+//! account's secondary token. Two response shapes are
 //! understood:
 //!
 //! - ratio pools under `usages`: `limit_5h`, `limit_7d`, and

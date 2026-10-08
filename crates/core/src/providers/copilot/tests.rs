@@ -1,4 +1,4 @@
-//! Payload cases follow CodexBar's Copilot tests.
+//! Payload cases follow Copilot's observed responses.
 
 use super::*;
 use crate::{auth::AccountAuthMaterial, transport::UsageHttpResponse};

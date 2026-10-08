@@ -679,8 +679,8 @@ pub(super) fn find_workspace_id(value: &Value) -> Option<String> {
     }
 }
 
-// The Console endpoint returns workspace/org rows. Match CodexBar's current
-// behavior: only a row's own `id` with a recognized Console prefix is valid.
+// The Console endpoint returns workspace/org rows. Only a row's own `id`
+// with a recognized Console prefix is valid.
 // Recursively accepting arbitrary `id` fields can select a user or nested
 // resource ID and make the subsequent usage request target the wrong scope.
 /// Picks the preferred workspace when it is one of this account's own

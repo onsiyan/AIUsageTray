@@ -1,6 +1,6 @@
 //! xAI API prepaid credits and spend through the xAI Management API.
 //!
-//! Following CodexBar, an xAI Management API key (xAI Console, Settings >
+//! An xAI Management API key (xAI Console, Settings >
 //! Management Keys; inference keys are refused) and the team ID read:
 //!
 //! - `GET /v1/billing/teams/{team}/prepaid/balance`: `total.val` is the

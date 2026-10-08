@@ -1,12 +1,12 @@
 //! GitHub Copilot quotas through GitHub's Copilot usage endpoint.
 //!
 //! Accounts sign in with GitHub's OAuth device flow (the same public client
-//! the VS Code Copilot extension uses, as CodexBar does). The resulting
+//! the VS Code Copilot extension uses). The resulting
 //! GitHub token reads `GET /copilot_internal/user`, which reports the monthly
 //! premium-request and chat quotas as `quota_snapshots`, or, on older plans,
 //! as `monthly_quotas` / `limited_user_quotas` counts.
 //!
-//! The payload shape varies by plan, so parsing follows CodexBar's rules:
+//! The payload shape varies by plan, so parsing is lenient:
 //! numbers may arrive as strings, percentages are derived when missing,
 //! zero-entitlement placeholders (Copilot Business usage billing) never
 //! become fake "0% used" bars, and unlimited quotas are not drawn as bars.

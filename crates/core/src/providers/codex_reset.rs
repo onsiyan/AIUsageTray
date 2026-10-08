@@ -99,7 +99,7 @@ pub(crate) fn confirms_weekly_reset(
     }
 
     // A rebound in the independently fetched sample shows that the first low
-    // value was transient. This mirrors CodexBar's immediate confirmation path.
+    // value was transient, so it is confirmed at once.
     if confirmation_weekly.used_percent > RESET_THRESHOLD_PERCENT {
         return true;
     }

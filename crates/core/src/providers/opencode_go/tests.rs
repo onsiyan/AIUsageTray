@@ -503,7 +503,7 @@ fn dashboard_fraction_is_converted_but_console_micro_cents_are_amounts() {
 }
 
 #[test]
-fn relative_reset_parser_accepts_codexbar_field_aliases() {
+fn relative_reset_parser_accepts_field_aliases() {
     for key in ["reset_sec", "resetsInSeconds", "resetIn", "resetSec"] {
         let mut value = serde_json::Map::new();
         value.insert("usagePercent".to_owned(), json!(25.0));

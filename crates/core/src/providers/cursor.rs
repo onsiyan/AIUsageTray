@@ -1,6 +1,6 @@
 //! Cursor plan usage through cursor.com's dashboard endpoints.
 //!
-//! Cursor has no public usage API; like CodexBar, this reads the endpoints
+//! Cursor has no public usage API, so this reads the endpoints
 //! its own dashboard uses, authenticated with the `WorkosCursorSessionToken`
 //! session cookie. That cookie is `<user id>::<access token>`, where the
 //! access token is the JWT the Cursor editor keeps in its global state
@@ -57,7 +57,7 @@ const TEAM_SPEND_PAGE_SIZE: usize = 50;
 const TEAM_SPEND_MAX_PAGES: i64 = 20;
 /// The member's budget on a team plan; hosts may choose not to show it.
 pub const TEAM_BUDGET_KEY: &str = "team.member_budget";
-/// A token this close to expiry is treated as expired, as CodexBar does.
+/// A token this close to expiry is treated as expired.
 const EXPIRY_MARGIN_SECONDS: i64 = 60;
 const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) UsageMonitor";
@@ -763,7 +763,7 @@ struct CursorUsage {
 
 impl CursorUsage {
     /// The included plan's used percentage, from the most precise field
-    /// available (CodexBar's order). Cursor's percent fields are already in
+    /// available. Cursor's percent fields are already in
     /// percent, even below 1 (0.36 means 0.36%).
     fn total_percent(&self) -> f64 {
         let summary = &self.summary;

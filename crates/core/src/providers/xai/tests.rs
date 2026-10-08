@@ -1,4 +1,4 @@
-//! Payload cases follow CodexBar's xAI plugin fixtures.
+//! Payload cases follow xAI's documented responses.
 
 use super::*;
 use crate::auth::AccountAuthMaterial;
@@ -182,7 +182,7 @@ fn probe(transport: Arc<StubTransport>, team: Option<&'static str>) -> UsageProb
 }
 
 #[test]
-fn balance_and_usage_requests_match_codexbar() {
+fn balance_and_usage_requests_are_well_formed() {
     let transport = StubTransport::new((200, BALANCE), (200, USAGE));
     let result = probe(transport.clone(), Some("team-1234"));
     let snapshot = result.snapshot.unwrap();

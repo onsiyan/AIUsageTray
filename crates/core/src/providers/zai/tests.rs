@@ -1,4 +1,4 @@
-//! Payload cases follow CodexBar's z.ai plugin fixtures.
+//! Payload cases follow z.ai's observed responses.
 
 use super::*;
 use crate::{auth::AccountAuthMaterial, usage::UsageAdapterErrorCode};

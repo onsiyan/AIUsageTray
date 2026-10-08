@@ -1,6 +1,6 @@
 //! Xiaomi MiMo balance and token plan through the platform console.
 //!
-//! MiMo has no API for usage; like CodexBar, this reads the endpoints the
+//! MiMo has no API for usage, so this reads the endpoints the
 //! console at platform.xiaomimimo.com uses, authenticated with its session
 //! cookies (`api-platform_serviceToken` and `userId`). The user pastes the
 //! console's `Cookie:` header when adding the account; only the MiMo cookies

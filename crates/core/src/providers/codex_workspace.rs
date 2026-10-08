@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_selected_workspace_name_uses_codexbar_personal_fallback() {
+    async fn missing_selected_workspace_name_falls_back_to_personal() {
         let transport = StaticTransport::new(200, r#"{"items":[{"id":"personal-id"}]}"#);
 
         let name = resolve_workspace_name(&transport, "test-access-token", "personal-id")

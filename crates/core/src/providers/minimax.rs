@@ -1,6 +1,6 @@
 //! MiniMax Coding (Token) Plan quotas through a Coding Plan API key.
 //!
-//! Following CodexBar, a Coding Plan key (`sk-cp-...`) reads
+//! A Coding Plan key (`sk-cp-...`) reads
 //! `GET /v1/token_plan/remains`, falling back to the older
 //! `GET /v1/api/openplatform/coding_plan/remains`, on its region's API host:
 //! `api.minimax.io` (Global) or `api.minimaxi.com` (China mainland). The
@@ -141,7 +141,7 @@ async fn fetch_remains(
         match attempt {
             Ok(remains) => return Ok(Ok(remains)),
             // A rejection on the Token Plan endpoint wins over whatever the
-            // older endpoint says, as in CodexBar.
+            // older endpoint says.
             Err(error) => {
                 if !matches!(failure, Some(Failure::Rejected(_))) {
                     failure = Some(error);
@@ -383,7 +383,7 @@ fn is_text_generation(model: &str) -> bool {
     lower == "general" || lower.contains("minimax-m") || lower.starts_with("m2.")
 }
 
-/// CodexBar's family names for the models MiniMax lists.
+/// Family names for the models MiniMax lists.
 fn service_name(model: &str) -> String {
     let lower = model.to_ascii_lowercase();
     if lower == "general" {

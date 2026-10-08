@@ -195,7 +195,7 @@ impl DeepSeekBalance {
     }
 }
 
-/// Picks the one currency to show, as CodexBar does for mixed accounts: a
+/// Picks the one currency to show for mixed accounts: a
 /// funded USD balance, then any funded balance, then USD, then
 /// whatever is listed first.
 fn parse_balance(body: &str) -> Result<DeepSeekBalance, String> {

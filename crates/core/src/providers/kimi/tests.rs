@@ -1,4 +1,4 @@
-//! Payload cases follow CodexBar's Kimi tests and documented responses.
+//! Payload cases follow Kimi's documented responses.
 
 use super::*;
 use crate::{

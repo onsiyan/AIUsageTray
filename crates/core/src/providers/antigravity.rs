@@ -198,7 +198,7 @@ impl UsageAdapter for AntigravityUsageAdapter {
         };
 
         // fetchAvailableModels is sometimes an availability catalogue that
-        // reports every model at 100%.  CodexBar verifies that case with the
+        // reports every model at 100%.  That case is verified with the
         // authoritative retrieveUserQuota RPC; otherwise the UI would show a
         // plausible-looking but unverified quota.  A permission failure keeps
         // the catalogue as a degraded availability snapshot.
@@ -339,8 +339,8 @@ const REMOTE_BASE_URLS: [&str; 3] = [
     "https://daily-cloudcode-pa.googleapis.com/",
     "https://cloudcode-pa.googleapis.com/",
 ];
-// Antigravity Manager uses its own current release version for this native
-// quota-summary client identity, not the locally installed IDE's file version.
+// The quota-summary endpoint is called with a current Antigravity release as
+// the client identity, not the locally installed IDE's file version.
 const QUOTA_SUMMARY_USER_AGENT: &str = "vscode/1.X.X (Antigravity/4.7.14-beta)";
 
 #[cfg(test)]

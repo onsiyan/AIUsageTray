@@ -1,4 +1,4 @@
-//! Payload cases follow CodexBar's MiniMax tests.
+//! Payload cases follow MiniMax's observed responses.
 
 use super::*;
 use crate::auth::AccountAuthMaterial;

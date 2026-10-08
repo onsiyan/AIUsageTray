@@ -551,8 +551,7 @@ impl App {
                     self.device_sign_in = None;
                     return Task::none();
                 }
-                // As CodexBar does, the code is copied, ready to paste on the
-                // provider's page.
+                // The code is copied, ready to paste on the provider's page.
                 if let Some(code) = &code {
                     copy_to_clipboard(&code.user_code);
                 }

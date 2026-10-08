@@ -1,4 +1,4 @@
-//! Payload cases follow CodexBar's Cursor tests.
+//! Payload cases follow Cursor's observed responses.
 
 use super::*;
 use crate::auth::AccountAuthMaterial;

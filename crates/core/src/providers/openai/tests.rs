@@ -503,7 +503,7 @@ fn token_users_match_by_user_id_before_email() {
 }
 
 #[test]
-fn workspace_balance_and_monthly_limit_follow_codexbar_rules() {
+fn workspace_balance_and_monthly_limit_parse() {
     assert_eq!(
         parse_workspace_balance(r#"{"balance":"12.5"}"#),
         Some(Some(12.5))

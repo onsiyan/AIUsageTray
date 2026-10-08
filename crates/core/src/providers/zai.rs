@@ -5,7 +5,7 @@
 //! one region; the region found when the account was added is stored with
 //! it as the secondary token (`bigmodel-cn`), so refreshes go straight there.
 //!
-//! Parsing follows CodexBar's rules: `TOKENS_LIMIT` and `CREDIT_LIMIT`
+//! Parsing rules: `TOKENS_LIMIT` and `CREDIT_LIMIT`
 //! entries are Coding Plan windows, the shortest first and the longest
 //! second; `TIME_LIMIT` is the MCP quota. An integer `percentage` is
 //! required, counts refine it when present, and a five-hour reset further
