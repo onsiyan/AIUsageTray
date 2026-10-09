@@ -109,7 +109,9 @@ async fn antigravity_remote_keeps_project_id_out_of_google_identity() {
 async fn antigravity_remote_fallback_uses_authoritative_summary() {
     let transport = Arc::new(FallbackTransport::default());
     let auth = Arc::new(StaticAuth);
-    let adapter = AntigravityUsageAdapter::new(transport.clone(), auth).unwrap();
+    let adapter = AntigravityUsageAdapter::new(transport.clone(), auth)
+        .unwrap()
+        .with_own_endpoint_memory();
     let account =
         AccountRecord::create("test", "test@example.com", None, ANTIGRAVITY, None).unwrap();
 

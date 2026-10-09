@@ -73,6 +73,7 @@ pub struct AntigravityUsageAdapter {
     auth: Arc<dyn AccountAuthMaterialProvider>,
     base_urls: Vec<Url>,
     user_agent: String,
+    answering: remote::EndpointMemory,
 }
 
 impl AntigravityUsageAdapter {
@@ -91,7 +92,16 @@ impl AntigravityUsageAdapter {
             auth,
             base_urls,
             user_agent: "antigravity".to_owned(),
+            answering: Arc::clone(&remote::ANSWERING_ENDPOINT),
         })
+    }
+
+    /// Learns which endpoint answers on its own instead of with every other
+    /// adapter, as a test that acts out an outage needs.
+    #[must_use]
+    pub fn with_own_endpoint_memory(mut self) -> Self {
+        self.answering = Arc::default();
+        self
     }
 }
 

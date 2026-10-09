@@ -52,13 +52,12 @@ async fn quota_summary_tries_next_host_after_forbidden_response() {
         requested_hosts: Mutex::new(Vec::new()),
         requested_user_agents: Mutex::new(Vec::new()),
     });
-    let adapter =
-        AntigravityUsageAdapter::new(transport.clone(), Arc::new(StaticAntigravityAuth)).unwrap();
-    // An operation of its own: the answering endpoint is remembered
-    // process-wide, and other tests must not see this one's.
+    let adapter = AntigravityUsageAdapter::new(transport.clone(), Arc::new(StaticAntigravityAuth))
+        .unwrap()
+        .with_own_endpoint_memory();
     let response = adapter
         .post_remote_best_effort(
-            "v1internal:fallbackOrderTest",
+            "v1internal:fetchAvailableModels",
             json!({}),
             &AccountAuthMaterial {
                 bearer_token: Some("test-token".to_owned()),
@@ -90,15 +89,16 @@ async fn the_endpoint_that_answered_is_tried_first_next_time() {
         requested_hosts: Mutex::new(Vec::new()),
         requested_user_agents: Mutex::new(Vec::new()),
     });
-    let adapter =
-        AntigravityUsageAdapter::new(transport.clone(), Arc::new(StaticAntigravityAuth)).unwrap();
+    let adapter = AntigravityUsageAdapter::new(transport.clone(), Arc::new(StaticAntigravityAuth))
+        .unwrap()
+        .with_own_endpoint_memory();
     let material = AccountAuthMaterial {
         bearer_token: Some("test-token".to_owned()),
         ..AccountAuthMaterial::default()
     };
     for _ in 0..2 {
         let response = adapter
-            .post_remote("v1internal:answeringEndpointTest", json!({}), &material)
+            .post_remote("v1internal:retrieveUserQuota", json!({}), &material)
             .await
             .unwrap();
         assert_eq!(response.status_code, 200);

@@ -26,14 +26,16 @@ pub(super) fn cached_code_assist(account_id: AccountId) -> Option<CodeAssistInfo
 }
 
 /// The endpoint that last answered each operation. It is tried first next
-/// time, so one that stalls is waited on once, not on every refresh.
-static ANSWERING_ENDPOINT: LazyLock<Mutex<HashMap<String, String>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// time, so one that stalls is waited on once, not on every refresh. Shared
+/// by every adapter, since a refresh builds its own.
+pub(super) type EndpointMemory = Arc<Mutex<HashMap<String, String>>>;
+pub(super) static ANSWERING_ENDPOINT: LazyLock<EndpointMemory> = LazyLock::new(Default::default);
 
 impl AntigravityUsageAdapter {
     /// The endpoints in the order to try them for `operation`.
     fn endpoints_for(&self, operation: &str) -> Vec<&Url> {
-        let answering = ANSWERING_ENDPOINT
+        let answering = self
+            .answering
             .lock()
             .ok()
             .and_then(|endpoints| endpoints.get(operation).cloned());
@@ -46,11 +48,11 @@ impl AntigravityUsageAdapter {
         }
         endpoints
     }
-}
 
-fn note_answering_endpoint(operation: &str, base_url: &Url) {
-    if let Ok(mut endpoints) = ANSWERING_ENDPOINT.lock() {
-        endpoints.insert(operation.to_owned(), base_url.as_str().to_owned());
+    fn note_answering_endpoint(&self, operation: &str, base_url: &Url) {
+        if let Ok(mut endpoints) = self.answering.lock() {
+            endpoints.insert(operation.to_owned(), base_url.as_str().to_owned());
+        }
     }
 }
 
@@ -118,7 +120,7 @@ impl AntigravityUsageAdapter {
                         || !is_retryable_remote_status(response.status_code) =>
                 {
                     if response.is_success() {
-                        note_answering_endpoint(operation, base_url);
+                        self.note_answering_endpoint(operation, base_url);
                     }
                     return Ok(response);
                 }
@@ -159,7 +161,7 @@ impl AntigravityUsageAdapter {
                 .await
             {
                 Ok(response) if response.is_success() => {
-                    note_answering_endpoint(operation, base_url);
+                    self.note_answering_endpoint(operation, base_url);
                     return Ok(response);
                 }
                 Ok(response) => last_response = Some(response),
