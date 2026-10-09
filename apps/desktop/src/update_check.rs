@@ -9,7 +9,7 @@ use iced::Task;
 use crate::Message;
 
 /// Where releases are published.
-const REPOSITORY: &str = "monesir/AIUsageTray";
+const REPOSITORY: &str = "onsiyan/AIUsageTray";
 /// How long to wait before looking again.
 pub(super) const CHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn only_a_later_release_on_this_repository_counts() {
-        let page = "https://github.com/monesir/AIUsageTray/releases/tag/v0.3.0";
+        let page = "https://github.com/onsiyan/AIUsageTray/releases/tag/v0.3.0";
         let found = newer_release("v0.3.0", page, "0.2.0").unwrap();
         assert_eq!(found.version, "0.3.0");
         assert!(newer_release("v0.2.0", page, "0.2.0").is_none());
