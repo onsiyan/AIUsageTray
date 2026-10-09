@@ -280,17 +280,13 @@ impl App {
             .width(Fill)
             .height(Fill);
 
-            let theme_menu_layer = container(theme_dropdown(
-                self.theme_id,
-                self.language,
-                self.memory_saver,
-                active_theme,
-            ))
-            .width(Fill)
-            .height(Fill)
-            .align_x(Alignment::End)
-            .align_y(Alignment::Start)
-            .padding([44, 12]);
+            let theme_menu_layer =
+                container(theme_dropdown(self.theme_id, self.language, active_theme))
+                    .width(Fill)
+                    .height(Fill)
+                    .align_x(Alignment::End)
+                    .align_y(Alignment::Start)
+                    .padding([44, 12]);
 
             stack![page, dismiss_area, theme_menu_layer]
                 .width(Fill)

@@ -38,6 +38,15 @@ All notable changes to this project are documented here. The format follows
 - Syncing another machine sends only the half hours that changed since the
   last sync, over a compressed connection: about 100 bytes a sync instead
   of the machine's whole history.
+- The app draws with Vulkan instead of Direct3D 12, whose drivers held
+  about 100 MB more, and hands its memory back to Windows while the popup
+  is hidden: about 1 to 7 MB in Task Manager instead of 70 to 210 MB, and
+  the popup still opens at once.
+
+### Removed
+
+- The Memory saver option, which closed the hidden popup to save memory
+  at the cost of a slower open; the app now saves more without the wait.
 
 ## [0.1.0] - 2026-10-08
 

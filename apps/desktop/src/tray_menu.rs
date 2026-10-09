@@ -19,7 +19,6 @@ pub(crate) enum TrayAction {
     Cost,
     Refresh,
     StartWithWindows,
-    MemorySaver,
     /// Shown once a newer release is found.
     Update,
     OpenLogs,
@@ -27,12 +26,11 @@ pub(crate) enum TrayAction {
 }
 
 impl TrayAction {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 7] = [
         Self::Open,
         Self::Cost,
         Self::Refresh,
         Self::StartWithWindows,
-        Self::MemorySaver,
         Self::Update,
         Self::OpenLogs,
         Self::Quit,
@@ -44,7 +42,6 @@ impl TrayAction {
             Self::Cost => "cost",
             Self::Refresh => "refresh",
             Self::StartWithWindows => "start-with-windows",
-            Self::MemorySaver => "memory-saver",
             Self::Update => "update",
             Self::OpenLogs => "open-logs",
             Self::Quit => "quit",
@@ -61,7 +58,6 @@ impl TrayAction {
             Self::Cost => ("API value of your use", "قيمة استخدامك بأسعار API"),
             Self::Refresh => ("Refresh all", "تحديث الكل"),
             Self::StartWithWindows => ("Start with Windows", "التشغيل مع بدء Windows"),
-            Self::MemorySaver => ("Memory saver", "موفّر الذاكرة"),
             Self::Update => ("Download version", "تنزيل الإصدار"),
             Self::OpenLogs => ("Open log folder", "فتح مجلد السجل"),
             Self::Quit => ("Quit", "إنهاء"),
@@ -76,7 +72,6 @@ impl TrayAction {
 /// The items whose check marks follow settings changed elsewhere.
 struct CheckItems {
     start_with_windows: CheckMenuItem,
-    memory_saver: CheckMenuItem,
 }
 
 thread_local! {
@@ -88,7 +83,7 @@ thread_local! {
 static ACTION_RECEIVER: OnceLock<Receiver<TrayAction>> = OnceLock::new();
 
 /// Builds the menu and starts passing its clicks to the app.
-pub(crate) fn build(language: Language, memory_saver: bool) -> Result<Menu, String> {
+pub(crate) fn build(language: Language) -> Result<Menu, String> {
     allow_dark_menus();
     let item =
         |action: TrayAction| MenuItem::with_id(action.id(), action.label(language), true, None);
@@ -101,7 +96,6 @@ pub(crate) fn build(language: Language, memory_saver: bool) -> Result<Menu, Stri
         None,
     );
     let start_with_windows = check(TrayAction::StartWithWindows, crate::autostart::is_enabled());
-    let memory_saver = check(TrayAction::MemorySaver, memory_saver);
     let menu = Menu::with_items(&[
         &title,
         &PredefinedMenuItem::separator(),
@@ -110,17 +104,13 @@ pub(crate) fn build(language: Language, memory_saver: bool) -> Result<Menu, Stri
         &item(TrayAction::Refresh),
         &PredefinedMenuItem::separator(),
         &start_with_windows,
-        &memory_saver,
         &PredefinedMenuItem::separator(),
         &item(TrayAction::OpenLogs),
         &item(TrayAction::Quit),
     ])
     .map_err(|error| error.to_string())?;
     CHECK_ITEMS.with(|slot| {
-        *slot.borrow_mut() = Some(CheckItems {
-            start_with_windows,
-            memory_saver,
-        });
+        *slot.borrow_mut() = Some(CheckItems { start_with_windows });
     });
     MENU.with(|slot| *slot.borrow_mut() = Some((menu.clone(), None)));
 
@@ -173,14 +163,6 @@ pub(crate) fn set_start_with_windows_checked(checked: bool) {
     CHECK_ITEMS.with(|slot| {
         if let Some(items) = slot.borrow().as_ref() {
             items.start_with_windows.set_checked(checked);
-        }
-    });
-}
-
-pub(crate) fn set_memory_saver_checked(checked: bool) {
-    CHECK_ITEMS.with(|slot| {
-        if let Some(items) = slot.borrow().as_ref() {
-            items.memory_saver.set_checked(checked);
         }
     });
 }

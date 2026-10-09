@@ -23,10 +23,7 @@ pub(super) fn tray_click_should_hide(
 
 pub(super) fn install_tray(sender: Sender<TrayIconEvent>) -> Result<(), String> {
     let icon = Icon::from_rgba(icon_pixels(), 32, 32).map_err(|error| error.to_string())?;
-    let menu = crate::tray_menu::build(
-        crate::locale::default_language(),
-        crate::memory_saver::load_saved(),
-    )?;
+    let menu = crate::tray_menu::build(crate::locale::default_language())?;
     let tray = TrayIconBuilder::new()
         .with_icon(icon)
         .with_tooltip("AI Usage Tray")
@@ -285,6 +282,22 @@ pub(super) fn popup_zoom(work_area_height: f32) -> f32 {
     }
     let zoom = (work_area_height * POPUP_HEIGHT_SHARE / WINDOW_HEIGHT).clamp(1.0, MAX_POPUP_ZOOM);
     (zoom * 20.0).floor() / 20.0
+}
+
+/// The size to ask for so the popup ends up `zoom` times its base size.
+/// iced scales a resize by the zoom already applied (`current_zoom`) as
+/// well as the screen's, so that part is taken back out; the new zoom is
+/// applied after the resize.
+pub(super) fn popup_resize(zoom: f32, current_zoom: f32) -> Size {
+    let current_zoom = if current_zoom > 0.0 {
+        current_zoom
+    } else {
+        1.0
+    };
+    Size::new(
+        WINDOW_WIDTH * zoom / current_zoom,
+        WINDOW_HEIGHT * zoom / current_zoom,
+    )
 }
 
 /// A fixed zoom for previewing other screen sizes during development.

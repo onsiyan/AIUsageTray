@@ -1,5 +1,5 @@
 //! The palette menu: theme, usage percentage display, what account cards
-//! show, and memory saver.
+//! show, and the window.
 
 use super::*;
 use display_options::ResetCreditVisibility;
@@ -9,10 +9,9 @@ use iced::widget::column;
 pub(super) fn theme_dropdown(
     current_theme: ThemeId,
     language: locale::Language,
-    memory_saver: bool,
     active_theme: &'static ThemeDefinition,
 ) -> Element<'static, Message> {
-    // Themes and memory on the left, how usage reads on the right: a wide
+    // Themes and the window on the left, how usage reads on the right: a wide
     // menu across the window instead of a tall one.
     let mut items = vec![menu_section_title(
         locale::text(language, locale::Text::ThemeTitle),
@@ -123,8 +122,8 @@ pub(super) fn theme_dropdown(
         .spacing(1)
         .width(Fill);
 
-    // The window and memory sit under the themes, where the shorter
-    // column has room.
+    // The window sits under the themes, where the shorter column has
+    // room.
     items.push(menu_section_title(
         locale::text(language, locale::Text::WindowTitle),
         active_theme,
@@ -136,26 +135,6 @@ pub(super) fn theme_dropdown(
         Message::SetShowInTaskbar(!in_taskbar),
         active_theme,
     ));
-    items.push(menu_section_title(
-        locale::text(language, locale::Text::MemoryTitle),
-        active_theme,
-    ));
-    items.push(choice_row(
-        locale::text(language, locale::Text::MemorySaver),
-        memory_saver,
-        Message::SetMemorySaver(!memory_saver),
-        active_theme,
-    ));
-    items.push(
-        container(
-            text(locale::text(language, locale::Text::MemorySaverTradeoff))
-                .size(typography::METADATA_SIZE)
-                .font(typography::MEDIUM)
-                .color(active_theme.colors.muted_text()),
-        )
-        .padding([2, 9])
-        .into(),
-    );
 
     let themes = column![themes, column(items).spacing(1)]
         .spacing(1)

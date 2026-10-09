@@ -189,10 +189,12 @@ impl App {
                         "usage refresh: attempted={}, updated={}, not_updated={}",
                         refresh.attempted, refresh.updated, refresh.not_updated
                     ));
+                    self.trim_memory_if_hidden();
                     self.finish_dashboard_refresh()
                 }
                 usage_refresh::RefreshEvent::Failed(error) => {
                     crate::app_log::write(format!("usage refresh failed: {error}"));
+                    self.trim_memory_if_hidden();
                     self.finish_dashboard_refresh()
                 }
             },
@@ -746,14 +748,6 @@ impl App {
             }
             Message::SetUiZoom(zoom) => {
                 self.ui_zoom = zoom;
-                Task::none()
-            }
-            Message::SetMemorySaver(enabled) => {
-                self.memory_saver = enabled;
-                tray_menu::set_memory_saver_checked(enabled);
-                if let Err(error) = memory_saver::save(enabled) {
-                    crate::app_log::write(format!("memory saver preference save failed: {error}"));
-                }
                 Task::none()
             }
             Message::SetShowAccountDetails(shown) => {

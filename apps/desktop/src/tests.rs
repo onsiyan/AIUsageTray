@@ -250,6 +250,19 @@ fn popup_stays_inside_work_area_above_bottom_taskbar() {
 }
 
 #[test]
+fn reopening_a_zoomed_popup_does_not_zoom_its_size_twice() {
+    // First open: no zoom applied yet.
+    assert_eq!(
+        popup_resize(1.45, 1.0),
+        Size::new(WINDOW_WIDTH * 1.45, WINDOW_HEIGHT * 1.45)
+    );
+    // Reopen on the same 1440p screen: iced adds the applied 1.45 itself.
+    let reopened = popup_resize(1.45, 1.45);
+    assert!((reopened.width - WINDOW_WIDTH).abs() < 0.01);
+    assert!((reopened.height - WINDOW_HEIGHT).abs() < 0.01);
+}
+
+#[test]
 fn popup_grows_on_large_screens_and_keeps_its_size_on_a_laptop() {
     // 14" laptop, 1920x1200 at 150%: 735 units of usable height.
     assert_eq!(popup_zoom(735.0), 1.0);
@@ -327,23 +340,15 @@ fn popup_flips_below_top_taskbar_and_clamps_to_work_area() {
 }
 
 #[test]
-fn memory_saver_closes_the_hidden_popup_window() {
+fn hiding_the_popup_keeps_its_window() {
     let mut app = App::new();
-    app.memory_saver = false;
     app.window_id = Some(window::Id::unique());
     app.popup_visible = true;
     let _ = app.hide_popup();
+    assert!(!app.popup_visible);
     assert!(
         app.window_id.is_some(),
-        "by default the window is kept for an instant reopen"
-    );
-
-    app.memory_saver = true;
-    app.popup_visible = true;
-    let _ = app.hide_popup();
-    assert!(
-        app.window_id.is_none(),
-        "the memory saver closes the window"
+        "the window is kept for an instant reopen"
     );
 }
 

@@ -48,7 +48,7 @@ mod hint;
 mod key_services;
 mod keys_tab;
 mod locale;
-mod memory_saver;
+mod memory_trim;
 mod percent_display;
 mod smooth_scroll;
 mod spinner;
@@ -114,7 +114,7 @@ fn main() -> iced::Result {
     let (tray_sender, tray_receiver) = async_channel::bounded::<TrayIconEvent>(32);
     let _ = TRAY_EVENT_RECEIVER.set(tray_receiver.clone());
     // The tray icon lives on this thread for the whole run, independent of
-    // the popup window, which the memory saver closes while it is hidden.
+    // the popup window.
     if let Err(error) = install_tray(tray_sender) {
         crate::app_log::write(format!("tray failed: {error}"));
     }
@@ -125,10 +125,9 @@ fn main() -> iced::Result {
                 Message::DashboardLoaded,
             )];
             let mut app = App::new();
-            if !app.memory_saver {
-                // Ready ahead of the first tray click so it opens instantly.
-                boot.push(app.open_popup_window().discard());
-            }
+            memory_trim::trim_after(memory_trim::AFTER_START);
+            // Ready ahead of the first tray click so it opens instantly.
+            boot.push(app.open_popup_window().discard());
             if std::env::var_os("USAGE_UI_PREVIEW_OPEN_ON_START").is_none() {
                 app.update_checked_at = Some(Instant::now());
                 boot.push(update_check::check());
@@ -489,7 +488,6 @@ struct App {
     cost: cost_tab::CostTab,
     keys: keys_tab::KeysTab,
     language: locale::Language,
-    memory_saver: bool,
     /// How much the popup is enlarged on the screen it is shown on.
     ui_zoom: f32,
     /// The first-run welcome, while it is shown.
@@ -550,7 +548,6 @@ impl App {
             cost: cost_tab::CostTab::load(),
             keys: keys_tab::KeysTab::default(),
             language: locale::default_language(),
-            memory_saver: memory_saver::load_saved(),
             ui_zoom: 1.0,
             welcome: None,
             welcome_checked: false,
@@ -648,6 +645,8 @@ impl App {
     fn show_window(&mut self, tray_rect: Option<tray_icon::Rect>) -> Task<Message> {
         preview_log("show or restore window from tray");
         self.popup_visible = true;
+        memory_trim::set_hidden(false);
+        let current_zoom = self.ui_zoom;
         let (window_id, open_task) = match self.window_id {
             Some(window_id) => (window_id, Task::none()),
             None => {
@@ -669,12 +668,9 @@ impl App {
                 preview_log(format!(
                     "show popup: scale={scale_factor} zoom={zoom} work_area={work_area:?} position={position:?}"
                 ));
-                Task::done(Message::SetUiZoom(zoom))
-                    .chain(window::resize::<Message>(
-                        window_id,
-                        Size::new(WINDOW_WIDTH * zoom, WINDOW_HEIGHT * zoom),
-                    ))
+                window::resize::<Message>(window_id, popup_resize(zoom, current_zoom))
                     .chain(window::move_to::<Message>(window_id, position))
+                    .chain(Task::done(Message::SetUiZoom(zoom)))
                     .chain(window::set_mode::<Message>(
                         window_id,
                         window::Mode::Windowed,
@@ -707,6 +703,13 @@ impl App {
             usage_refresh::refresh_accounts(first, trigger),
             Message::UsageRefreshEvent,
         )
+    }
+
+    /// A refresh in the background grows the working set again.
+    fn trim_memory_if_hidden(&self) {
+        if !self.popup_visible {
+            memory_trim::trim_soon();
+        }
     }
 
     fn finish_dashboard_refresh(&mut self) -> Task<Message> {
@@ -807,7 +810,6 @@ impl App {
                 tray_menu::set_start_with_windows_checked(autostart::is_enabled());
                 Task::none()
             }
-            TrayAction::MemorySaver => self.update(Message::SetMemorySaver(!self.memory_saver)),
             TrayAction::Update => self.update(Message::OpenUpdate),
             TrayAction::OpenLogs => {
                 app_log::open_folder();
@@ -821,21 +823,16 @@ impl App {
         }
     }
 
-    /// Hides the popup. With the memory saver on, its window is closed
-    /// instead: with no window left the renderer releases the GPU memory.
+    /// Hides the popup, keeping its window for an instant reopen, and hands
+    /// its memory back to Windows meanwhile.
     fn hide_popup(&mut self) -> Task<Message> {
         self.popup_visible = false;
         self.window_focused = false;
-        if self.memory_saver {
-            self.window_id
-                .take()
-                .map(window::close)
-                .unwrap_or_else(Task::none)
-        } else {
-            self.window_id
-                .map(|id| window::set_mode(id, window::Mode::Hidden))
-                .unwrap_or_else(Task::none)
-        }
+        memory_trim::set_hidden(true);
+        memory_trim::trim_soon();
+        self.window_id
+            .map(|id| window::set_mode(id, window::Mode::Hidden))
+            .unwrap_or_else(Task::none)
     }
 }
 
@@ -882,7 +879,6 @@ enum Message {
     DismissAccountAddStatus,
     SelectTheme(ThemeId),
     SelectPercentDisplay(PercentDisplay),
-    SetMemorySaver(bool),
     SetShowAccountDetails(bool),
     SetShowTeamBudgets(bool),
     SetShadeResetTimes(bool),

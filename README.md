@@ -13,8 +13,8 @@ can switch the Codex and Antigravity desktop apps to any saved account.
   Favorites and your own tabs that gather several providers or single
   accounts (Tabs button in the title bar).
 - **Tray menu**: right-click the icon to open the popup or the Cost page,
-  refresh every account, turn Start with Windows and Memory saver on or off,
-  open the log folder, or quit.
+  refresh every account, turn Start with Windows on or off, open the log
+  folder, or quit.
 - **Updates**: the app checks GitHub for a newer release at start and once
   a day, and offers its page in the tray menu and the popup.
 - **Cost page** (the $ button): what Codex and Claude Code use would cost at
