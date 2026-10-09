@@ -135,6 +135,23 @@ pub(super) fn theme_dropdown(
         Message::SetShowInTaskbar(!in_taskbar),
         active_theme,
     ));
+    items.push(menu_section_title(
+        locale::text(language, locale::Text::OpensTitle),
+        active_theme,
+    ));
+    let current_place = popup_place::place();
+    for (place, label) in [
+        (popup_place::Place::Tray, locale::Text::OpensAtTray),
+        (popup_place::Place::Center, locale::Text::OpensAtCenter),
+        (popup_place::Place::Last, locale::Text::OpensWhereLeft),
+    ] {
+        items.push(choice_row(
+            locale::text(language, label),
+            place == current_place,
+            Message::SelectPopupPlace(place),
+            active_theme,
+        ));
+    }
 
     let themes = column![themes, column(items).spacing(1)]
         .spacing(1)

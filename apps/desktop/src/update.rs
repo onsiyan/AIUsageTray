@@ -750,6 +750,21 @@ impl App {
                 self.ui_zoom = zoom;
                 Task::none()
             }
+            Message::SelectPopupPlace(place) => {
+                popup_place::set_place(place);
+                if let Err(error) = popup_place::save_place(place) {
+                    crate::app_log::write(format!("popup place save failed: {error}"));
+                }
+                Task::none()
+            }
+            Message::PopupLeftAt(position) => {
+                if let Some(position) = position
+                    && let Err(error) = popup_place::keep_last_position(position.x, position.y)
+                {
+                    crate::app_log::write(format!("popup position save failed: {error}"));
+                }
+                Task::none()
+            }
             Message::SetShowAccountDetails(shown) => {
                 display_options::set_show_account_details(shown);
                 if let Err(error) = display_options::save_show_account_details(shown) {

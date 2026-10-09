@@ -50,6 +50,7 @@ mod keys_tab;
 mod locale;
 mod memory_trim;
 mod percent_display;
+mod popup_place;
 mod smooth_scroll;
 mod spinner;
 mod tab_icons;
@@ -512,6 +513,7 @@ impl App {
         let theme_id = load_saved_theme();
         percent_display::set_default(percent_display::load_saved());
         display_options::load_saved();
+        popup_place::load_saved();
         let tab_layout = tabs::load_saved();
         let mut dashboard = dashboard::DashboardState::loading();
         dashboard.set_custom_tab_accounts(tab_layout.custom_accounts());
@@ -640,13 +642,16 @@ impl App {
         })
     }
 
-    /// Shows the popup next to the tray icon, opening its window first when
-    /// it was closed. Without a tray position it sits at the taskbar edge.
+    /// Shows the popup where the user chose: next to the tray icon (at the
+    /// taskbar edge without its position), in the middle of that screen, or
+    /// where it was last left. Its window is opened first when it was closed.
     fn show_window(&mut self, tray_rect: Option<tray_icon::Rect>) -> Task<Message> {
         preview_log("show or restore window from tray");
         self.popup_visible = true;
         memory_trim::set_hidden(false);
         let current_zoom = self.ui_zoom;
+        let place = popup_place::place();
+        let last_position = popup_place::last_position();
         let (window_id, open_task) = match self.window_id {
             Some(window_id) => (window_id, Task::none()),
             None => {
@@ -659,12 +664,22 @@ impl App {
                 let monitor_size = monitor_size.unwrap_or(Size::new(1920.0, 1080.0));
                 let tray_rect =
                     tray_rect.unwrap_or_else(|| taskbar_edge_anchor(monitor_size, scale_factor));
-                let work_area = monitor_work_area(tray_rect)
+                let last_position = last_position.filter(|_| place == popup_place::Place::Last);
+                // The screen it opens on: the one it was left on, or the tray's.
+                let screen = last_position.map_or(tray_rect, |(x, y)| tray_icon::Rect {
+                    position: tray_icon::dpi::PhysicalPosition::new(f64::from(x), f64::from(y)),
+                    size: tray_icon::dpi::PhysicalSize::new(1, 1),
+                });
+                let work_area = monitor_work_area(screen)
                     .unwrap_or_else(|| full_monitor_work_area(monitor_size, scale_factor));
-                let monitor_scale = monitor_scale_factor(tray_rect).unwrap_or(scale_factor);
+                let monitor_scale = monitor_scale_factor(screen).unwrap_or(scale_factor);
                 let zoom = preview_zoom()
                     .unwrap_or_else(|| popup_zoom((work_area.bottom - work_area.top) / monitor_scale));
-                let position = popup_position(tray_rect, scale_factor, zoom, work_area);
+                let position = match (place, last_position) {
+                    (popup_place::Place::Center, _) => popup_centered(scale_factor, zoom, work_area),
+                    (_, Some(corner)) => popup_at(corner, scale_factor, zoom, work_area),
+                    _ => popup_position(tray_rect, scale_factor, zoom, work_area),
+                };
                 preview_log(format!(
                     "show popup: scale={scale_factor} zoom={zoom} work_area={work_area:?} position={position:?}"
                 ));
@@ -830,9 +845,18 @@ impl App {
         self.window_focused = false;
         memory_trim::set_hidden(true);
         memory_trim::trim_soon();
-        self.window_id
-            .map(|id| window::set_mode(id, window::Mode::Hidden))
-            .unwrap_or_else(Task::none)
+        let Some(id) = self.window_id else {
+            return Task::none();
+        };
+        // Where it was left, in screen pixels, for opening there next time.
+        let keep_position = window::position(id).then(move |position| {
+            window::scale_factor(id).map(move |scale_factor| {
+                Message::PopupLeftAt(position.map(|position| {
+                    Point::new(position.x * scale_factor, position.y * scale_factor)
+                }))
+            })
+        });
+        keep_position.chain(window::set_mode(id, window::Mode::Hidden))
     }
 }
 
@@ -902,6 +926,9 @@ enum Message {
     WelcomePreview(bool),
     SelectResetCredits(display_options::ResetCreditVisibility),
     SetUiZoom(f32),
+    SelectPopupPlace(popup_place::Place),
+    /// Where the popup was when it hid, in screen pixels.
+    PopupLeftAt(Option<Point>),
     SwitchCodexDesktopAccount(usage_monitor_core::accounts::AccountId),
     SwitchAntigravityAppAccount(usage_monitor_core::accounts::AccountId),
     CodexDesktopSwitchFinished(usage_monitor_core::accounts::AccountId, Result<(), String>),

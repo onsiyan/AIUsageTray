@@ -284,6 +284,38 @@ pub(super) fn popup_zoom(work_area_height: f32) -> f32 {
     (zoom * 20.0).floor() / 20.0
 }
 
+/// The popup in the middle of the work area.
+pub(super) fn popup_centered(scale_factor: f32, zoom: f32, work_area: PhysicalWorkArea) -> Point {
+    let scale_factor = scale_factor.max(1.0);
+    let width = WINDOW_WIDTH * zoom * scale_factor;
+    let height = WINDOW_HEIGHT * zoom * scale_factor;
+    let x = work_area.left + ((work_area.right - work_area.left) - width).max(0.0) / 2.0;
+    let y = work_area.top + ((work_area.bottom - work_area.top) - height).max(0.0) / 2.0;
+    Point::new(x / scale_factor, y / scale_factor)
+}
+
+/// The popup with its top-left corner at `corner` (screen pixels), moved
+/// back onto the work area if it would hang off it.
+pub(super) fn popup_at(
+    corner: (f32, f32),
+    scale_factor: f32,
+    zoom: f32,
+    work_area: PhysicalWorkArea,
+) -> Point {
+    let scale_factor = scale_factor.max(1.0);
+    let width = WINDOW_WIDTH * zoom * scale_factor;
+    let height = WINDOW_HEIGHT * zoom * scale_factor;
+    let x = corner.0.clamp(
+        work_area.left,
+        (work_area.right - width).max(work_area.left),
+    );
+    let y = corner.1.clamp(
+        work_area.top,
+        (work_area.bottom - height).max(work_area.top),
+    );
+    Point::new(x / scale_factor, y / scale_factor)
+}
+
 /// The size to ask for so the popup ends up `zoom` times its base size.
 /// iced scales a resize by the zoom already applied (`current_zoom`) as
 /// well as the screen's, so that part is taken back out; the new zoom is

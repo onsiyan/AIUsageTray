@@ -250,6 +250,40 @@ fn popup_stays_inside_work_area_above_bottom_taskbar() {
 }
 
 #[test]
+fn the_popup_can_open_centered_or_where_it_was_left() {
+    // 1440p at 100% with a 48 px taskbar at the bottom.
+    let work_area = PhysicalWorkArea {
+        left: 0.0,
+        top: 0.0,
+        right: 2560.0,
+        bottom: 1392.0,
+    };
+    let centered = popup_centered(1.0, 1.0, work_area);
+    assert_eq!(
+        centered,
+        Point::new(
+            (2560.0 - WINDOW_WIDTH) / 2.0,
+            (1392.0 - WINDOW_HEIGHT) / 2.0
+        )
+    );
+
+    assert_eq!(
+        popup_at((300.0, 200.0), 1.0, 1.0, work_area),
+        Point::new(300.0, 200.0)
+    );
+    // Left partly off the screen, or on a screen since removed: pulled back.
+    assert_eq!(
+        popup_at((2500.0, -40.0), 1.0, 1.0, work_area),
+        Point::new(2560.0 - WINDOW_WIDTH, 0.0)
+    );
+    // At 150% the position comes back in the window's own units.
+    assert_eq!(
+        popup_at((300.0, 150.0), 1.5, 1.0, work_area),
+        Point::new(200.0, 100.0)
+    );
+}
+
+#[test]
 fn reopening_a_zoomed_popup_does_not_zoom_its_size_twice() {
     // First open: no zoom applied yet.
     assert_eq!(

@@ -27,6 +27,8 @@ can switch the Codex and Antigravity desktop apps to any saved account.
   usage from them.
 - **Themes**: built-in dark, light, and picture themes, or your own colors
   and background picture.
+- **Where it opens**: above the tray icon, in the middle of the screen, or
+  where you left it (palette menu).
 - **Command line**: `ai-usage-tray-cli` for people and agents, with stable
   account references and JSON output.
 
