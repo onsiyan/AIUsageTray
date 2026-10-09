@@ -22,7 +22,7 @@ pub fn mark_done() {
         fs::write(directory.join(DONE_FILE), "done")
     });
     if let Err(error) = result {
-        preview_log(format!("welcome state save failed: {error}"));
+        crate::app_log::write(format!("welcome state save failed: {error}"));
     }
 }
 

@@ -623,3 +623,11 @@ fn copilot_and_cursor_sign_in_themselves_or_take_a_credential_from_stdin() {
         assert_eq!(provider.api_key_environment(), None);
     }
 }
+
+#[test]
+fn reset_needs_its_confirmation() {
+    // Without --yes nothing is touched, so this is safe on a real PC.
+    let failure = execute_reset(false, true).unwrap_err();
+    assert_eq!(failure.exit_code, 5);
+    assert_eq!(failure.code, "confirmation_required");
+}

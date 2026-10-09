@@ -98,7 +98,7 @@ impl App {
                 Task::none()
             }
             Message::DashboardLoaded(Err(error)) => {
-                preview_log(format!("dashboard data load failed: {error}"));
+                crate::app_log::write(format!("dashboard data load failed: {error}"));
                 self.dashboard.set_error();
                 Task::none()
             }
@@ -112,20 +112,22 @@ impl App {
                     .move_account(self.selected_tab, account_id, offset)
                     && let Err(error) = self.dashboard.save_account_lists()
                 {
-                    preview_log(format!("account order save failed: {error}"));
+                    crate::app_log::write(format!("account order save failed: {error}"));
                 }
                 Task::none()
             }
             Message::ToggleFavorite(account_id) => {
                 self.dashboard.toggle_favorite(account_id);
                 if let Err(error) = self.dashboard.save_account_lists() {
-                    preview_log(format!("favorite accounts save failed: {error}"));
+                    crate::app_log::write(format!("favorite accounts save failed: {error}"));
                 }
                 Task::none()
             }
             Message::SetAntigravityClaudeGptHidden(hide) => {
                 if let Err(error) = self.dashboard.set_hide_antigravity_claude_gpt(hide) {
-                    preview_log(format!("antigravity group preference save failed: {error}"));
+                    crate::app_log::write(format!(
+                        "antigravity group preference save failed: {error}"
+                    ));
                 }
                 Task::none()
             }
@@ -161,24 +163,36 @@ impl App {
                 Task::none()
             }
             Message::AliasSaved(account_id, Err(error)) => {
-                preview_log(format!("account name save failed: {error}"));
+                crate::app_log::write(format!("account name save failed: {error}"));
                 self.dashboard.finish_alias_save(account_id, true);
                 Task::none()
             }
             Message::UsageRefreshEvent(event) => match event {
                 usage_refresh::RefreshEvent::AccountUpdated(entry) => {
+                    if let Some(reason) = entry
+                        .snapshot
+                        .as_ref()
+                        .filter(|snapshot| snapshot.is_stale)
+                        .and_then(|snapshot| snapshot.stale_reason.as_deref())
+                    {
+                        crate::app_log::write(format!(
+                            "{} {} not updated: {reason}",
+                            entry.account.provider_id,
+                            entry.account.account_ref.as_deref().unwrap_or("account"),
+                        ));
+                    }
                     self.dashboard.update_account_usage(*entry);
                     Task::none()
                 }
                 usage_refresh::RefreshEvent::Finished(refresh) => {
-                    preview_log(format!(
+                    crate::app_log::write(format!(
                         "usage refresh: attempted={}, updated={}, not_updated={}",
                         refresh.attempted, refresh.updated, refresh.not_updated
                     ));
                     self.finish_dashboard_refresh()
                 }
                 usage_refresh::RefreshEvent::Failed(error) => {
-                    preview_log(format!("usage refresh failed: {error}"));
+                    crate::app_log::write(format!("usage refresh failed: {error}"));
                     self.finish_dashboard_refresh()
                 }
             },
@@ -368,7 +382,37 @@ impl App {
                 self.dashboard.advance_usage_animation(Instant::now());
                 Task::none()
             }
+            Message::UpdateChecked(found) => {
+                if let Some(release) = found
+                    && self.update.as_ref() != Some(&release)
+                {
+                    app_log::write(format!("version {} is available", release.version));
+                    tray_menu::show_update(&release.version, self.language);
+                    self.update = Some(release);
+                    self.update_note_closed = false;
+                }
+                Task::none()
+            }
+            Message::OpenUpdate => {
+                if let Some(release) = &self.update {
+                    account_add::open_in_browser(&release.url);
+                }
+                Task::none()
+            }
+            Message::CloseUpdateNote => {
+                self.update_note_closed = true;
+                Task::none()
+            }
             Message::ResetClockTick => {
+                let update_due = self
+                    .update_checked_at
+                    .is_some_and(|checked| checked.elapsed() >= update_check::CHECK_EVERY);
+                let update_check = if update_due {
+                    self.update_checked_at = Some(Instant::now());
+                    update_check::check()
+                } else {
+                    Task::none()
+                };
                 // A window reset while the popup was open: show it as unused
                 // right away and fetch the provider's new reading.
                 let usage = if self.dashboard.clear_elapsed_resets() {
@@ -381,11 +425,12 @@ impl App {
                 if self.selected_tab == DashboardTab::Cost {
                     Task::batch([
                         usage,
+                        update_check,
                         self.cost.scan_if_due(),
                         self.cost.sync_machines_if_due(true),
                     ])
                 } else {
-                    Task::batch([usage, self.cost.sync_machines_if_due(false)])
+                    Task::batch([usage, update_check, self.cost.sync_machines_if_due(false)])
                 }
             }
             Message::ToggleThemeMenu => {
@@ -619,7 +664,7 @@ impl App {
                         Task::perform(dashboard::load_saved_accounts(), Message::DashboardLoaded)
                     }
                     Err(error) => {
-                        preview_log(format!("account add failed for {provider:?}"));
+                        crate::app_log::write(format!("account add failed for {provider:?}"));
                         self.account_add_status = Some(AccountAddStatus::Failed(error));
                         Task::none()
                     }
@@ -648,7 +693,9 @@ impl App {
             }
             Message::SetModelVisibility(model_id, is_visible) => {
                 if let Err(error) = self.dashboard.set_model_visibility(model_id, is_visible) {
-                    preview_log(format!("model visibility preference save failed: {error}"));
+                    crate::app_log::write(format!(
+                        "model visibility preference save failed: {error}"
+                    ));
                 }
                 Task::none()
             }
@@ -668,7 +715,7 @@ impl App {
                 self.account_add_menu_open = false;
                 self.dismiss_account_delete_dialog();
                 if let Err(error) = save_theme(theme_id) {
-                    preview_log(format!("theme preference save failed: {error}"));
+                    crate::app_log::write(format!("theme preference save failed: {error}"));
                 }
                 Task::none()
             }
@@ -692,7 +739,7 @@ impl App {
             }
             Message::CodexDesktopSwitchFinished(account_id, result) => {
                 if let Err(error) = &result {
-                    preview_log(format!("Codex desktop switch failed: {error}"));
+                    crate::app_log::write(format!("Codex desktop switch failed: {error}"));
                 }
                 self.dashboard.finish_codex_switch(account_id, result);
                 Task::none()
@@ -705,28 +752,30 @@ impl App {
                 self.memory_saver = enabled;
                 tray_menu::set_memory_saver_checked(enabled);
                 if let Err(error) = memory_saver::save(enabled) {
-                    preview_log(format!("memory saver preference save failed: {error}"));
+                    crate::app_log::write(format!("memory saver preference save failed: {error}"));
                 }
                 Task::none()
             }
             Message::SetShowAccountDetails(shown) => {
                 display_options::set_show_account_details(shown);
                 if let Err(error) = display_options::save_show_account_details(shown) {
-                    preview_log(format!("account details preference save failed: {error}"));
+                    crate::app_log::write(format!(
+                        "account details preference save failed: {error}"
+                    ));
                 }
                 Task::none()
             }
             Message::SetShadeResetTimes(shaded) => {
                 display_options::set_shade_reset_times(shaded);
                 if let Err(error) = display_options::save_shade_reset_times(shaded) {
-                    preview_log(format!("reset shade preference save failed: {error}"));
+                    crate::app_log::write(format!("reset shade preference save failed: {error}"));
                 }
                 Task::none()
             }
             Message::SetShowInTaskbar(shown) => {
                 display_options::set_show_in_taskbar(shown);
                 if let Err(error) = display_options::save_show_in_taskbar(shown) {
-                    preview_log(format!("taskbar preference save failed: {error}"));
+                    crate::app_log::write(format!("taskbar preference save failed: {error}"));
                 }
                 // The taskbar button is set when the window is made, so the
                 // open window is replaced by one made with the new choice.
@@ -742,14 +791,14 @@ impl App {
             Message::SetShowTeamBudgets(shown) => {
                 display_options::set_show_team_budgets(shown);
                 if let Err(error) = display_options::save_show_team_budgets(shown) {
-                    preview_log(format!("team budgets preference save failed: {error}"));
+                    crate::app_log::write(format!("team budgets preference save failed: {error}"));
                 }
                 Task::none()
             }
             Message::SelectResetCredits(mode) => {
                 display_options::set_reset_credits(mode);
                 if let Err(error) = display_options::save_reset_credits(mode) {
-                    preview_log(format!("reset credits preference save failed: {error}"));
+                    crate::app_log::write(format!("reset credits preference save failed: {error}"));
                 }
                 Task::none()
             }
@@ -757,7 +806,9 @@ impl App {
                 percent_display::set_default(mode);
                 self.theme_menu_open = false;
                 if let Err(error) = percent_display::save(mode) {
-                    preview_log(format!("percent display preference save failed: {error}"));
+                    crate::app_log::write(format!(
+                        "percent display preference save failed: {error}"
+                    ));
                 }
                 Task::none()
             }

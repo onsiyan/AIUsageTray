@@ -2,15 +2,9 @@
 //! `UsageMonitor/Vault/<id>`, holding the whole key as JSON. Like the
 //! accounts' own keys, they are readable only by this Windows user.
 
-use std::{ptr, slice};
-
 use usage_monitor_core::vault::{self, VaultKey};
-use windows_sys::Win32::{
-    Foundation::{ERROR_NOT_FOUND, GetLastError},
-    Security::Credentials::{CREDENTIALW, CredEnumerateW, CredFree},
-};
 
-use super::{load_named, remove_named, save_named, wide};
+use super::{credential_names, load_named, remove_named, save_named};
 
 const PREFIX: &str = "UsageMonitor/Vault/";
 /// A key at its longest, with its labels and JSON quoting.
@@ -58,55 +52,13 @@ pub fn remove(id: &str) -> Result<(), String> {
 
 /// The ids of the vault's entries, leaving out the parts of split ones.
 fn entry_ids() -> Result<Vec<String>, String> {
-    let filter = wide(&format!("{PREFIX}*"));
-    let mut count = 0_u32;
-    let mut credentials: *mut *mut CREDENTIALW = ptr::null_mut();
-    // SAFETY: the filter is NUL-terminated; on success Windows hands back an
-    // array of `count` credential pointers, freed below with CredFree.
-    let success = unsafe { CredEnumerateW(filter.as_ptr(), 0, &mut count, &mut credentials) };
-    if success == 0 {
-        let error = unsafe { GetLastError() };
-        if error == ERROR_NOT_FOUND {
-            return Ok(Vec::new());
-        }
-        return Err(format!("CredEnumerateW failed with Win32 error {error}"));
-    }
-    let mut ids = Vec::new();
-    if !credentials.is_null() {
-        // SAFETY: the array holds `count` valid pointers until CredFree.
-        let entries = unsafe { slice::from_raw_parts(credentials, count as usize) };
-        for &entry in entries {
-            if entry.is_null() {
-                continue;
-            }
-            // SAFETY: each entry is a live CREDENTIALW with a NUL-terminated
-            // target name.
-            let name = unsafe { wide_to_string((*entry).TargetName) };
-            if let Some(id) = name.strip_prefix(PREFIX)
-                && !id.contains('#')
-            {
-                ids.push(id.to_owned());
-            }
-        }
-        unsafe { CredFree(credentials as *const std::ffi::c_void) };
-    }
-    Ok(ids)
-}
-
-/// # Safety
-/// `text` is null or points at a NUL-terminated UTF-16 string.
-unsafe fn wide_to_string(text: *const u16) -> String {
-    if text.is_null() {
-        return String::new();
-    }
-    let mut length = 0;
-    // SAFETY: the string ends at its NUL, per the caller.
-    unsafe {
-        while *text.add(length) != 0 {
-            length += 1;
-        }
-        String::from_utf16_lossy(slice::from_raw_parts(text, length))
-    }
+    Ok(credential_names(PREFIX)
+        .map_err(|error| error.to_string())?
+        .iter()
+        .filter_map(|name| name.strip_prefix(PREFIX))
+        .filter(|id| !id.contains('#'))
+        .map(str::to_owned)
+        .collect())
 }
 
 #[cfg(test)]

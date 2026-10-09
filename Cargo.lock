@@ -26,6 +26,7 @@ dependencies = [
  "iced",
  "image",
  "lucide-icons",
+ "reqwest",
  "serde_json",
  "tokio",
  "tray-icon",

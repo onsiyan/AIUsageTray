@@ -14,13 +14,15 @@ can switch the Codex and Antigravity desktop apps to any saved account.
   accounts (Tabs button in the title bar).
 - **Tray menu**: right-click the icon to open the popup or the Cost page,
   refresh every account, turn Start with Windows and Memory saver on or off,
-  or quit.
+  open the log folder, or quit.
+- **Updates**: the app checks GitHub for a newer release at start and once
+  a day, and offers its page in the tray menu and the popup.
 - **Cost page** (the $ button): what Codex and Claude Code use would cost at
   API list prices, read from their local session logs, against what your
   plans cost. History is kept past the tools' own clean-up, by day, model,
   and tool, and can include other machines reached over SSH with your keys.
-- **API keys page** (the key button): keep any service's API key under a
-  name, with its service's logo, and copy it in one click. Keys stay in
+- **API keys page** (the key button): keep any service's API key, picked
+  from 60 AI companies' logos, and copy it in one click. Keys stay in
   Windows Credential Manager; the page is quick access only and reads no
   usage from them.
 - **Themes**: built-in dark, light, and picture themes, or your own colors
@@ -34,7 +36,8 @@ Download `AIUsageTray-<version>-Setup.exe` and run it. Setup installs for
 the current Windows user without an administrator prompt (by default into
 `%LOCALAPPDATA%\Programs\AIUsageTray`) and lets you choose the folder,
 starting with Windows, and a desktop shortcut. Running a newer setup updates
-the app in place; remove it from Windows' Installed apps.
+the app in place; remove it from Windows' Installed apps, which asks whether
+to remove your saved accounts, keys, and settings too.
 
 ## Repository layout
 
@@ -83,6 +86,7 @@ the setup, install [Inno Setup 6](https://jrsoftware.org/isinfo.php)
 .\target\release\ai-usage-tray-cli.exe usage refresh --all --provider codex --json
 .\target\release\ai-usage-tray-cli.exe usage watch
 .\target\release\ai-usage-tray-cli.exe account remove ch1 --yes
+.\target\release\ai-usage-tray-cli.exe reset --yes
 ```
 
 Accounts have stable references: `chN` (Codex), `ccN` (Claude), `agN`
@@ -99,7 +103,8 @@ selector, 5 removal not confirmed, 6 failed or partial refresh, 1 other errors.
 snapshot is returned marked stale. `usage watch` refreshes every account every
 30 minutes, and again right after each known window reset, until stopped.
 `account remove` deletes local data and saved credentials but does not revoke
-provider access.
+provider access. `reset` removes every saved account, key, and setting, as
+uninstalling can.
 
 ## Accounts and sign-in
 
@@ -153,6 +158,7 @@ it is replaced.
 | Codex link and `auth.json` backups | `%LOCALAPPDATA%\UsageMonitor\` |
 | Desktop preferences | `%APPDATA%\UsageMonitor\` |
 | Kept API keys | Credential Manager `UsageMonitor/Vault/<id>` |
+| Error log (no secrets) | `%LOCALAPPDATA%\UsageMonitor\logs\` |
 
 Credentials larger than Credential Manager's 2,560-byte limit are split across
 `#partN` entries. Access tokens live only in memory. Data written under the

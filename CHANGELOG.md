@@ -6,14 +6,30 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Changed
+## [0.2.0] - 2026-10-09
 
-- The API keys page picks a service from a grid of logos, named on hover,
-  and lists 60 services instead of 21 (NVIDIA, Azure OpenAI, Amazon
-  Bedrock, Vertex AI, Meta Llama, GitHub, Replicate, Ollama, fal, and
-  more). NVIDIA, Tavily, and Jina AI keys are recognized when pasted.
-- A key's name is optional: one saved without a name takes its service's,
-  numbered when another kept key has it.
+### Added
+
+- API keys page, opened from the key button at the top left: keep any
+  service's API key and copy it in one click. The service is picked from a
+  grid of 60 AI companies' logos, named on hover (OpenAI, Claude, Gemini,
+  xAI, DeepSeek, Mistral, NVIDIA, Azure OpenAI, Amazon Bedrock, and more),
+  or named freely, and a pasted key's service is picked when its start
+  shows it. The name is optional: a key saved without one takes its
+  service's. The keys of API-key accounts already added are listed too.
+  Keys are kept in Windows Credential Manager; the page is quick access
+  only and reads no usage from them.
+- A log of what went wrong, for bug reports, in
+  `%LOCALAPPDATA%\UsageMonitor\logs` (Open log folder in the tray menu).
+  It holds no keys, tokens, or email addresses.
+- The app looks for a newer release on GitHub at start and once a day, and
+  offers it in the tray menu and on a line in the popup. Nothing is
+  downloaded on its own.
+- Uninstalling asks whether to remove the saved accounts, keys, and
+  settings too; `ai-usage-tray-cli reset --yes` does the same. Backups of
+  the Codex and Antigravity sign-ins the app replaced are kept.
+
+### Changed
 
 - A usage request gives up after 15 seconds instead of 45, so one provider
   that stalls no longer holds the whole refresh.
@@ -22,19 +38,6 @@ All notable changes to this project are documented here. The format follows
 - Syncing another machine sends only the half hours that changed since the
   last sync, over a compressed connection: about 100 bytes a sync instead
   of the machine's whole history.
-
-## [0.2.0] - 2026-10-08
-
-### Added
-
-- API keys page, opened from the key button at the top left: keep any
-  service's API key under a name and copy it in one click. The service is
-  picked from a list of the best-known AI companies with their logos
-  (OpenAI, Claude, Gemini, xAI, DeepSeek, Mistral, and more) or named
-  freely, and a pasted key's service is picked when its start shows it.
-  The keys of API-key accounts already added are listed too. Keys are
-  kept in Windows Credential Manager; the page is quick access only and
-  reads no usage from them.
 
 ## [0.1.0] - 2026-10-08
 

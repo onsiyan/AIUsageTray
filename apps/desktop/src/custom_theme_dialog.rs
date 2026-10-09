@@ -10,7 +10,7 @@ impl App {
     pub(super) fn apply_custom_theme(&mut self, theme: CustomTheme, image_changed: bool) {
         custom_theme::apply(theme);
         if let Err(error) = custom_theme::save(theme) {
-            preview_log(format!("custom theme save failed: {error}"));
+            crate::app_log::write(format!("custom theme save failed: {error}"));
         }
         let switched = self.theme_id != ThemeId::Custom;
         self.theme_id = ThemeId::Custom;
@@ -18,7 +18,7 @@ impl App {
             self.backdrop_image = backdrop_image_handle(ThemeId::Custom);
         }
         if switched && let Err(error) = save_theme(ThemeId::Custom) {
-            preview_log(format!("theme preference save failed: {error}"));
+            crate::app_log::write(format!("theme preference save failed: {error}"));
         }
     }
 
@@ -90,14 +90,14 @@ impl App {
                     }
                     Ok(false) => {}
                     Err(error) => {
-                        preview_log(format!("custom image failed: {error}"));
+                        crate::app_log::write(format!("custom image failed: {error}"));
                         self.custom_image_error = Some(error);
                     }
                 }
             }
             Message::RemoveCustomImage => {
                 if let Err(error) = custom_theme::remove_image() {
-                    preview_log(format!("custom image removal failed: {error}"));
+                    crate::app_log::write(format!("custom image removal failed: {error}"));
                 }
                 theme.image = false;
                 self.apply_custom_theme(theme, true);

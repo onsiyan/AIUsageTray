@@ -195,7 +195,7 @@ pub(super) fn backdrop_image_handle(theme_id: ThemeId) -> Option<image::Handle> 
     match rounded_backdrop_image(bytes, backdrop.image_scale) {
         Ok(image) => Some(image),
         Err(error) => {
-            preview_log(format!("theme backdrop preparation failed: {error}"));
+            crate::app_log::write(format!("theme backdrop preparation failed: {error}"));
             None
         }
     }

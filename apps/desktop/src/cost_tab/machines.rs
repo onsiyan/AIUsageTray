@@ -210,7 +210,7 @@ impl Machines {
                                     if let Err(error) =
                                         remote::store(cache_directory, &host.name, &reading)
                                     {
-                                        preview_log(format!(
+                                        crate::app_log::write(format!(
                                             "keeping {}'s reading failed: {error}",
                                             host.name
                                         ));
@@ -248,7 +248,7 @@ impl Machines {
                     status.error = None;
                 }
                 Err(error) => {
-                    preview_log(format!("reading {name} failed: {error:?}"));
+                    crate::app_log::write(format!("reading {name} failed: {error:?}"));
                     status.error = Some(error);
                 }
             }
@@ -330,7 +330,7 @@ impl Machines {
         let saved = crate::theme::preference_directory()
             .and_then(|directory| remote::save_hosts(&directory, &self.hosts));
         if let Err(error) = saved {
-            preview_log(format!("saving machines failed: {error}"));
+            crate::app_log::write(format!("saving machines failed: {error}"));
         }
     }
 }

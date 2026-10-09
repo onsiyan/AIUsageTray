@@ -33,6 +33,7 @@ use tokio::{io::AsyncWriteExt, process::Command as TokioCommand};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 mod account_add;
+mod app_log;
 mod autostart;
 mod chrome;
 mod codex_switch;
@@ -60,6 +61,7 @@ mod tray;
 mod tray_menu;
 mod typography;
 mod update;
+mod update_check;
 mod usage_refresh;
 mod view;
 mod welcome;
@@ -101,12 +103,13 @@ fn main() -> iced::Result {
     if another_instance_is_running() {
         return Ok(());
     }
+    app_log::start();
     let (tray_sender, tray_receiver) = async_channel::bounded::<TrayIconEvent>(32);
     let _ = TRAY_EVENT_RECEIVER.set(tray_receiver.clone());
     // The tray icon lives on this thread for the whole run, independent of
     // the popup window, which the memory saver closes while it is hidden.
     if let Err(error) = install_tray(tray_sender) {
-        preview_log(format!("tray failed: {error}"));
+        crate::app_log::write(format!("tray failed: {error}"));
     }
     iced::daemon(
         move || {
@@ -118,6 +121,10 @@ fn main() -> iced::Result {
             if !app.memory_saver {
                 // Ready ahead of the first tray click so it opens instantly.
                 boot.push(app.open_popup_window().discard());
+            }
+            if std::env::var_os("USAGE_UI_PREVIEW_OPEN_ON_START").is_none() {
+                app.update_checked_at = Some(Instant::now());
+                boot.push(update_check::check());
             }
             if std::env::var_os("USAGE_UI_PREVIEW_OPEN_ON_START").is_some() {
                 boot.push(Task::done(Message::OpenPreview));
@@ -488,6 +495,11 @@ struct App {
     /// The image file dialog for the custom theme is open.
     custom_image_picking: bool,
     custom_image_error: Option<String>,
+    /// A newer release, once one is found.
+    update: Option<update_check::Release>,
+    update_checked_at: Option<Instant>,
+    /// The popup's note about the update was closed.
+    update_note_closed: bool,
 }
 
 impl App {
@@ -540,6 +552,9 @@ impl App {
             custom_accent_input: String::new(),
             custom_image_picking: false,
             custom_image_error: None,
+            update: None,
+            update_checked_at: None,
+            update_note_closed: false,
         }
     }
 
@@ -780,12 +795,17 @@ impl App {
             TrayAction::StartWithWindows => {
                 let wanted = !autostart::is_enabled();
                 if let Err(error) = autostart::set(wanted) {
-                    preview_log(format!("start with Windows change failed: {error}"));
+                    crate::app_log::write(format!("start with Windows change failed: {error}"));
                 }
                 tray_menu::set_start_with_windows_checked(autostart::is_enabled());
                 Task::none()
             }
             TrayAction::MemorySaver => self.update(Message::SetMemorySaver(!self.memory_saver)),
+            TrayAction::Update => self.update(Message::OpenUpdate),
+            TrayAction::OpenLogs => {
+                app_log::open_folder();
+                Task::none()
+            }
             TrayAction::Quit => {
                 // Removed first, so no stale icon is left in the tray.
                 TRAY_ICON.with(|tray| tray.borrow_mut().take());
@@ -825,6 +845,11 @@ enum Message {
     RefreshAllUsage,
     UsageAnimationTick,
     ResetClockTick,
+    /// What the update check found: a newer release, or nothing.
+    UpdateChecked(Option<update_check::Release>),
+    /// Opens the newer release's page.
+    OpenUpdate,
+    CloseUpdateNote,
     ToggleThemeMenu,
     DismissThemeMenu,
     ToggleAccountAddMenu,

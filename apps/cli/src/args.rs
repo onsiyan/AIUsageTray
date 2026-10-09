@@ -42,6 +42,13 @@ pub(super) enum Command {
         #[arg(long)]
         offline: bool,
     },
+    /// Remove every saved account, key, and setting from this PC, as when
+    /// the app is uninstalled. Backups of other apps' sign-ins stay.
+    Reset {
+        /// Confirm the removal.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

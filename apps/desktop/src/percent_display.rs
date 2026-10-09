@@ -155,7 +155,7 @@ fn save_tab_modes() {
         fs::write(directory.join(TAB_PREFERENCE_FILE), text)
     });
     if let Err(error) = result {
-        crate::preview_log(format!("tab percent preference save failed: {error}"));
+        crate::app_log::write(format!("tab percent preference save failed: {error}"));
     }
 }
 

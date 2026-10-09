@@ -38,7 +38,7 @@ impl App {
         self.dashboard
             .set_custom_tab_accounts(self.tab_layout.custom_accounts());
         if let Err(error) = tabs::save(&self.tab_layout) {
-            preview_log(format!("tab layout save failed: {error}"));
+            crate::app_log::write(format!("tab layout save failed: {error}"));
         }
     }
 
@@ -55,7 +55,7 @@ impl App {
             }
         };
         if let Err(error) = result {
-            preview_log(format!("tab image save failed: {error}"));
+            crate::app_log::write(format!("tab image save failed: {error}"));
         }
     }
 
@@ -112,7 +112,7 @@ impl App {
                 );
                 self.tab_icons.remove(&id);
                 if let Err(error) = tab_icons::remove(id) {
-                    preview_log(format!("tab image removal failed: {error}"));
+                    crate::app_log::write(format!("tab image removal failed: {error}"));
                 }
                 self.selected_tab = self.tab_layout.resolve(self.selected_tab);
                 self.save_tab_layout();
@@ -200,7 +200,7 @@ impl App {
                         }
                         Ok(None) => {}
                         Err(error) => {
-                            preview_log(format!("tab image failed: {error}"));
+                            crate::app_log::write(format!("tab image failed: {error}"));
                             editor.icon_error = true;
                         }
                     }

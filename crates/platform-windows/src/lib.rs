@@ -16,8 +16,8 @@ use usage_monitor_core::{
 use windows_sys::Win32::{
     Foundation::{ERROR_NOT_FOUND, FILETIME, GetLastError},
     Security::Credentials::{
-        CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredDeleteW, CredFree,
-        CredReadW, CredWriteW,
+        CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredDeleteW, CredEnumerateW,
+        CredFree, CredReadW, CredWriteW,
     },
     UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
 };
@@ -28,6 +28,8 @@ const AUTH_MATERIAL_TARGET_PREFIX: &str = "UsageMonitor/Auth/";
 /// found there are moved to the current namespace the first time they are read.
 const LEGACY_TARGET_ROOT: &str = "CodexUsageMonitor-Rust/";
 const TARGET_ROOT: &str = "UsageMonitor/";
+/// Other apps' sign-ins, kept before the app replaced them.
+const BACKUP_ROOT: &str = "UsageMonitor/Backup/";
 const MAX_BLOB_BYTES: usize = 5 * 1024;
 const MAX_AUTH_MATERIAL_BLOB_BYTES: usize = 64 * 1024;
 static AUTH_MATERIAL_STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -435,6 +437,72 @@ fn delete_raw(name: &str) -> Result<(), AuthError> {
         )));
     }
     Ok(())
+}
+
+/// The names of the saved credentials that start with `prefix`.
+fn credential_names(prefix: &str) -> Result<Vec<String>, AuthError> {
+    let filter = wide(&format!("{prefix}*"));
+    let mut count = 0_u32;
+    let mut credentials: *mut *mut CREDENTIALW = ptr::null_mut();
+    // SAFETY: the filter is NUL-terminated; on success Windows hands back an
+    // array of `count` credential pointers, freed below with CredFree.
+    let success = unsafe { CredEnumerateW(filter.as_ptr(), 0, &mut count, &mut credentials) };
+    if success == 0 {
+        let error = unsafe { GetLastError() };
+        if error == ERROR_NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        return Err(AuthError::CredentialStore(format!(
+            "CredEnumerateW failed with Win32 error {error}"
+        )));
+    }
+    let mut names = Vec::new();
+    if !credentials.is_null() {
+        // SAFETY: the array holds `count` valid pointers until CredFree.
+        let entries = unsafe { slice::from_raw_parts(credentials, count as usize) };
+        for &entry in entries {
+            if !entry.is_null() {
+                // SAFETY: each entry is a live CREDENTIALW with a
+                // NUL-terminated target name.
+                names.push(unsafe { wide_to_string((*entry).TargetName) });
+            }
+        }
+        unsafe { CredFree(credentials as *const c_void) };
+    }
+    Ok(names)
+}
+
+/// # Safety
+/// `text` is null or points at a NUL-terminated UTF-16 string.
+unsafe fn wide_to_string(text: *const u16) -> String {
+    if text.is_null() {
+        return String::new();
+    }
+    let mut length = 0;
+    // SAFETY: the string ends at its NUL, per the caller.
+    unsafe {
+        while *text.add(length) != 0 {
+            length += 1;
+        }
+        String::from_utf16_lossy(slice::from_raw_parts(text, length))
+    }
+}
+
+/// Removes every credential the app saved, under its current and earlier
+/// names: accounts' sign-ins and keys, and kept keys. Backups of other apps'
+/// sign-ins stay. Returns how many entries went.
+pub fn remove_all_credentials() -> Result<usize, AuthError> {
+    let mut removed = 0;
+    for root in [TARGET_ROOT, LEGACY_TARGET_ROOT] {
+        for name in credential_names(root)? {
+            if name.starts_with(BACKUP_ROOT) {
+                continue;
+            }
+            delete_raw(&name)?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 pub mod vault;

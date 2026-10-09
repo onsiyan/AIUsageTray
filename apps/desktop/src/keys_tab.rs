@@ -136,7 +136,7 @@ impl KeysTab {
                 self.error = None;
             }
             Err(error) => {
-                preview_log(format!("reading the key vault failed: {error}"));
+                crate::app_log::write(format!("reading the key vault failed: {error}"));
                 self.vault.clear();
                 self.error = Some(error);
             }
@@ -388,7 +388,7 @@ fn account_rows(entries: &[AccountUsageEntry]) -> Vec<Row> {
                 Ok(Some(value)) => value,
                 Ok(None) => continue,
                 Err(error) => {
-                    preview_log(format!("reading an account's key failed: {error}"));
+                    crate::app_log::write(format!("reading an account's key failed: {error}"));
                     continue;
                 }
             };

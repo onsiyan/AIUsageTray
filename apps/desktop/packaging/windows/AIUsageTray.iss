@@ -122,3 +122,18 @@ begin
   if CurStep = ssPostInstall then
     RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\UsageMonitor');
 end;
+
+// Uninstalling keeps the user's accounts, keys, and settings unless they
+// choose to remove them; a silent uninstall keeps them.
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+begin
+  if (CurUninstallStep = usUninstall) and not UninstallSilent then
+    if MsgBox('Also remove your saved accounts, API keys, and settings from this PC?' + #13#10#13#10 +
+        'Choose No to keep them for a later install.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+    begin
+      Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExe}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      Exec(ExpandConstant('{app}\ai-usage-tray-cli.exe'), 'reset --yes', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    end;
+end;

@@ -201,7 +201,7 @@ impl CostTab {
                 self.rescope();
             }
             Err(error) => {
-                preview_log(format!("cost scan failed: {error}"));
+                crate::app_log::write(format!("cost scan failed: {error}"));
                 self.error = Some(error);
             }
         }
@@ -264,7 +264,7 @@ impl CostTab {
                         return Task::none();
                     }
                     if let Err(error) = plans::save_prices(&self.plan_prices) {
-                        preview_log(format!("saving plan prices failed: {error}"));
+                        crate::app_log::write(format!("saving plan prices failed: {error}"));
                     }
                 }
             }
@@ -302,7 +302,7 @@ fn read_report(machines: &[String]) -> Result<CostReport, String> {
         .build()
         && let Err(error) = runtime.block_on(cost::refresh_prices_if_stale(&cache_directory))
     {
-        preview_log(format!("price update failed: {error}"));
+        crate::app_log::write(format!("price update failed: {error}"));
     }
     let readings = machines
         .iter()

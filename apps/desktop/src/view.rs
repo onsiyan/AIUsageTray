@@ -91,6 +91,7 @@ impl App {
                     title_bar,
                     title_bar_separator,
                     provider_tab_bar,
+                    self.update_note(active_theme),
                     account_add_status,
                     if self.selected_tab == DashboardTab::Cost {
                         cost_tab::view(
@@ -311,6 +312,62 @@ impl App {
             .height(Fill)
             .style(move |_| window_frame_style(active_theme))
             .into()
+    }
+
+    /// A line under the tabs while a newer release waits, until closed.
+    fn update_note(&self, active_theme: &'static ThemeDefinition) -> Element<'static, Message> {
+        let Some(release) = self.update.as_ref().filter(|_| !self.update_note_closed) else {
+            return Space::new().width(Fill).height(0).into();
+        };
+        let arabic = self.language == locale::Language::Arabic;
+        let accent = active_theme.accent_color();
+        let link = button(
+            text(if arabic { "تنزيل" } else { "Download" })
+                .size(typography::METADATA_SIZE)
+                .font(typography::EMPHASIS)
+                .color(accent),
+        )
+        .on_press(Message::OpenUpdate)
+        .padding([2, 6])
+        .style(|framework_theme: &Theme, status| button::text(framework_theme, status));
+        let close = button(
+            container(
+                lucide_icons::iced::icon_x::<Theme>()
+                    .size(12)
+                    .color(active_theme.colors.muted_text()),
+            )
+            .center(Fill),
+        )
+        .on_press(Message::CloseUpdateNote)
+        .width(20)
+        .height(20)
+        .padding(0)
+        .style(|framework_theme: &Theme, status| button::text(framework_theme, status));
+        let note = if arabic {
+            format!("الإصدار {} متاح", release.version)
+        } else {
+            format!("Version {} is available", release.version)
+        };
+        container(
+            row![
+                text(note)
+                    .size(typography::METADATA_SIZE)
+                    .font(typography::MEDIUM)
+                    .color(active_theme.colors.text()),
+                link,
+                Space::new().width(Fill),
+                close,
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        )
+        .padding([3, 12])
+        .width(Fill)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(accent.scale_alpha(0.12))),
+            ..Default::default()
+        })
+        .into()
     }
 }
 

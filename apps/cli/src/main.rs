@@ -157,7 +157,59 @@ async fn execute(cli: Cli) -> Result<i32, CliFailure> {
         }
         Command::Status => execute_status(&database_path, json_output).await,
         Command::Cost { offline } => cost::execute_cost(json_output, !offline).await,
+        Command::Reset { yes } => execute_reset(yes, json_output),
     }
+}
+
+/// Removes the app's credentials and data folders.
+fn execute_reset(yes: bool, json_output: bool) -> Result<i32, CliFailure> {
+    if !yes {
+        return Err(CliFailure::new(
+            "confirmation_required",
+            "Reset removes every saved account and key. Re-run with --yes to confirm.",
+            5,
+        ));
+    }
+    let credentials = usage_monitor_windows::remove_all_credentials()
+        .map_err(|error| CliFailure::runtime(error.to_string()))?;
+    let mut folders = Vec::new();
+    for variable in ["LOCALAPPDATA", "APPDATA"] {
+        let Some(root) = std::env::var_os(variable) else {
+            continue;
+        };
+        let folder = PathBuf::from(root).join("UsageMonitor");
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            // Codex's sign-ins as they were before the app replaced them.
+            if entry.file_name() == "codex-auth-backups" {
+                continue;
+            }
+            let path = entry.path();
+            let removed = if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            removed.map_err(|error| {
+                CliFailure::runtime(format!("could not remove {}: {error}", path.display()))
+            })?;
+        }
+        // Gone unless backups are left in it.
+        let _ = std::fs::remove_dir(&folder);
+        folders.push(folder.display().to_string());
+    }
+    if json_output {
+        print_json(json!({
+            "schema_version": 1,
+            "removed_credentials": credentials,
+            "cleared_folders": folders,
+        }));
+    } else {
+        println!("Removed {credentials} saved credentials and the app's data.");
+    }
+    Ok(0)
 }
 
 #[cfg(test)]
