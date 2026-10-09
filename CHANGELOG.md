@@ -21,6 +21,8 @@ All notable changes to this project are documented here. The format follows
   key works or was rejected. Nothing is spent. Offered for 18 services,
   among them OpenAI, Claude, Gemini, xAI, DeepSeek, Mistral, OpenRouter
   and Groq.
+- Opening the app again while it runs (a taskbar pin, the Start menu, or a
+  shortcut) opens its popup instead of doing nothing.
 
 ### Changed
 

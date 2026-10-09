@@ -48,6 +48,7 @@ mod hint;
 mod key_check;
 mod key_services;
 mod keys_tab;
+mod launch_signal;
 mod locale;
 mod memory_trim;
 mod percent_display;
@@ -104,8 +105,10 @@ const RESET_CLOCK_TICK: Duration = Duration::from_secs(30);
 
 fn main() -> iced::Result {
     if another_instance_is_running() {
+        launch_signal::ask_running_app_to_open();
         return Ok(());
     }
+    launch_signal::listen();
     // wgpu prefers Direct3D 12, whose drivers hold about 100 MB more than
     // Vulkan's for the same popup. Without Vulkan iced falls back to drawing
     // on the CPU. `WGPU_BACKEND` set by the user still wins.
@@ -577,6 +580,7 @@ impl App {
             event::listen_with(runtime_event).map(Message::RuntimeEvent),
             Subscription::run(tray_event_stream),
             Subscription::run(tray_menu::action_stream),
+            Subscription::run(launch_signal::open_requests),
         ];
 
         let blocking_dialog_open = app.credentials_provider.is_some()
