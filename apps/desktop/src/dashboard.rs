@@ -681,24 +681,44 @@ pub fn view(
         .into()
 }
 
-/// The account's email as shown to the user. Accounts added from an API key
-/// have no email; they hold a placeholder on the reserved `.invalid` domain,
-/// which is never shown.
+/// What an email shows as while emails are hidden.
+pub(crate) const HIDDEN_EMAIL: &str = "••••••••";
+
+/// The account's email as shown to the user: dots while emails are hidden.
+/// Accounts added from an API key have no email; they hold a placeholder on
+/// the reserved `.invalid` domain, which is never shown.
 pub(crate) fn shown_email(email: &str) -> &str {
     let is_placeholder = email.trim().rsplit_once('@').is_some_and(|(_, domain)| {
         let domain = domain.to_ascii_lowercase();
         domain == "invalid" || domain.ends_with(".invalid")
     });
-    if is_placeholder { "" } else { email }
+    if is_placeholder {
+        ""
+    } else if crate::display_options::hide_emails() {
+        HIDDEN_EMAIL
+    } else {
+        email
+    }
 }
 
 /// The name an account card shows: the user's alias, else the email for
 /// providers signed in with one (Codex, Claude, Antigravity), else the label.
+/// A name that is itself an email is hidden with the emails.
 pub(crate) fn account_name(account: &AccountRecord) -> String {
     if account.alias.is_none() && name_is_email(account) {
-        return account.email.clone();
+        return shown_email(&account.email).to_owned();
     }
-    account.display_name().to_owned()
+    let name = account.display_name();
+    if crate::display_options::hide_emails() && looks_like_email(name) {
+        return HIDDEN_EMAIL.to_owned();
+    }
+    name.to_owned()
+}
+
+fn looks_like_email(text: &str) -> bool {
+    text.trim()
+        .split_once('@')
+        .is_some_and(|(name, domain)| !name.is_empty() && domain.contains('.'))
 }
 
 /// Whether [`account_name`] already shows the account's email.
@@ -735,3 +755,17 @@ pub(crate) fn belongs_to_provider(provider_id: &str, provider: UsageProvider) ->
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod email_tests {
+    use super::looks_like_email;
+
+    #[test]
+    fn names_that_are_emails_are_told_apart() {
+        assert!(looks_like_email("someone@example.com"));
+        assert!(looks_like_email(" a@b.co "));
+        assert!(!looks_like_email("Work"));
+        assert!(!looks_like_email("@handle"));
+        assert!(!looks_like_email("team@local"));
+    }
+}

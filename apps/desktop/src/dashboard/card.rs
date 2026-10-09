@@ -286,7 +286,8 @@ pub(super) fn account_card(
             .as_deref()
             .is_some_and(|email| !email.trim().eq_ignore_ascii_case(account.email.trim()))
         {
-            let observed_email = snapshot.observed_email.as_deref().unwrap_or_default();
+            let observed_email =
+                shown_email(snapshot.observed_email.as_deref().unwrap_or_default());
             let message = match language {
                 Language::English => format!(
                     "{} ({observed_email}); details hidden",

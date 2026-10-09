@@ -17,6 +17,7 @@ const RESET_CREDITS_FILE: &str = "reset_credits.txt";
 const TEAM_BUDGETS_FILE: &str = "team_budgets.txt";
 const RESET_SHADE_FILE: &str = "reset_shade.txt";
 const TASKBAR_FILE: &str = "taskbar.txt";
+const HIDE_EMAILS_FILE: &str = "hide-emails.txt";
 
 /// A reset credit expiring within this many days stays listed under
 /// [`ResetCreditVisibility::ExpiringSoon`].
@@ -31,6 +32,8 @@ static SHOW_TEAM_BUDGETS: AtomicBool = AtomicBool::new(false);
 static SHADE_RESET_TIMES: AtomicBool = AtomicBool::new(true);
 /// A tray app keeps out of the taskbar unless asked.
 static SHOW_IN_TASKBAR: AtomicBool = AtomicBool::new(false);
+/// Emails shown as dots, for screenshots.
+static HIDE_EMAILS: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetCreditVisibility {
@@ -108,6 +111,14 @@ pub fn set_show_in_taskbar(shown: bool) {
     SHOW_IN_TASKBAR.store(shown, Ordering::Relaxed);
 }
 
+pub fn hide_emails() -> bool {
+    HIDE_EMAILS.load(Ordering::Relaxed)
+}
+
+pub fn set_hide_emails(hidden: bool) {
+    HIDE_EMAILS.store(hidden, Ordering::Relaxed);
+}
+
 /// Whether a metric, or a diagnostic's source, is one of the team amounts
 /// behind [`show_team_budgets`].
 pub fn is_team_budget_key(key: &str) -> bool {
@@ -139,6 +150,7 @@ pub fn load_saved() {
     set_show_team_budgets(read(TEAM_BUDGETS_FILE).is_some_and(|value| value.trim() == "shown"));
     set_shade_reset_times(read(RESET_SHADE_FILE).is_none_or(|value| value.trim() != "off"));
     set_show_in_taskbar(read(TASKBAR_FILE).is_some_and(|value| value.trim() == "shown"));
+    set_hide_emails(read(HIDE_EMAILS_FILE).is_some_and(|value| value.trim() == "on"));
     set_reset_credits(
         read(RESET_CREDITS_FILE)
             .and_then(|value| ResetCreditVisibility::from_key(value.trim()))
@@ -160,6 +172,10 @@ pub fn save_shade_reset_times(shaded: bool) -> io::Result<()> {
 
 pub fn save_show_in_taskbar(shown: bool) -> io::Result<()> {
     write(TASKBAR_FILE, if shown { "shown" } else { "hidden" })
+}
+
+pub fn save_hide_emails(hidden: bool) -> io::Result<()> {
+    write(HIDE_EMAILS_FILE, if hidden { "on" } else { "off" })
 }
 
 pub fn save_reset_credits(mode: ResetCreditVisibility) -> io::Result<()> {

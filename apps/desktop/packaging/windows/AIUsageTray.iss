@@ -1,6 +1,6 @@
 ; AI Usage Tray setup, built with Inno Setup 6 by build-installer.ps1, which
 ; passes the version and the folder holding the release build:
-;   ISCC /DAppVersion=0.3.0 /DReleaseDir=...\target\release AIUsageTray.iss
+;   ISCC /DAppVersion=0.4.0 /DReleaseDir=...\target\release AIUsageTray.iss
 ;
 ; Installs for the current Windows user, with no administrator prompt. An
 ; update keeps the folder of the install it replaces, and clears what the app

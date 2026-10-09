@@ -80,6 +80,13 @@ pub(super) fn theme_dropdown(
         Message::SetShowAccountDetails(!details_shown),
         active_theme,
     ));
+    let emails_hidden = display_options::hide_emails();
+    items.push(choice_row(
+        locale::text(language, locale::Text::HideEmails),
+        emails_hidden,
+        Message::SetHideEmails(!emails_hidden),
+        active_theme,
+    ));
     let team_budgets_shown = display_options::show_team_budgets();
     items.push(choice_row(
         locale::text(language, locale::Text::ShowTeamBudgets),

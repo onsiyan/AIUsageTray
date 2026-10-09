@@ -774,6 +774,13 @@ impl App {
                 }
                 Task::none()
             }
+            Message::SetHideEmails(hidden) => {
+                display_options::set_hide_emails(hidden);
+                if let Err(error) = display_options::save_hide_emails(hidden) {
+                    crate::app_log::write(format!("hide emails preference save failed: {error}"));
+                }
+                Task::none()
+            }
             Message::SetShadeResetTimes(shaded) => {
                 display_options::set_shade_reset_times(shaded);
                 if let Err(error) = display_options::save_shade_reset_times(shaded) {

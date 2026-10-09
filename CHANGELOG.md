@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-09
+
+### Added
+
+- Hide emails, in the palette menu: every email shows as dots, for
+  screenshots.
+- Dusk, a dark plum theme with a teal accent, now the theme a new install
+  starts with. The themes are listed White, Dusk, Dark, then the picture
+  themes.
+
+### Fixed
+
+- "In the middle of the screen" under Opens took two lines and ran into
+  the next choice; it reads "Screen center".
+
 ## [0.3.0] - 2026-10-09
 
 ### Added

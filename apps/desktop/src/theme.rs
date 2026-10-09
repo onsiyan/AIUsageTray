@@ -5,6 +5,7 @@ use iced::Color;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThemeId {
     Dark,
+    Dusk,
     GreySpace,
     LanternStreet,
     White,
@@ -16,6 +17,7 @@ impl ThemeId {
     pub const fn as_key(self) -> &'static str {
         match self {
             Self::Dark => "dark",
+            Self::Dusk => "dusk",
             Self::GreySpace => "grey-space",
             Self::LanternStreet => "lantern-street",
             Self::White => "white",
@@ -26,6 +28,7 @@ impl ThemeId {
     pub fn from_key(key: &str) -> Option<Self> {
         match key {
             "dark" => Some(Self::Dark),
+            "dusk" => Some(Self::Dusk),
             "grey-space" => Some(Self::GreySpace),
             "lantern-street" => Some(Self::LanternStreet),
             "white" => Some(Self::White),
@@ -138,9 +141,66 @@ impl ThemeDefinition {
     }
 }
 
-pub const DEFAULT_THEME_ID: ThemeId = ThemeId::GreySpace;
+pub const DEFAULT_THEME_ID: ThemeId = ThemeId::Dusk;
 
 pub const THEME_MANIFEST: &[ThemeDefinition] = &[
+    ThemeDefinition {
+        id: ThemeId::White,
+        label: "White",
+        swatch: [255, 255, 255],
+        accent: [49, 100, 165],
+        colors: ThemeColors {
+            window_surface: [255, 255, 255],
+            // Near-black text and a dark slate for secondary lines: the
+            // lighter grey was hard to read on white.
+            text: [17, 24, 39],
+            muted_text: [55, 65, 81],
+            control_surface: [241, 244, 248],
+            border: [100, 112, 128],
+            is_light: true,
+            hover: [66, 101, 145],
+            hover_opacity: 0.11,
+            danger_hover: [196, 54, 47],
+        },
+        backdrop: None,
+    },
+    // Dark plum with a teal accent; first made as a custom theme.
+    ThemeDefinition {
+        id: ThemeId::Dusk,
+        label: "Dusk",
+        swatch: [33, 24, 44],
+        accent: [90, 160, 170],
+        colors: ThemeColors {
+            window_surface: [33, 24, 44],
+            text: [242, 244, 248],
+            muted_text: [185, 190, 200],
+            control_surface: [46, 38, 57],
+            border: [255, 255, 255],
+            is_light: false,
+            hover: [90, 160, 170],
+            hover_opacity: 0.2,
+            danger_hover: [219, 82, 69],
+        },
+        backdrop: None,
+    },
+    ThemeDefinition {
+        id: ThemeId::Dark,
+        label: "Dark",
+        swatch: [55, 59, 69],
+        accent: [55, 59, 69],
+        colors: ThemeColors {
+            window_surface: [0, 0, 0],
+            text: [242, 244, 248],
+            muted_text: [185, 190, 200],
+            control_surface: [18, 20, 27],
+            border: [255, 255, 255],
+            is_light: false,
+            hover: [24, 24, 24],
+            hover_opacity: 1.0,
+            danger_hover: [213, 59, 46],
+        },
+        backdrop: None,
+    },
     ThemeDefinition {
         id: ThemeId::GreySpace,
         label: "Grey Space",
@@ -165,24 +225,6 @@ pub const THEME_MANIFEST: &[ThemeDefinition] = &[
         }),
     },
     ThemeDefinition {
-        id: ThemeId::Dark,
-        label: "Dark",
-        swatch: [55, 59, 69],
-        accent: [55, 59, 69],
-        colors: ThemeColors {
-            window_surface: [0, 0, 0],
-            text: [242, 244, 248],
-            muted_text: [185, 190, 200],
-            control_surface: [18, 20, 27],
-            border: [255, 255, 255],
-            is_light: false,
-            hover: [24, 24, 24],
-            hover_opacity: 1.0,
-            danger_hover: [213, 59, 46],
-        },
-        backdrop: None,
-    },
-    ThemeDefinition {
         id: ThemeId::LanternStreet,
         label: "Lantern Street",
         swatch: [74, 112, 165],
@@ -204,26 +246,6 @@ pub const THEME_MANIFEST: &[ThemeDefinition] = &[
             image_scale: 1.035,
             shade_opacity: 0.38,
         }),
-    },
-    ThemeDefinition {
-        id: ThemeId::White,
-        label: "White",
-        swatch: [255, 255, 255],
-        accent: [49, 100, 165],
-        colors: ThemeColors {
-            window_surface: [255, 255, 255],
-            // Near-black text and a dark slate for secondary lines: the
-            // lighter grey was hard to read on white.
-            text: [17, 24, 39],
-            muted_text: [55, 65, 81],
-            control_surface: [241, 244, 248],
-            border: [100, 112, 128],
-            is_light: true,
-            hover: [66, 101, 145],
-            hover_opacity: 0.11,
-            danger_hover: [196, 54, 47],
-        },
-        backdrop: None,
     },
 ];
 
@@ -288,11 +310,24 @@ mod tests {
     }
 
     #[test]
-    fn default_theme_has_a_registered_definition_and_backdrop() {
+    fn default_theme_is_dusk_and_listed_second() {
         let definition = DEFAULT_THEME_ID.definition();
 
-        assert_eq!(definition.id, DEFAULT_THEME_ID);
-        assert!(definition.backdrop.is_some());
+        assert_eq!(definition.id, ThemeId::Dusk);
+        let order = THEME_MANIFEST
+            .iter()
+            .map(|theme| theme.id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            [
+                ThemeId::White,
+                ThemeId::Dusk,
+                ThemeId::Dark,
+                ThemeId::GreySpace,
+                ThemeId::LanternStreet
+            ]
+        );
     }
 
     #[test]

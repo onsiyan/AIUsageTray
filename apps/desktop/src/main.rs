@@ -907,6 +907,7 @@ enum Message {
     SetShowTeamBudgets(bool),
     SetShadeResetTimes(bool),
     SetShowInTaskbar(bool),
+    SetHideEmails(bool),
     OpenCustomTheme,
     CloseCustomTheme,
     CustomThemeLight(bool),

@@ -1,5 +1,9 @@
 # AI Usage Tray
 
+<p align="center">
+  <img src="docs/screenshots/favorites.png" width="380" alt="The tray popup on its Favorites tab: Codex, Claude, and Antigravity accounts with their session and weekly limits">
+</p>
+
 AI Usage Tray tracks AI subscription usage across several accounts and
 providers from one Windows tray popup: Codex (ChatGPT), Claude, Antigravity,
 GitHub Copilot, Cursor, OpenCode Go, Kimi Code, z.ai, MiniMax, OpenRouter,
@@ -29,8 +33,19 @@ can switch the Codex and Antigravity desktop apps to any saved account.
   and background picture.
 - **Where it opens**: above the tray icon, in the middle of the screen, or
   where you left it (palette menu).
+- **Hide emails**: every email shows as dots, for screenshots (palette
+  menu).
 - **Command line**: `ai-usage-tray-cli` for people and agents, with stable
   account references and JSON output.
+
+## Screenshots
+
+| | | |
+|:---:|:---:|:---:|
+| <img src="docs/screenshots/codex.png" width="260" alt="Codex accounts with limits and stored full resets"> | <img src="docs/screenshots/cost.png" width="260" alt="Cost page: API value of your use against what your plans cost"> | <img src="docs/screenshots/cost-models.webp" width="260" alt="Cost page by model, on the Lantern Street picture theme"> |
+| Every account's limits and resets | What your use would cost at API prices | The same, by model |
+| <img src="docs/screenshots/api-keys.png" width="260" alt="API keys page"> | <img src="docs/screenshots/tabs.png" width="260" alt="Tabs: show, hide, and order providers"> | <img src="docs/screenshots/settings.png" width="260" alt="Palette menu: themes, where the popup opens, and what cards show"> |
+| API keys, one click to copy | Your own tabs and their order | Themes and display options |
 
 ## Install
 
