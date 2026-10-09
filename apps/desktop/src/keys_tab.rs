@@ -247,12 +247,17 @@ impl KeysTab {
             }
             KeysChange::Save => {
                 if let Some(form) = &mut self.form {
+                    let name = if form.name.trim().is_empty() {
+                        default_name(&self.vault, form.editing.as_deref(), &form.service)
+                    } else {
+                        form.name.clone()
+                    };
                     let key = match &form.editing {
-                        None => VaultKey::new(&form.name, &form.service, &form.secret),
+                        None => VaultKey::new(&name, &form.service, &form.secret),
                         Some(id) => match store::get(id) {
-                            Ok(Some(mut key)) => key
-                                .edit(&form.name, &form.service, &form.secret)
-                                .map(|()| key),
+                            Ok(Some(mut key)) => {
+                                key.edit(&name, &form.service, &form.secret).map(|()| key)
+                            }
                             Ok(None) => Err("This key was removed.".to_owned()),
                             Err(error) => Err(error),
                         },
@@ -330,6 +335,28 @@ fn vault_row(key: &VaultKey) -> Row {
         masked: key.masked(),
         logo: key_services::index_of(&key.service).map(RowLogo::Service),
     }
+}
+
+/// A name for a key saved without one: its service's, numbered when another
+/// kept key already has it.
+fn default_name(vault: &[Row], editing: Option<&str>, service: &str) -> String {
+    let base = match service.trim() {
+        "" => "API key",
+        service => service,
+    };
+    let taken = |name: &str| {
+        vault.iter().any(|row| {
+            row.name.eq_ignore_ascii_case(name)
+                && !matches!((&row.reference, editing), (KeyRef::Vault(id), Some(editing)) if id == editing)
+        })
+    };
+    if !taken(base) {
+        return base.to_owned();
+    }
+    (2..)
+        .map(|number| format!("{base} {number}"))
+        .find(|name| !taken(name))
+        .expect("some number is free")
 }
 
 /// The values an API-key provider's account keeps.
@@ -815,8 +842,8 @@ fn key_form(
             input(
                 tr(
                     language,
-                    "Work, Personal, Project X…",
-                    "العمل، الشخصي، مشروع…"
+                    "Optional: Work, Personal…",
+                    "اختياري: العمل، الشخصي…"
                 ),
                 &form.name,
             )
@@ -1076,5 +1103,22 @@ mod tests {
         assert!(account_fields(UsageProvider::Claude).is_empty());
         assert!(account_fields(UsageProvider::Copilot).is_empty());
         assert!(account_fields(UsageProvider::Cursor).is_empty());
+    }
+
+    #[test]
+    fn unnamed_keys_take_their_service_name() {
+        let row = |id: &str, name: &str| Row {
+            reference: KeyRef::Vault(id.to_owned()),
+            name: name.to_owned(),
+            service: String::new(),
+            masked: String::new(),
+            logo: None,
+        };
+        let vault = [row("a", "Claude"), row("b", "claude 2"), row("c", "OpenAI")];
+        assert_eq!(default_name(&vault, None, "Claude"), "Claude 3");
+        assert_eq!(default_name(&vault, None, "Groq"), "Groq");
+        assert_eq!(default_name(&vault, None, " "), "API key");
+        // A key being edited does not count against its own name.
+        assert_eq!(default_name(&vault, Some("c"), "OpenAI"), "OpenAI");
     }
 }

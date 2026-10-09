@@ -12,6 +12,8 @@ All notable changes to this project are documented here. The format follows
   and lists 60 services instead of 21 (NVIDIA, Azure OpenAI, Amazon
   Bedrock, Vertex AI, Meta Llama, GitHub, Replicate, Ollama, fal, and
   more). NVIDIA, Tavily, and Jina AI keys are recognized when pasted.
+- A key's name is optional: one saved without a name takes its service's,
+  numbered when another kept key has it.
 
 - A usage request gives up after 15 seconds instead of 45, so one provider
   that stalls no longer holds the whole refresh.
