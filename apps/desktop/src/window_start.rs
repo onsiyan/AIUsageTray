@@ -15,7 +15,7 @@ use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use usage_monitor_core::accounts::AccountId;
 use usage_monitor_core::usage::{UsagePrimaryWindowKind, UsageSnapshot};
 
@@ -28,6 +28,11 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(180);
 const PROMPT: &str = "Reply with the single word: ok";
 /// Primary windows this long or shorter are the session (five-hour) kind.
 const SESSION_WINDOW_MAX_SECONDS: i64 = 6 * 60 * 60;
+/// How far an idle window's reset may sit short of a full window after the
+/// reading.
+const IDLE_SLACK_SECONDS: i64 = 120;
+/// No second start for an account sooner than this.
+const RETRY_AFTER_MINUTES: i64 = 10;
 
 /// Failure kept when the CLI is signed in with another account; the card
 /// shows it in the user's language.
@@ -65,8 +70,10 @@ impl Cli {
 }
 
 static ENABLED: Mutex<Option<HashSet<AccountId>>> = Mutex::new(None);
-/// The reset each account was last handled for, so each reset is handled once.
-static HANDLED: Mutex<Option<HashMap<AccountId, DateTime<Utc>>>> = Mutex::new(None);
+/// The idle window each account was last started for, and when.
+/// An idle window's key, and when it was started.
+type Started = (DateTime<Utc>, DateTime<Utc>);
+static HANDLED: Mutex<Option<HashMap<AccountId, Started>>> = Mutex::new(None);
 /// The last failure for each account, shown on its card.
 static FAILURES: Mutex<Option<HashMap<AccountId, String>>> = Mutex::new(None);
 
@@ -137,8 +144,11 @@ fn parse_accounts(text: &str) -> HashSet<AccountId> {
         .collect()
 }
 
-/// When the reading's five-hour window reset, if it already has.
-pub(crate) fn elapsed_session_reset(
+/// A key for the five-hour window waiting to start, if it is: its reset
+/// passed, or the reading shows it idle (nothing used and, for Codex, a reset
+/// a full window after the reading, which moves with every reading; for
+/// Claude, no reset time at all).
+pub(crate) fn idle_session_window(
     snapshot: &UsageSnapshot,
     now: DateTime<Utc>,
 ) -> Option<DateTime<Utc>> {
@@ -150,20 +160,35 @@ pub(crate) fn elapsed_session_reset(
                 && primary.limit_window_seconds <= SESSION_WINDOW_MAX_SECONDS
         }
     };
-    let reset_at = primary.reset_at_utc?;
-    (is_session && !snapshot.primary_window_is_synthetic && reset_at <= now).then_some(reset_at)
+    if !is_session || snapshot.primary_window_is_synthetic {
+        return None;
+    }
+    match primary.reset_at_utc {
+        Some(reset_at) if reset_at <= now => Some(reset_at),
+        Some(reset_at) => {
+            let full_window = TimeDelta::seconds(primary.limit_window_seconds)
+                - TimeDelta::seconds(IDLE_SLACK_SECONDS);
+            (primary.used_percent == 0.0 && reset_at - snapshot.observed_at_utc >= full_window)
+                .then_some(reset_at)
+        }
+        None => (primary.used_percent == 0.0).then_some(snapshot.observed_at_utc),
+    }
 }
 
-/// Records that this reset is being handled. False when it already was.
-pub(crate) fn claim(account_id: AccountId, reset_at: DateTime<Utc>) -> bool {
+/// Records that this idle window is being started. False when it already
+/// was, or when the account was started moments ago and the provider may not
+/// show it yet.
+pub(crate) fn claim(account_id: AccountId, key: DateTime<Utc>, now: DateTime<Utc>) -> bool {
     let Ok(mut handled) = HANDLED.lock() else {
         return false;
     };
     let handled = handled.get_or_insert_with(HashMap::new);
-    if handled.get(&account_id) == Some(&reset_at) {
+    if let Some((last_key, last_at)) = handled.get(&account_id)
+        && (*last_key == key || now - *last_at < TimeDelta::minutes(RETRY_AFTER_MINUTES))
+    {
         return false;
     }
-    handled.insert(account_id, reset_at);
+    handled.insert(account_id, (key, now));
     true
 }
 
@@ -220,8 +245,26 @@ fn locate(cli: Cli) -> Option<PathBuf> {
     })
 }
 
-/// Sends the one-word message through the official CLI, hidden.
+/// Sends the one-word message through the official CLI, hidden. The app's
+/// tasks do not run on Tokio, so the CLI is driven from its own thread and
+/// runtime.
 pub(crate) async fn run(cli: Cli) -> Result<(), String> {
+    let (sender, receiver) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())
+            .and_then(|runtime| runtime.block_on(send_through(cli)));
+        let _ = sender.send_blocking(result);
+    });
+    receiver
+        .recv()
+        .await
+        .unwrap_or_else(|_| Err(format!("{} stopped", cli.name())))
+}
+
+async fn send_through(cli: Cli) -> Result<(), String> {
     let program = locate(cli).ok_or_else(|| format!("The {} CLI was not found", cli.name()))?;
     let directory = std::env::temp_dir();
     let mut command = tokio::process::Command::new(&program);
@@ -302,44 +345,57 @@ mod tests {
     }
 
     #[test]
-    fn only_a_passed_five_hour_reset_is_due() {
+    fn a_reset_or_idle_five_hour_window_is_due() {
         let now = Utc::now();
         let past = now - TimeDelta::minutes(1);
-        let future = now + TimeDelta::minutes(1);
+        let running = now + TimeDelta::minutes(30);
         let session = Some(UsagePrimaryWindowKind::Session);
-        assert_eq!(
-            elapsed_session_reset(&snapshot(session, 18_000, past), now),
-            Some(past)
-        );
-        assert_eq!(
-            elapsed_session_reset(&snapshot(session, 18_000, future), now),
-            None
-        );
-        assert_eq!(
-            elapsed_session_reset(&snapshot(None, 18_000, past), now),
-            Some(past)
-        );
+        // Reset passed.
+        let due = |snapshot: &UsageSnapshot| idle_session_window(snapshot, now);
+        assert_eq!(due(&snapshot(session, 18_000, past)), Some(past));
+        assert_eq!(due(&snapshot(None, 18_000, past)), Some(past));
+        // Running: used, reset ahead.
+        assert_eq!(due(&snapshot(session, 18_000, running)), None);
+        // Idle Codex: nothing used, reset a full window after the reading.
+        let mut idle = snapshot(session, 18_000, running);
+        idle.observed_at_utc = running - TimeDelta::hours(5);
+        idle.primary.as_mut().unwrap().used_percent = 0.0;
+        assert_eq!(due(&idle), Some(running));
+        // Fresh but nothing used yet within a started window: not idle.
+        let mut started = idle.clone();
+        started.observed_at_utc = running - TimeDelta::hours(4);
+        assert_eq!(due(&started), None);
+        // Idle Claude: nothing used and no reset time.
+        let mut claude = idle.clone();
+        claude.primary.as_mut().unwrap().reset_at_utc = None;
+        assert_eq!(due(&claude), Some(claude.observed_at_utc));
+        // Weekly or synthetic windows never are.
         let weekly = Some(UsagePrimaryWindowKind::Weekly);
-        assert_eq!(
-            elapsed_session_reset(&snapshot(weekly, 604_800, past), now),
-            None
-        );
-        assert_eq!(
-            elapsed_session_reset(&snapshot(None, 604_800, past), now),
-            None
-        );
+        assert_eq!(due(&snapshot(weekly, 604_800, past)), None);
+        assert_eq!(due(&snapshot(None, 604_800, past)), None);
         let mut synthetic = snapshot(session, 18_000, past);
         synthetic.primary_window_is_synthetic = true;
-        assert_eq!(elapsed_session_reset(&synthetic, now), None);
+        assert_eq!(due(&synthetic), None);
     }
 
     #[test]
-    fn each_reset_is_handled_once() {
+    fn each_idle_window_is_started_once_and_not_too_often() {
         let account = AccountId::new();
-        let reset = Utc::now();
-        assert!(claim(account, reset));
-        assert!(!claim(account, reset));
-        assert!(claim(account, reset + TimeDelta::hours(5)));
+        let now = Utc::now();
+        let reset = now;
+        assert!(claim(account, reset, now));
+        assert!(!claim(account, reset, now + TimeDelta::hours(1)));
+        // A new idle reading moments later waits.
+        assert!(!claim(
+            account,
+            reset + TimeDelta::minutes(1),
+            now + TimeDelta::minutes(1)
+        ));
+        assert!(claim(
+            account,
+            reset + TimeDelta::minutes(11),
+            now + TimeDelta::minutes(11)
+        ));
     }
 
     #[test]

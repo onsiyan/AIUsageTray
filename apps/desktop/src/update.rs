@@ -22,13 +22,24 @@ impl App {
         let mut tasks = Vec::new();
         for (account_id, cli) in self.dashboard.due_window_starts(chrono::Utc::now()) {
             match cli {
-                Some(cli) => tasks.push(Task::perform(window_start::run(cli), move |result| {
-                    Message::WindowStarted(account_id, result)
-                })),
-                None => window_start::set_failure(
-                    account_id,
-                    Some(window_start::OTHER_ACCOUNT.to_owned()),
-                ),
+                Some(cli) => tasks.push(Task::perform(
+                    async move {
+                        crate::app_log::write(format!(
+                            "starting the five-hour window through {cli:?}"
+                        ));
+                        window_start::run(cli).await
+                    },
+                    move |result| Message::WindowStarted(account_id, result),
+                )),
+                None => {
+                    crate::app_log::write(
+                        "five-hour window not started: the CLI uses another account",
+                    );
+                    window_start::set_failure(
+                        account_id,
+                        Some(window_start::OTHER_ACCOUNT.to_owned()),
+                    );
+                }
             }
         }
         Task::batch(tasks)

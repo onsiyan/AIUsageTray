@@ -513,11 +513,11 @@ impl DashboardState {
             let Some(reset_at) = entry
                 .snapshot
                 .as_ref()
-                .and_then(|snapshot| window_start::elapsed_session_reset(snapshot, now))
+                .and_then(|snapshot| window_start::idle_session_window(snapshot, now))
             else {
                 continue;
             };
-            if !window_start::claim(account.id, reset_at) {
+            if !window_start::claim(account.id, reset_at, now) {
                 continue;
             }
             // Reread the sign-ins right before sending anything.
