@@ -112,6 +112,9 @@ const KNOWN_SERVICES: &[(&str, &str)] = &[
     ("ghp_", "GitHub"),
     ("r8_", "Replicate"),
     ("fw_", "Fireworks AI"),
+    ("nvapi-", "NVIDIA"),
+    ("tvly-", "Tavily"),
+    ("jina_", "Jina AI"),
 ];
 
 /// The service a pasted key belongs to, when its start says so.

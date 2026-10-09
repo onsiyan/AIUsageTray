@@ -7,8 +7,8 @@ use super::*;
 // Explicit, so it is not confused with the built-in column! macro.
 use iced::widget::column;
 use lucide_icons::iced::{
-    icon_check, icon_copy, icon_eye, icon_eye_off, icon_info, icon_key_round, icon_pencil,
-    icon_trash_2,
+    icon_check, icon_copy, icon_ellipsis, icon_eye, icon_eye_off, icon_info, icon_key_round,
+    icon_pencil, icon_trash_2,
 };
 use usage_monitor_core::accounts::AccountId;
 use usage_monitor_core::vault::{self, VaultKey};
@@ -788,6 +788,10 @@ fn key_form(
     let field = |name: Element<'static, Message>, input: Element<'static, Message>| {
         row![name, input].spacing(8).align_y(Alignment::Center)
     };
+    // The grid shows no names, so the picked one is named by its label.
+    let picked_service = (!form.other_service)
+        .then(|| key_services::find(&form.service).map(|service| service.name))
+        .flatten();
     let mut fields = column![
         text(if form.editing.is_some() {
             tr(language, "Edit key", "تعديل المفتاح")
@@ -821,7 +825,14 @@ fn key_form(
             .on_submit(change(KeysChange::Save))
             .into(),
         ),
-        label("Service", "الخدمة"),
+        row![
+            label("Service", "الخدمة"),
+            text(picked_service.unwrap_or_default())
+                .size(typography::METADATA_SIZE)
+                .font(typography::MEDIUM)
+                .color(theme.colors.text()),
+        ]
+        .align_y(Alignment::Center),
         service_picker(form, theme, language),
     ]
     .spacing(6);
@@ -873,7 +884,12 @@ fn key_form(
         .into()
 }
 
-/// The listed services as logo buttons that wrap across lines, then "Other".
+/// A service's square in the picker, and the logo inside it.
+const SERVICE_TILE: f32 = 36.0;
+const SERVICE_LOGO: f32 = 24.0;
+const SERVICE_GAP: f32 = 5.0;
+
+/// The listed services as a grid of logos, each named on hover, then "Other".
 fn service_picker(
     form: &KeyForm,
     theme: &'static ThemeDefinition,
@@ -882,13 +898,16 @@ fn service_picker(
     let picked = (!form.other_service)
         .then(|| key_services::index_of(&form.service))
         .flatten();
-    let chip = |content: Element<'static, Message>,
+    let tile = |content: Element<'static, Message>,
+                name: &'static str,
                 selected: bool,
                 message: Message|
      -> Element<'static, Message> {
-        button(content)
+        let tile = button(container(content).center(Fill))
             .on_press(message)
-            .padding([4, 7])
+            .width(SERVICE_TILE)
+            .height(SERVICE_TILE)
+            .padding(0)
             .style(move |framework_theme: &Theme, status| {
                 let mut style = button::text(framework_theme, status);
                 let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
@@ -906,41 +925,35 @@ fn service_picker(
                         theme.colors.border(0.3)
                     },
                     width: 1.0,
-                    radius: 7.0.into(),
+                    radius: 8.0.into(),
                 };
                 style.shadow = Shadow::default();
                 style
-            })
-            .into()
+            });
+        hint::hint(tile, name, theme)
     };
-    let label = |name: &'static str| {
-        text(name)
-            .size(typography::METADATA_SIZE)
-            .font(typography::MEDIUM)
-            .color(theme.colors.text())
-    };
-    let mut chips = row![].spacing(5);
+    let mut tiles = row![].spacing(SERVICE_GAP);
     for (index, service) in key_services::SERVICES.iter().enumerate() {
-        chips = chips.push(chip(
-            row![
-                iced::widget::image(service.logo(theme.colors.is_light))
-                    .width(16)
-                    .height(16),
-                label(service.name),
-            ]
-            .spacing(5)
-            .align_y(Alignment::Center)
-            .into(),
+        tiles = tiles.push(tile(
+            iced::widget::image(service.logo(theme.colors.is_light))
+                .width(SERVICE_LOGO)
+                .height(SERVICE_LOGO)
+                .into(),
+            service.name,
             picked == Some(index),
             change(KeysChange::PickService(Some(index))),
         ));
     }
-    chips = chips.push(chip(
-        label(tr(language, "Other…", "أخرى…")).into(),
+    tiles = tiles.push(tile(
+        icon_ellipsis::<Theme>()
+            .size(18)
+            .color(theme.colors.muted_text())
+            .into(),
+        tr(language, "Other…", "أخرى…"),
         form.other_service,
         change(KeysChange::PickService(None)),
     ));
-    chips.wrap().vertical_spacing(5).into()
+    tiles.wrap().vertical_spacing(SERVICE_GAP).into()
 }
 
 fn copied_color(theme: &'static ThemeDefinition) -> Color {

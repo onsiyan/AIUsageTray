@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The API keys page picks a service from a grid of logos, named on hover,
+  and lists 60 services instead of 21 (NVIDIA, Azure OpenAI, Amazon
+  Bedrock, Vertex AI, Meta Llama, GitHub, Replicate, Ollama, fal, and
+  more). NVIDIA, Tavily, and Jina AI keys are recognized when pasted.
+
 - A usage request gives up after 15 seconds instead of 45, so one provider
   that stalls no longer holds the whole refresh.
 - Antigravity starts with the server that answered last time instead of
