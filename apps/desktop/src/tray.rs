@@ -88,6 +88,12 @@ pub(super) fn reset_clock_stream() -> impl Stream<Item = Message> {
     tick_stream(RESET_CLOCK_TICK, || Message::ResetClockTick)
 }
 
+pub(super) fn window_start_stream() -> impl Stream<Item = Message> {
+    tick_stream(crate::window_start::CHECK_EVERY, || {
+        Message::WindowStartTick
+    })
+}
+
 fn tick_stream(period: Duration, message: fn() -> Message) -> impl Stream<Item = Message> {
     let (sender, receiver) = async_channel::bounded::<()>(1);
     thread::spawn(move || {

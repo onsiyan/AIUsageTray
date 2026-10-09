@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "ai-usage-tray"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-channel",
  "chrono",
@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "ai-usage-tray-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "ai-usage-tray-login"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "reqwest",
@@ -3745,7 +3745,7 @@ dependencies = [
 
 [[package]]
 name = "usage-monitor-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -3767,7 +3767,7 @@ dependencies = [
 
 [[package]]
 name = "usage-monitor-windows"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "serde_json",

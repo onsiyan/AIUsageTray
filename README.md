@@ -1,21 +1,65 @@
 # AI Usage Tray
 
+**See every AI subscription limit from the Windows tray: Codex (ChatGPT),
+Claude Code, Antigravity, GitHub Copilot, Cursor, and more, across all your
+accounts, with the 5-hour and weekly resets.**
+
+[![Latest release](https://img.shields.io/github/v/release/onsiyan/AIUsageTray?label=download)](https://github.com/onsiyan/AIUsageTray/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/onsiyan/AIUsageTray/total)](https://github.com/onsiyan/AIUsageTray/releases)
+[![CI](https://github.com/onsiyan/AIUsageTray/actions/workflows/ci.yml/badge.svg)](https://github.com/onsiyan/AIUsageTray/actions/workflows/ci.yml)
+![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
+![Rust](https://img.shields.io/badge/built%20with-Rust-B7410E)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 <p align="center">
-  <img src="docs/screenshots/favorites.png" width="380" alt="The tray popup on its Favorites tab: Codex, Claude, and Antigravity accounts with their session and weekly limits">
+  <img src="docs/screenshots/favorites.png" width="380" alt="The tray popup on its Favorites tab: Codex, Claude, and Antigravity accounts with their 5-hour and weekly limits, the alarm that starts the 5-hour window, and the account switch buttons">
+</p>
+
+<p align="center">
+  <a href="https://github.com/onsiyan/AIUsageTray/releases/latest"><b>Download the latest setup</b></a>
+  &nbsp;·&nbsp; free and open source &nbsp;·&nbsp; about 13 MB
 </p>
 
 AI Usage Tray tracks AI subscription usage across several accounts and
-providers from one Windows tray popup: Codex (ChatGPT), Claude, Antigravity,
+providers from one Windows tray popup: Codex (ChatGPT Plus, Pro, and
+Business), Claude (Pro and Max, as used by Claude Code), Antigravity,
 GitHub Copilot, Cursor, OpenCode Go, Kimi Code, z.ai, MiniMax, OpenRouter,
 DeepSeek, and xAI. It shows each account's session, weekly, and model limits
 with their reset times, reset credits, and plan, or the prepaid balance, and
 can switch the Codex and Antigravity desktop apps to any saved account.
+
+**Why use it**
+
+- One glance instead of opening each provider's settings page: how much of
+  every 5-hour and weekly limit is left, and when it resets.
+- Built for people with several accounts: personal and work, or more than
+  one plan per provider.
+- Switch accounts in one click: the Codex and Antigravity desktop apps move
+  to any saved account and restart on it, so a used-up limit is one click
+  from a fresh one.
+- Starts the next 5-hour window right after a reset, through the official
+  `codex` or `claude` CLI, so no hours are lost waiting for your first message.
+- Shows what your Codex and Claude Code use would cost at API prices, against
+  what you pay for the plans.
+- Light: a native Rust app that gives its memory back to Windows while the
+  popup is hidden. Sign-ins stay in Windows Credential Manager and go only
+  to the providers themselves.
 
 ## Features
 
 - **Tray popup**: left-click the icon to open it. One tab per provider, plus
   Favorites and your own tabs that gather several providers or single
   accounts (Tabs button in the title bar).
+- **Quick account switching** (the arrows on Codex and Antigravity cards):
+  signs the Codex or Antigravity desktop app in with that account and
+  restarts it; a check marks the account the app uses now (details under
+  Accounts and sign-in, below).
+- **Start the 5-hour window at reset** (the alarm clock on Codex and
+  Claude cards): a 5-hour window only starts counting at your first message
+  after a reset. With the alarm on, right after the window resets the
+  official `codex` or `claude` CLI sends one word, so the next window starts
+  at once. It works while the popup is hidden, only when that CLI is signed
+  in with the same account, and the app itself never sends anything.
 - **Tray menu**: right-click the icon to open the popup or the Cost page,
   refresh every account, turn Start with Windows on or off, open the log
   folder, or quit.
@@ -26,9 +70,9 @@ can switch the Codex and Antigravity desktop apps to any saved account.
   plans cost. History is kept past the tools' own clean-up, by day, model,
   and tool, and can include other machines reached over SSH with your keys.
 - **API keys page** (the key button): keep any service's API key, picked
-  from 60 AI companies' logos, and copy it in one click. Keys stay in
-  Windows Credential Manager; the page is quick access only and reads no
-  usage from them.
+  from 60 AI companies' logos, copy it in one click, or test it with one
+  free request to the service (18 services, OpenAI to OpenRouter). Keys
+  stay in Windows Credential Manager; the page reads no usage from them.
 - **Themes**: built-in dark, light, and picture themes, or your own colors
   and background picture.
 - **Where it opens**: above the tray icon, in the middle of the screen, or
@@ -59,7 +103,31 @@ starting with Windows, and a desktop shortcut. Running a newer setup updates
 the app in place; remove it from Windows' Installed apps, which asks whether
 to remove your saved accounts, keys, and settings too.
 
-## Repository layout
+## FAQ
+
+**How do I check my Codex or Claude Code usage limit on Windows?**
+Install the app, add the account (the add-account button in the title bar;
+each provider signs in through its own page), and click the tray icon. Each
+card shows the 5-hour and weekly limits left and when they reset.
+
+**Can it track several ChatGPT or Claude accounts at once?**
+Yes. Add as many accounts per provider as you have; each gets its own card,
+and Favorites or your own tabs can gather them in one place.
+
+**Does it read my browser cookies or send my data somewhere?**
+No. It only uses sign-ins you add in the app, keeps them in Windows
+Credential Manager, and sends them only to each provider's own servers. The
+only other request is the daily update check on GitHub. See `SECURITY.md`.
+
+**Why does Windows warn about the setup?**
+The setup is not code-signed yet. Choose **More info**, then **Run anyway**.
+
+## Details
+
+Click a title to open it.
+
+<details>
+<summary><strong>Repository layout</strong></summary>
 
 ```
 apps/
@@ -77,7 +145,10 @@ callbacks, SQLite storage, the provider adapters, and the refresh coordinator
 (coalesced per-account flights, bounded concurrency, a 30-minute cadence,
 reset-boundary refreshes, and last-good snapshot retention).
 
-## Getting started
+</details>
+
+<details>
+<summary><strong>Getting started</strong></summary>
 
 Requires Windows and the Rust toolchain pinned in `rust-toolchain.toml`.
 
@@ -93,7 +164,10 @@ the setup, install [Inno Setup 6](https://jrsoftware.org/isinfo.php)
 `apps/desktop/packaging/windows/build-installer.ps1`; it writes
 `target/dist/AIUsageTray-<version>-Setup.exe`.
 
-## Command line
+</details>
+
+<details>
+<summary><strong>Command line</strong></summary>
 
 ```powershell
 .\target\release\ai-usage-tray-cli.exe account add codex --alias "Personal"
@@ -126,7 +200,10 @@ snapshot is returned marked stale. `usage watch` refreshes every account every
 provider access. `reset` removes every saved account, key, and setting, as
 uninstalling can.
 
-## Accounts and sign-in
+</details>
+
+<details>
+<summary><strong>Accounts and sign-in</strong></summary>
 
 | Provider | Sign-in | Usage source |
 |---|---|---|
@@ -168,7 +245,10 @@ account and restart it:
 An existing sign-in that does not belong to a saved account is backed up before
 it is replaced.
 
-## Data and credentials
+</details>
+
+<details>
+<summary><strong>Data and credentials</strong></summary>
 
 | What | Where |
 |---|---|
@@ -186,7 +266,10 @@ earlier `CodexUsageMonitor-Rust` and `UsageMonitorPreview` names is moved to the
 locations above the first time it is read. Pass `--database PATH` to any CLI
 command to use another database.
 
-## Development
+</details>
+
+<details>
+<summary><strong>Development</strong></summary>
 
 ```powershell
 cargo fmt --all -- --check
@@ -207,6 +290,8 @@ cargo test --workspace --release live_refresh_latency -- --ignored --nocapture
 This diagnostic contacts the providers for the locally saved accounts and
 updates their stored snapshots. It reports cold and warm delivery times using
 account references, without printing credentials, and is excluded from normal tests.
+
+</details>
 
 ## License
 

@@ -45,6 +45,7 @@ mod dialogs;
 mod display_options;
 mod graphics;
 mod hint;
+mod key_check;
 mod key_services;
 mod keys_tab;
 mod locale;
@@ -66,6 +67,7 @@ mod update_check;
 mod usage_refresh;
 mod view;
 mod welcome;
+mod window_start;
 
 use account_add::*;
 use chrome::*;
@@ -514,6 +516,7 @@ impl App {
         percent_display::set_default(percent_display::load_saved());
         display_options::load_saved();
         popup_place::load_saved();
+        window_start::load_saved();
         let tab_layout = tabs::load_saved();
         let mut dashboard = dashboard::DashboardState::loading();
         dashboard.set_custom_tab_accounts(tab_layout.custom_accounts());
@@ -590,6 +593,10 @@ impl App {
         }
         if app.popup_visible {
             subscriptions.push(Subscription::run(reset_clock_stream));
+        }
+        // Runs while hidden too: the window should start even when nobody looks.
+        if window_start::any_enabled() {
+            subscriptions.push(Subscription::run(window_start_stream));
         }
 
         Subscription::batch(subscriptions)
@@ -933,6 +940,12 @@ enum Message {
     SwitchCodexDesktopAccount(usage_monitor_core::accounts::AccountId),
     SwitchAntigravityAppAccount(usage_monitor_core::accounts::AccountId),
     CodexDesktopSwitchFinished(usage_monitor_core::accounts::AccountId, Result<(), String>),
+    /// Turns starting the five-hour window at reset on or off for an account.
+    ToggleWindowStart(usage_monitor_core::accounts::AccountId),
+    /// Looks for five-hour windows that reset.
+    WindowStartTick,
+    /// The official CLI sent its message for this account, or failed.
+    WindowStarted(usage_monitor_core::accounts::AccountId, Result<(), String>),
     SelectTab(DashboardTab),
     /// Opens the Cost page, or goes back to the tab it was opened from.
     ToggleCostPage,

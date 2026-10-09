@@ -6,6 +6,29 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-09
+
+### Added
+
+- Start the 5-hour window at reset: an alarm-clock button on Codex and
+  Claude cards. When it is on, right after the 5-hour window resets the
+  official `codex` or `claude` CLI sends one word, so the next window
+  starts counting at once instead of at your next message. It runs while
+  the popup is hidden, only when that CLI is signed in with the same
+  account, and the app itself never sends anything.
+- Test a saved key on the API keys page (the plug button): one free request
+  to the service's own API, such as listing its models, says whether the
+  key works or was rejected. Nothing is spent. Offered for 18 services,
+  among them OpenAI, Claude, Gemini, xAI, DeepSeek, Mistral, OpenRouter
+  and Groq.
+
+### Changed
+
+- Less space between the tabs and the first card.
+- The README leads with what the app does and why, adds a FAQ, and folds
+  the technical sections; the repository has a description, topics, and a
+  social preview image (`docs/social-preview.png`).
+
 ## [0.4.0] - 2026-10-09
 
 ### Added

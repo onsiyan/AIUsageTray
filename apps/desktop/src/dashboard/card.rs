@@ -211,7 +211,36 @@ pub(super) fn account_card(
             language,
         ));
     }
+    let window_start_enabled = crate::window_start::is_enabled(account_id);
+    let cli_account = belongs_to_provider(&account.provider_id, UsageProvider::Codex)
+        || belongs_to_provider(&account.provider_id, UsageProvider::Claude);
+    // Offered where the official CLI uses this account, and kept visible
+    // while on so it can always be turned off.
+    if cli_account
+        && editing.is_none()
+        && (window_start_enabled || codex_desktop.cli_signed_in(account))
+    {
+        header = header.push(window_start_button(
+            account_id,
+            window_start_enabled,
+            theme,
+            language,
+        ));
+    }
     let mut rows: Vec<Element<'static, Message>> = vec![header.width(Fill).into()];
+
+    if window_start_enabled && let Some(error) = crate::window_start::failure(account_id) {
+        let error = if error == crate::window_start::OTHER_ACCOUNT {
+            locale::text(language, Text::WindowStartOtherAccount).to_owned()
+        } else {
+            error
+        };
+        let message = format!(
+            "{}: {error}",
+            locale::text(language, Text::WindowStartFailed)
+        );
+        rows.push(warning_line(&message, theme));
+    }
 
     if let Some((app, _)) = desktop_app
         && let Some((_, error)) = codex_desktop
@@ -456,6 +485,60 @@ pub(super) fn desktop_app_button(
             locale::text(language, tip)
         )
     };
+    crate::hint::hint(control, tip, theme)
+}
+
+/// Turns starting the five-hour window at reset on or off.
+fn window_start_button(
+    account_id: AccountId,
+    enabled: bool,
+    theme: &'static crate::theme::ThemeDefinition,
+    language: Language,
+) -> Element<'static, Message> {
+    let accent = theme.accent_color();
+    let glyph = if enabled {
+        icon_alarm_clock().color(accent)
+    } else {
+        icon_alarm_clock_off().color(muted_text(theme))
+    };
+    let control = button(container(glyph.size(14)).center(26))
+        .width(26)
+        .height(26)
+        .padding(0)
+        .on_press(Message::ToggleWindowStart(account_id))
+        .style(move |framework_theme, status| {
+            let mut style = button::text(framework_theme, status);
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            style.background = Some(Background::Color(if enabled {
+                accent.scale_alpha(0.18)
+            } else if hovered {
+                theme.colors.hover()
+            } else {
+                theme.colors.control_surface()
+            }));
+            style.text_color = theme.colors.text();
+            style.border = Border {
+                color: if enabled {
+                    accent.scale_alpha(0.62)
+                } else {
+                    theme.colors.border(0.18)
+                },
+                width: 1.0,
+                radius: 7.0.into(),
+            };
+            style.shadow = Default::default();
+            style
+        });
+    let hint = if enabled {
+        Text::WindowStartOnHint
+    } else {
+        Text::WindowStartOffHint
+    };
+    let tip = format!(
+        "{} · {}",
+        locale::text(language, Text::WindowStart),
+        locale::text(language, hint)
+    );
     crate::hint::hint(control, tip, theme)
 }
 

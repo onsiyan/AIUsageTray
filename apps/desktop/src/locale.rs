@@ -118,6 +118,11 @@ pub enum Text {
     OpensWhereLeft,
     ShadeResetTimes,
     HideEmails,
+    WindowStart,
+    WindowStartOnHint,
+    WindowStartOffHint,
+    WindowStartFailed,
+    WindowStartOtherAccount,
     WorkspaceBalance,
     MonthlyLimit,
     TeamBudget,
@@ -348,6 +353,15 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (English, OpensWhereLeft) => "Where you left it",
         (English, ShadeResetTimes) => "Shade behind reset times",
         (English, HideEmails) => "Hide emails",
+        (English, WindowStart) => "Start the 5-hour window at reset",
+        (English, WindowStartOnHint) => {
+            "On: right after each reset, the official CLI sends one word so the next window starts"
+        }
+        (English, WindowStartOffHint) => {
+            "Off: press to send one word through the official CLI after each reset"
+        }
+        (English, WindowStartFailed) => "Starting the 5-hour window failed",
+        (English, WindowStartOtherAccount) => "the official CLI is signed in with another account",
         (English, WorkspaceBalance) => "Workspace balance",
         (English, MonthlyLimit) => "Monthly limit",
         (English, TeamBudget) => "Team budget",
@@ -581,6 +595,15 @@ pub const fn text(language: Language, key: Text) -> &'static str {
         (Arabic, OpensWhereLeft) => "حيث تركتها",
         (Arabic, ShadeResetTimes) => "تظليل خلف أوقات الإعادة",
         (Arabic, HideEmails) => "إخفاء الإيميلات",
+        (Arabic, WindowStart) => "بدء نافذة الخمس ساعات عند الإعادة",
+        (Arabic, WindowStartOnHint) => {
+            "مفعّل: بعد كل إعادة مباشرة ترسل الأداة الرسمية كلمة واحدة لتبدأ النافذة التالية"
+        }
+        (Arabic, WindowStartOffHint) => {
+            "معطّل: اضغط ليُرسل كلمة واحدة عبر الأداة الرسمية بعد كل إعادة"
+        }
+        (Arabic, WindowStartFailed) => "فشل بدء نافذة الخمس ساعات",
+        (Arabic, WindowStartOtherAccount) => "الأداة الرسمية مسجلة بحساب آخر",
         (Arabic, WorkspaceBalance) => "رصيد مساحة العمل",
         (Arabic, MonthlyLimit) => "الحد الشهري",
         (Arabic, TeamBudget) => "ميزانية الفريق",

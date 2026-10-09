@@ -12,8 +12,8 @@ use iced::{
     },
 };
 use lucide_icons::iced::{
-    icon_arrow_left_right, icon_check, icon_chevron_down, icon_chevron_up, icon_eye, icon_eye_off,
-    icon_pencil, icon_star, icon_x,
+    icon_alarm_clock, icon_alarm_clock_off, icon_arrow_left_right, icon_check, icon_chevron_down,
+    icon_chevron_up, icon_eye, icon_eye_off, icon_pencil, icon_star, icon_x,
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -103,8 +103,25 @@ struct CodexDesktopState {
     active_account: Option<AccountId>,
     /// Email the Antigravity desktop app is signed in with.
     antigravity_email: Option<String>,
+    /// Email Claude Code is signed in with.
+    claude_code_email: Option<String>,
     switching: Option<AccountId>,
     failure: Option<(AccountId, String)>,
+}
+
+impl CodexDesktopState {
+    /// Whether the official CLI for this account is signed in with it.
+    fn cli_signed_in(&self, account: &AccountRecord) -> bool {
+        if belongs_to_provider(&account.provider_id, UsageProvider::Codex) {
+            self.active_account == Some(account.id)
+        } else if belongs_to_provider(&account.provider_id, UsageProvider::Claude) {
+            self.claude_code_email
+                .as_deref()
+                .is_some_and(|email| email.eq_ignore_ascii_case(account.email.trim()))
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Default)]
@@ -181,6 +198,7 @@ impl DashboardState {
             codex_desktop: CodexDesktopState {
                 active_account: current_codex_desktop_account(),
                 antigravity_email: current_antigravity_app_email(),
+                claude_code_email: crate::window_start::claude_code_email(),
                 ..CodexDesktopState::default()
             },
             account_order: load_account_ids(ACCOUNT_ORDER_FILE),
@@ -379,6 +397,7 @@ impl DashboardState {
         }
         self.codex_desktop.active_account = current_codex_desktop_account();
         self.codex_desktop.antigravity_email = current_antigravity_app_email();
+        self.codex_desktop.claude_code_email = crate::window_start::claude_code_email();
     }
 
     pub fn set_accounts(&mut self, mut entries: Vec<AccountUsageEntry>) {
@@ -412,6 +431,7 @@ impl DashboardState {
         self.failed = false;
         self.codex_desktop.active_account = current_codex_desktop_account();
         self.codex_desktop.antigravity_email = current_antigravity_app_email();
+        self.codex_desktop.claude_code_email = crate::window_start::claude_code_email();
     }
 
     /// Applies one refreshed account in place. Unlike `set_accounts`, this
@@ -466,6 +486,47 @@ impl DashboardState {
     pub fn refresh_desktop_apps(&mut self) {
         self.codex_desktop.active_account = current_codex_desktop_account();
         self.codex_desktop.antigravity_email = current_antigravity_app_email();
+        self.codex_desktop.claude_code_email = crate::window_start::claude_code_email();
+    }
+
+    /// Accounts whose five-hour window reset and should start again, each
+    /// with the official CLI to start it, or `None` when that CLI is signed
+    /// in with another account. Each reset is returned once.
+    pub fn due_window_starts(
+        &mut self,
+        now: DateTime<Utc>,
+    ) -> Vec<(AccountId, Option<crate::window_start::Cli>)> {
+        use crate::window_start::{self, Cli};
+        let mut due = Vec::new();
+        for entry in &self.entries {
+            let account = &entry.account;
+            if !window_start::is_enabled(account.id) {
+                continue;
+            }
+            let cli = if belongs_to_provider(&account.provider_id, UsageProvider::Codex) {
+                Cli::Codex
+            } else if belongs_to_provider(&account.provider_id, UsageProvider::Claude) {
+                Cli::Claude
+            } else {
+                continue;
+            };
+            let Some(reset_at) = entry
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| window_start::elapsed_session_reset(snapshot, now))
+            else {
+                continue;
+            };
+            if !window_start::claim(account.id, reset_at) {
+                continue;
+            }
+            // Reread the sign-ins right before sending anything.
+            self.codex_desktop.active_account = current_codex_desktop_account();
+            self.codex_desktop.claude_code_email = window_start::claude_code_email();
+            let signed_in = self.codex_desktop.cli_signed_in(account);
+            due.push((account.id, signed_in.then_some(cli)));
+        }
+        due
     }
 
     pub fn account_entries(&self) -> &[AccountUsageEntry] {
@@ -674,8 +735,10 @@ pub fn view(
         )
     };
 
+    // No top padding: the first card's own padding is gap enough below the
+    // tabs.
     container(body)
-        .padding([8, 10])
+        .padding(iced::Padding::from([8, 10]).top(0))
         .width(Fill)
         .height(Fill)
         .into()

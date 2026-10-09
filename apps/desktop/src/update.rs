@@ -16,6 +16,24 @@ impl App {
         self.update(Message::SelectTab(tab))
     }
 
+    /// Sends the official CLI's message for every account whose five-hour
+    /// window just reset.
+    fn start_due_windows(&mut self) -> Task<Message> {
+        let mut tasks = Vec::new();
+        for (account_id, cli) in self.dashboard.due_window_starts(chrono::Utc::now()) {
+            match cli {
+                Some(cli) => tasks.push(Task::perform(window_start::run(cli), move |result| {
+                    Message::WindowStarted(account_id, result)
+                })),
+                None => window_start::set_failure(
+                    account_id,
+                    Some(window_start::OTHER_ACCOUNT.to_owned()),
+                ),
+            }
+        }
+        Task::batch(tasks)
+    }
+
     pub(super) fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::DashboardLoaded(Ok(accounts)) => {
@@ -406,6 +424,8 @@ impl App {
                 Task::none()
             }
             Message::ResetClockTick => {
+                // Before the reset is cleared and read again.
+                let window_starts = self.start_due_windows();
                 let update_due = self
                     .update_checked_at
                     .is_some_and(|checked| checked.elapsed() >= update_check::CHECK_EVERY);
@@ -426,13 +446,19 @@ impl App {
                 // machines; a closed one still reads the machines now and then.
                 if self.selected_tab == DashboardTab::Cost {
                     Task::batch([
+                        window_starts,
                         usage,
                         update_check,
                         self.cost.scan_if_due(),
                         self.cost.sync_machines_if_due(true),
                     ])
                 } else {
-                    Task::batch([usage, update_check, self.cost.sync_machines_if_due(false)])
+                    Task::batch([
+                        window_starts,
+                        usage,
+                        update_check,
+                        self.cost.sync_machines_if_due(false),
+                    ])
                 }
             }
             Message::ToggleThemeMenu => {
@@ -745,6 +771,26 @@ impl App {
                 }
                 self.dashboard.finish_codex_switch(account_id, result);
                 Task::none()
+            }
+            Message::ToggleWindowStart(account_id) => {
+                if let Err(error) = window_start::toggle(account_id) {
+                    crate::app_log::write(format!("saving window start failed: {error}"));
+                }
+                // A reset that already passed starts right away.
+                self.start_due_windows()
+            }
+            Message::WindowStartTick => self.start_due_windows(),
+            Message::WindowStarted(account_id, result) => {
+                match &result {
+                    Ok(()) => crate::app_log::write("five-hour window started"),
+                    Err(error) => {
+                        crate::app_log::write(format!(
+                            "starting the five-hour window failed: {error}"
+                        ));
+                    }
+                }
+                window_start::set_failure(account_id, result.err());
+                self.start_usage_refresh(usage_refresh::RefreshTrigger::Automatic)
             }
             Message::SetUiZoom(zoom) => {
                 self.ui_zoom = zoom;

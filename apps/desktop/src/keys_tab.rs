@@ -8,13 +8,14 @@ use super::*;
 use iced::widget::column;
 use lucide_icons::iced::{
     icon_check, icon_copy, icon_ellipsis, icon_eye, icon_eye_off, icon_info, icon_key_round,
-    icon_pencil, icon_trash_2,
+    icon_pencil, icon_plug_zap, icon_trash_2,
 };
 use usage_monitor_core::accounts::AccountId;
 use usage_monitor_core::vault::{self, VaultKey};
 
 use crate::cost_tab::tr;
 use crate::dashboard::{AccountUsageEntry, account_name, belongs_to_provider};
+use crate::key_check::{self, Outcome};
 
 /// How long a row says its key was copied.
 const COPIED_FOR: Duration = Duration::from_secs(2);
@@ -69,6 +70,9 @@ pub(super) enum KeysChange {
     /// Ask before removing this key, or stop asking.
     AskRemove(Option<String>),
     Remove(String),
+    /// Test this saved key against its service.
+    Test(String),
+    Tested(String, Outcome),
 }
 
 /// One row: a key as the list shows it, never the key itself.
@@ -125,6 +129,8 @@ pub(super) struct KeysTab {
     copied: Option<(KeyRef, u32)>,
     copies: u32,
     hovered: Option<KeyRef>,
+    /// Key tests by key id: `None` while one runs.
+    tests: std::collections::HashMap<String, Option<Outcome>>,
 }
 
 impl KeysTab {
@@ -150,6 +156,7 @@ impl KeysTab {
         self.form = None;
         self.confirm_remove = None;
         self.hovered = None;
+        self.tests.clear();
     }
 
     pub(super) fn change(
@@ -264,6 +271,9 @@ impl KeysTab {
                     };
                     match key.and_then(|key| store::save(&key)) {
                         Ok(()) => {
+                            if let Some(id) = &form.editing {
+                                self.tests.remove(id);
+                            }
                             self.form = None;
                             self.revealed = None;
                             self.refresh(entries);
@@ -272,9 +282,39 @@ impl KeysTab {
                     }
                 }
             }
+            KeysChange::Test(id) => {
+                if self.tests.get(&id).is_some_and(Option::is_none) {
+                    return Task::none();
+                }
+                let key = match store::get(&id) {
+                    Ok(Some(key)) => key,
+                    Ok(None) => {
+                        self.refresh(entries);
+                        return Task::none();
+                    }
+                    Err(error) => {
+                        self.error = Some(error);
+                        return Task::none();
+                    }
+                };
+                self.tests.insert(id.clone(), None);
+                return Task::perform(key_check::test(key.service, key.secret), move |outcome| {
+                    Message::Keys(KeysChange::Tested(id.clone(), outcome))
+                });
+            }
+            KeysChange::Tested(id, outcome) => {
+                if let Outcome::Failed(problem) = &outcome {
+                    crate::app_log::write(format!("key test failed: {problem}"));
+                }
+                // A result for a key changed or closed meanwhile is dropped.
+                if let Some(test) = self.tests.get_mut(&id) {
+                    *test = Some(outcome);
+                }
+            }
             KeysChange::AskRemove(id) => self.confirm_remove = id,
             KeysChange::Remove(id) => {
                 self.confirm_remove = None;
+                self.tests.remove(&id);
                 if let Err(error) = store::remove(&id) {
                     self.error = Some(error);
                 }
@@ -662,12 +702,37 @@ fn key_row(
         KeyRef::Account(..) => None,
     };
     let confirming = id.is_some() && state.confirm_remove == id;
+    let testable = id.is_some() && key_check::can_test(&service);
+    let test = id.as_ref().and_then(|id| state.tests.get(id));
 
     let detail = if copied {
         text(tr(language, "Copied", "نُسخ"))
             .size(typography::COMPACT_SIZE)
             .font(typography::MEDIUM)
             .color(copied_color(theme))
+    } else if let Some(test) = test {
+        let (words, color) = match test {
+            None => (
+                tr(language, "Testing…", "جارٍ الاختبار…").to_owned(),
+                theme.colors.muted_text(),
+            ),
+            Some(Outcome::Works) => (
+                tr(language, "Works", "يعمل").to_owned(),
+                copied_color(theme),
+            ),
+            Some(Outcome::Rejected) => (
+                tr(language, "Rejected by the service", "رفضته الخدمة").to_owned(),
+                ERROR_COLOR,
+            ),
+            Some(Outcome::Failed(problem)) => (
+                format!("{}: {problem}", tr(language, "Test failed", "فشل الاختبار")),
+                ERROR_COLOR,
+            ),
+        };
+        text(format!("{service}  ·  {words}"))
+            .size(typography::COMPACT_SIZE)
+            .font(typography::MEDIUM)
+            .color(color)
     } else {
         let key_text = revealed.clone().unwrap_or(masked);
         let mut parts = Vec::new();
@@ -738,6 +803,20 @@ fn key_row(
                 KeysChange::Reveal(reference.clone()),
             )
         };
+        if testable && let Some(id) = &id {
+            actions = actions.push(icon_button(
+                icon_plug_zap::<Theme>()
+                    .size(15)
+                    .color(theme.colors.muted_text()),
+                tr(
+                    language,
+                    "Test the connection (free, spends nothing)",
+                    "اختبار الاتصال (مجاني، لا يستهلك شيئًا)",
+                ),
+                change(KeysChange::Test(id.clone())),
+                theme,
+            ));
+        }
         actions = actions
             .push(icon_button(
                 eye.size(15).color(theme.colors.muted_text()),
