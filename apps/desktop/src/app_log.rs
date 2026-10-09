@@ -22,6 +22,10 @@ pub(super) fn directory() -> Option<PathBuf> {
 
 /// Adds a line, stamped with the time (UTC).
 pub(super) fn write(message: impl std::fmt::Display) {
+    // Tests act out failures; they stay out of the user's log.
+    if cfg!(test) {
+        return;
+    }
     let Some(directory) = directory() else {
         return;
     };
