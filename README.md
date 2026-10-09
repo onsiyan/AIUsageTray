@@ -49,7 +49,10 @@ can switch the Codex and Antigravity desktop apps to any saved account.
 
 ## Install
 
-Download `AIUsageTray-<version>-Setup.exe` and run it. Setup installs for
+Download `AIUsageTray-<version>-Setup.exe` from
+[Releases](https://github.com/onsiyan/AIUsageTray/releases/latest) and run
+it. The setup is not code-signed, so Windows SmartScreen may stop it the
+first time: choose **More info**, then **Run anyway**. Setup installs for
 the current Windows user without an administrator prompt (by default into
 `%LOCALAPPDATA%\Programs\AIUsageTray`) and lets you choose the folder,
 starting with Windows, and a desktop shortcut. Running a newer setup updates
