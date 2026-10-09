@@ -103,6 +103,13 @@ fn main() -> iced::Result {
     if another_instance_is_running() {
         return Ok(());
     }
+    // wgpu prefers Direct3D 12, whose drivers hold about 100 MB more than
+    // Vulkan's for the same popup. Without Vulkan iced falls back to drawing
+    // on the CPU. `WGPU_BACKEND` set by the user still wins.
+    if std::env::var_os("WGPU_BACKEND").is_none() {
+        // SAFETY: no other thread has started yet.
+        unsafe { std::env::set_var("WGPU_BACKEND", "vulkan") };
+    }
     app_log::start();
     let (tray_sender, tray_receiver) = async_channel::bounded::<TrayIconEvent>(32);
     let _ = TRAY_EVENT_RECEIVER.set(tray_receiver.clone());
