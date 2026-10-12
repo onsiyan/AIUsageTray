@@ -39,8 +39,8 @@ can switch the Codex and Antigravity desktop apps to any saved account.
   from a fresh one.
 - Starts the next 5-hour window right after a reset, through the official
   `codex` or `claude` CLI, so no hours are lost waiting for your first message.
-- Shows what your Codex and Claude Code use would cost at API prices, against
-  what you pay for the plans.
+- Shows what your Codex, Claude Code, and Antigravity use would cost at API
+  prices, against what you pay for the plans.
 - Light: a native Rust app that gives its memory back to Windows while the
   popup is hidden. Sign-ins stay in Windows Credential Manager and go only
   to the providers themselves.
@@ -65,14 +65,18 @@ can switch the Codex and Antigravity desktop apps to any saved account.
   folder, or quit.
 - **Updates**: the app checks GitHub for a newer release at start and once
   a day, and offers its page in the tray menu and the popup.
-- **Cost page** (the $ button): what Codex and Claude Code use would cost at
-  API list prices, read from their local session logs, against what your
-  plans cost. History is kept past the tools' own clean-up, by day, model,
-  and tool, and can include other machines reached over SSH with your keys.
+- **Cost page** (the $ button): what Codex, Claude Code, and Antigravity
+  use would cost at API list prices, read from their local session logs and
+  conversation databases, against what your plans cost. A refresh reads only
+  what changed since the last one. History is kept past the tools' own
+  clean-up, by day, model, and tool, and can include other machines reached
+  over SSH with your keys (Codex and Claude Code only).
 - **API keys page** (the key button): keep any service's API key, picked
   from 60 AI companies' logos, copy it in one click, or test it with one
-  free request to the service (18 services, OpenAI to OpenRouter). Keys
-  stay in Windows Credential Manager; the page reads no usage from them.
+  free request to the service (39 services, OpenAI to OpenRouter). Turn on
+  catching copied keys and every key you copy anywhere is kept here under
+  its service. Keys stay in Windows Credential Manager; the page reads no
+  usage from them.
 - **Themes**: built-in dark, light, and picture themes, or your own colors
   and background picture.
 - **Where it opens**: above the tray icon, in the middle of the screen, or
@@ -117,7 +121,10 @@ and Favorites or your own tabs can gather them in one place.
 **Does it read my browser cookies or send my data somewhere?**
 No. It only uses sign-ins you add in the app, keeps them in Windows
 Credential Manager, and sends them only to each provider's own servers. The
-only other request is the daily update check on GitHub. See `SECURITY.md`.
+only other request is the daily update check on GitHub. One exception you
+choose: with catching copied keys on, a plain `sk-` key, which several
+services use, is tried with DeepSeek, Kimi, OpenAI, SiliconFlow, and
+Stability AI until one accepts it. See `SECURITY.md`.
 
 **Why does Windows warn about the setup?**
 The setup is not code-signed yet. Choose **More info**, then **Run anyway**.

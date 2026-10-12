@@ -64,6 +64,73 @@ const CHECKS: &[(&str, Check)] = &[
     ("OpenRouter", bearer("https://openrouter.ai/api/v1/key")),
     ("Groq", bearer("https://api.groq.com/openai/v1/models")),
     ("Kimi", bearer("https://api.moonshot.ai/v1/models")),
+    // Keys made on the China site work only there.
+    ("Kimi", bearer("https://api.moonshot.cn/v1/models")),
+    (
+        "SiliconFlow",
+        bearer("https://api.siliconflow.com/v1/user/info"),
+    ),
+    (
+        "SiliconFlow",
+        bearer("https://api.siliconflow.cn/v1/user/info"),
+    ),
+    (
+        "Perplexity",
+        bearer("https://api.perplexity.ai/async/chat/completions"),
+    ),
+    ("Tavily", bearer("https://api.tavily.com/usage")),
+    ("DeepInfra", bearer("https://api.deepinfra.com/v1/me")),
+    ("Novita AI", bearer("https://api.novita.ai/v3/user")),
+    ("Hyperbolic", bearer("https://api.hyperbolic.xyz/v1/models")),
+    (
+        "Nebius",
+        bearer("https://api.tokenfactory.nebius.com/v1/models"),
+    ),
+    ("Nebius", bearer("https://api.studio.nebius.com/v1/models")),
+    ("Venice", bearer("https://api.venice.ai/api/v1/api_keys")),
+    ("Upstage", bearer("https://api.upstage.ai/v1/models")),
+    (
+        "AssemblyAI",
+        Check {
+            url: "https://api.assemblyai.com/v2/transcript",
+            auth: Auth::Header("authorization"),
+            extra_header: None,
+        },
+    ),
+    ("Z.ai", bearer("https://api.z.ai/api/paas/v4/models")),
+    (
+        "Qwen",
+        bearer("https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models"),
+    ),
+    (
+        "Qwen",
+        bearer("https://dashscope.aliyuncs.com/compatible-mode/v1/models"),
+    ),
+    ("MiniMax", bearer("https://api.minimax.io/v1/models")),
+    ("MiniMax", bearer("https://api.minimaxi.com/v1/models")),
+    (
+        "Xiaomi MiMo",
+        bearer("https://api.xiaomimimo.com/v1/models"),
+    ),
+    ("OpenCode", bearer("https://opencode.ai/zen/v1/models")),
+    ("StepFun", bearer("https://api.stepfun.com/v1/models")),
+    (
+        "Doubao",
+        bearer("https://ark.cn-beijing.volces.com/api/v3/models"),
+    ),
+    ("Reka", bearer("https://api.reka.ai/v1/models")),
+    (
+        "Tencent Hunyuan",
+        bearer("https://api.hunyuan.cloud.tencent.com/v1/models"),
+    ),
+    (
+        "Baidu Qianfan",
+        bearer("https://qianfan.baidubce.com/v2/models"),
+    ),
+    (
+        "Firecrawl",
+        bearer("https://api.firecrawl.dev/v1/team/credit-usage"),
+    ),
     ("Cohere", bearer("https://api.cohere.com/v1/models")),
     ("Together AI", bearer("https://api.together.xyz/v1/models")),
     (
@@ -91,30 +158,63 @@ const CHECKS: &[(&str, Check)] = &[
     ),
 ];
 
-fn check_for(service: &str) -> Option<Check> {
+/// Services a plain `sk-` key may belong to, tried in this order when its
+/// shape does not tell.
+const PLAIN_SK_SERVICES: &[&str] = &["DeepSeek", "Kimi", "OpenAI", "SiliconFlow", "Stability AI"];
+
+fn checks_for(service: &str) -> impl Iterator<Item = Check> + '_ {
     CHECKS
         .iter()
-        .find(|(name, _)| *name == service)
+        .filter(move |(name, _)| *name == service)
         .map(|(_, check)| *check)
 }
 
 pub(crate) fn can_test(service: &str) -> bool {
-    check_for(service).is_some()
+    checks_for(service).next().is_some()
+}
+
+/// Every check of the service until one accepts the key: a service with
+/// more than one site has a check for each.
+fn test_service(service: &str, secret: &str) -> Outcome {
+    let mut outcome = Outcome::Failed("no test for this service".to_owned());
+    for check in checks_for(service) {
+        outcome = run(check, secret);
+        if outcome == Outcome::Works {
+            break;
+        }
+    }
+    outcome
 }
 
 /// Runs the test on its own thread, off the interface.
 pub(crate) async fn test(service: String, secret: String) -> Outcome {
-    let Some(check) = check_for(&service) else {
-        return Outcome::Failed("no test for this service".to_owned());
-    };
+    off_the_interface(move || test_service(&service, &secret))
+        .await
+        .unwrap_or_else(|| Outcome::Failed("the test stopped".to_owned()))
+}
+
+/// The service a plain `sk-` key works with, found by trying each one that
+/// uses such keys with the same free request as the test, until one
+/// accepts it. `None` when none does or none could be reached.
+pub(crate) async fn identify_plain_sk(secret: String) -> Option<&'static str> {
+    off_the_interface(move || {
+        PLAIN_SK_SERVICES
+            .iter()
+            .copied()
+            .find(|service| test_service(service, &secret) == Outcome::Works)
+    })
+    .await
+    .flatten()
+}
+
+async fn off_the_interface<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
     let (sender, receiver) = async_channel::bounded(1);
     std::thread::spawn(move || {
-        let _ = sender.send_blocking(run(check, &secret));
+        let _ = sender.send_blocking(work());
     });
-    receiver
-        .recv()
-        .await
-        .unwrap_or_else(|_| Outcome::Failed("the test stopped".to_owned()))
+    receiver.recv().await.ok()
 }
 
 fn run(check: Check, secret: &str) -> Outcome {
@@ -178,6 +278,9 @@ mod tests {
         for (name, check) in CHECKS {
             assert!(crate::key_services::find(name).is_some(), "{name}");
             assert!(check.url.starts_with("https://"), "{name}");
+        }
+        for service in PLAIN_SK_SERVICES {
+            assert!(can_test(service), "{service}");
         }
         assert!(can_test("OpenAI"));
         assert!(!can_test("Some service nobody lists"));

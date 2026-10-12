@@ -243,18 +243,28 @@ pub(super) fn provider_tab_bar(
         })
         .collect::<Vec<_>>();
 
-    container(row(tabs).spacing(2).width(Fill))
+    // One rounded track holding every tab; the selected one sits on it as a
+    // raised pill (see `tab_button`).
+    let track = container(row(tabs).spacing(2).width(Fill))
         .width(Fill)
-        .height(37)
-        .padding([3, 8])
+        .padding(3)
         .style(move |_| container::Style {
+            // A shade deeper than the header it sits in.
             background: Some(Background::Color(if active_theme.colors.is_light {
-                active_theme.colors.control_surface()
+                active_theme.colors.border(0.10)
             } else {
                 Color::from_rgba(0.0, 0.0, 0.0, PROVIDER_TAB_SHADE_OPACITY)
             })),
+            border: Border {
+                radius: 11.0.into(),
+                width: 1.0,
+                color: active_theme.colors.border(0.12),
+            },
             ..Default::default()
-        })
+        });
+    container(track)
+        .width(Fill)
+        .padding(iced::Padding::from([0, 8]).bottom(1))
         .into()
 }
 
@@ -354,19 +364,47 @@ fn tab_button(
     let tab_button = button(container(content).center(Fill))
         .on_press(Message::SelectTab(tab))
         .width(width)
-        .height(31)
+        .height(33)
         .padding(0)
         .style(move |framework_theme: &Theme, status| {
+            let colors = active_theme.colors;
             let mut style = button::text(framework_theme, status);
-            let highlighted =
-                selected || matches!(status, button::Status::Hovered | button::Status::Pressed);
-            style.background = highlighted.then(|| Background::Color(active_theme.colors.hover()));
-            style.text_color = active_theme.colors.text();
+            style.text_color = colors.text();
+            style.shadow = Shadow::default();
             style.border = Border {
-                radius: 7.0.into(),
+                radius: 8.0.into(),
                 ..Border::default()
             };
-            style.shadow = Shadow::default();
+            if selected {
+                // The raised pill: a solid face, a hairline, and a soft
+                // shadow under it.
+                style.background = Some(Background::Color(if colors.is_light {
+                    colors.window_surface()
+                } else {
+                    Color::from_rgba(1.0, 1.0, 1.0, 0.14)
+                }));
+                style.border.width = 1.0;
+                style.border.color = if colors.is_light {
+                    colors.border(0.22)
+                } else {
+                    Color::from_rgba(1.0, 1.0, 1.0, 0.12)
+                };
+                style.shadow = Shadow {
+                    color: Color::from_rgba(
+                        0.0,
+                        0.0,
+                        0.0,
+                        if colors.is_light { 0.12 } else { 0.35 },
+                    ),
+                    offset: iced::Vector::new(0.0, 1.0),
+                    blur_radius: 3.0,
+                };
+            } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                style.background = Some(Background::Color(Color {
+                    a: colors.hover().a * 0.6,
+                    ..colors.hover()
+                }));
+            }
             style
         });
 

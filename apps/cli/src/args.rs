@@ -35,8 +35,8 @@ pub(super) enum Command {
     },
     /// Summarize account and cached-snapshot availability without networking.
     Status,
-    /// Estimate Codex and Claude Code cost on this PC from their local logs,
-    /// at API list prices.
+    /// Estimate Codex, Claude Code, and Antigravity cost on this PC from their
+    /// local logs, at API list prices.
     Cost {
         /// Keep the last known prices instead of updating them from models.dev.
         #[arg(long)]

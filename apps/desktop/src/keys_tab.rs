@@ -7,8 +7,8 @@ use super::*;
 // Explicit, so it is not confused with the built-in column! macro.
 use iced::widget::column;
 use lucide_icons::iced::{
-    icon_check, icon_copy, icon_ellipsis, icon_eye, icon_eye_off, icon_info, icon_key_round,
-    icon_pencil, icon_plug_zap, icon_trash_2,
+    icon_check, icon_clipboard, icon_clipboard_check, icon_copy, icon_ellipsis, icon_eye,
+    icon_eye_off, icon_info, icon_key_round, icon_pencil, icon_plug_zap, icon_trash_2,
 };
 use usage_monitor_core::accounts::AccountId;
 use usage_monitor_core::vault::{self, VaultKey};
@@ -73,6 +73,17 @@ pub(super) enum KeysChange {
     /// Test this saved key against its service.
     Test(String),
     Tested(String, Outcome),
+    /// Turns catching copied keys on or off.
+    ToggleCatch,
+    /// A key copied somewhere else, to keep in the vault.
+    Caught(Secret),
+    /// The service a plain `sk-` key worked with, if any.
+    Identified(Secret, Option<&'static str>),
+}
+
+/// The message for a key the clipboard watch caught.
+pub(super) fn caught_message(text: String) -> Message {
+    Message::Keys(KeysChange::Caught(Secret(text)))
 }
 
 /// One row: a key as the list shows it, never the key itself.
@@ -131,6 +142,9 @@ pub(super) struct KeysTab {
     hovered: Option<KeyRef>,
     /// Key tests by key id: `None` while one runs.
     tests: std::collections::HashMap<String, Option<Outcome>>,
+    /// Services of the keys caught from the clipboard since the page was
+    /// last left, newest last.
+    caught: Vec<String>,
 }
 
 impl KeysTab {
@@ -157,6 +171,7 @@ impl KeysTab {
         self.confirm_remove = None;
         self.hovered = None;
         self.tests.clear();
+        self.caught.clear();
     }
 
     pub(super) fn change(
@@ -311,6 +326,19 @@ impl KeysTab {
                     *test = Some(outcome);
                 }
             }
+            KeysChange::ToggleCatch => {
+                let on = !crate::clipboard_keys::enabled();
+                if let Err(error) = crate::clipboard_keys::set_enabled(on) {
+                    crate::app_log::write(format!("saving the clipboard choice failed: {error}"));
+                }
+            }
+            KeysChange::Caught(Secret(text)) => return self.keep_caught(text.trim(), entries),
+            KeysChange::Identified(Secret(text), service) => match service {
+                Some(service) => self.keep(text.trim(), service, entries),
+                None => {
+                    crate::app_log::write("a copied sk- key was not kept: no service accepted it")
+                }
+            },
             KeysChange::AskRemove(id) => self.confirm_remove = id,
             KeysChange::Remove(id) => {
                 self.confirm_remove = None;
@@ -330,6 +358,66 @@ impl KeysTab {
             }
         }
         Task::none()
+    }
+
+    /// Keeps a key copied elsewhere, unless the vault already has it. A
+    /// plain `sk-` key is first tried with the services that use such keys.
+    fn keep_caught(&mut self, secret: &str, entries: &[AccountUsageEntry]) -> Task<Message> {
+        use crate::clipboard_keys::{CopiedKey, copied_key};
+        if !crate::clipboard_keys::enabled() {
+            return Task::none();
+        }
+        let Some(copied) = copied_key(secret) else {
+            return Task::none();
+        };
+        if self.vault_has(secret) {
+            return Task::none();
+        }
+        match copied {
+            CopiedKey::Of(service) => {
+                self.keep(secret, service, entries);
+                Task::none()
+            }
+            CopiedKey::PlainSk => {
+                let secret = secret.to_owned();
+                Task::perform(
+                    key_check::identify_plain_sk(secret.clone()),
+                    move |service| {
+                        Message::Keys(KeysChange::Identified(Secret(secret.clone()), service))
+                    },
+                )
+            }
+        }
+    }
+
+    fn vault_has(&self, secret: &str) -> bool {
+        match store::list() {
+            Ok(saved) => saved.iter().any(|key| key.secret.trim() == secret),
+            Err(error) => {
+                crate::app_log::write(format!("reading the key vault failed: {error}"));
+                // Unknown: keep nothing rather than a second copy.
+                true
+            }
+        }
+    }
+
+    fn keep(&mut self, secret: &str, service: &str, entries: &[AccountUsageEntry]) {
+        if self.vault_has(secret) {
+            return;
+        }
+        let saved = store::list().unwrap_or_default();
+        let rows = saved.iter().map(vault_row).collect::<Vec<_>>();
+        let name = default_name(&rows, None, service);
+        match VaultKey::new(&name, service, secret).and_then(|key| store::save(&key)) {
+            Ok(()) => {
+                crate::app_log::write(format!("kept a copied {service} key"));
+                self.caught.push(service.to_owned());
+                self.refresh(entries);
+            }
+            Err(error) => {
+                crate::app_log::write(format!("keeping a copied key failed: {error}"));
+            }
+        }
     }
 
     /// Copies a key and marks its row for a moment.
@@ -537,6 +625,25 @@ pub(super) fn view(
     language: locale::Language,
 ) -> Element<'static, Message> {
     let mut sections = column![header(state, theme, language)].spacing(12);
+    if let Some(service) = state.caught.last() {
+        let more = state.caught.len() - 1;
+        let words = if more == 0 {
+            format!(
+                "{} {service}",
+                tr(language, "Kept a copied key:", "حُفظ مفتاح منسوخ:")
+            )
+        } else {
+            format!(
+                "{} {service} (+{more})",
+                tr(language, "Kept copied keys:", "حُفظت مفاتيح منسوخة:")
+            )
+        };
+        sections = sections.push(
+            text(words)
+                .size(typography::METADATA_SIZE)
+                .color(copied_color(theme)),
+        );
+    }
     if let Some(form) = &state.form {
         sections = sections.push(key_form(form, theme, language));
     }
@@ -662,6 +769,33 @@ fn header(
     ]
     .spacing(6)
     .align_y(Alignment::Center);
+    let catching = crate::clipboard_keys::enabled();
+    line = line.push(icon_button(
+        if catching {
+            icon_clipboard_check::<Theme>()
+                .size(15)
+                .color(theme.accent_color())
+        } else {
+            icon_clipboard::<Theme>()
+                .size(15)
+                .color(theme.colors.muted_text())
+        },
+        if catching {
+            tr(
+                language,
+                "Catching copied keys: on. A key you copy anywhere is kept here under its service. Press to stop.",
+                "التقاط المفاتيح المنسوخة: مفعّل. أي مفتاح تنسخه في أي مكان يُحفظ هنا باسم خدمته. اضغط للإيقاف.",
+            )
+        } else {
+            tr(
+                language,
+                "Catching copied keys: off. Press to keep every key you copy anywhere here, under its service.",
+                "التقاط المفاتيح المنسوخة: معطّل. اضغط ليُحفظ هنا كل مفتاح تنسخه في أي مكان، باسم خدمته.",
+            )
+        },
+        change(KeysChange::ToggleCatch),
+        theme,
+    ));
     if state.form.is_none() {
         line = line.push(text_button(
             tr(language, "+ Add key", "+ إضافة مفتاح"),

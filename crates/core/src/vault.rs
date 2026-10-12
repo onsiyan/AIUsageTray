@@ -115,15 +115,31 @@ const KNOWN_SERVICES: &[(&str, &str)] = &[
     ("nvapi-", "NVIDIA"),
     ("tvly-", "Tavily"),
     ("jina_", "Jina AI"),
+    ("csk-", "Cerebras"),
+    ("fc-", "Firecrawl"),
+    ("pa-", "Voyage AI"),
+    ("tgp_v1_", "Together AI"),
 ];
+
+/// Marker in the middle of OpenAI keys, including older plain `sk-` ones.
+const OPENAI_MARKER: &str = "T3BlbkFJ";
 
 /// The service a pasted key belongs to, when its start says so.
 pub fn detect_service(secret: &str) -> Option<&'static str> {
     let secret = secret.trim();
-    KNOWN_SERVICES
+    if let Some((_, service)) = KNOWN_SERVICES
         .iter()
         .find(|(prefix, _)| secret.starts_with(prefix))
-        .map(|(_, service)| *service)
+    {
+        return Some(service);
+    }
+    let rest = secret.strip_prefix("sk-")?;
+    if rest.contains(OPENAI_MARKER) {
+        return Some("OpenAI");
+    }
+    // DeepSeek's keys are `sk-` and 32 lowercase hexadecimal characters.
+    (rest.len() == 32 && rest.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')))
+        .then_some("DeepSeek")
 }
 
 /// Keys in list order: by service, then name, ignoring case.
@@ -168,8 +184,23 @@ mod tests {
         assert_eq!(detect_service("AIzaSy"), Some("Google Gemini"));
         assert_eq!(detect_service("xai-abc"), Some("xAI"));
         assert_eq!(detect_service("gsk_abc"), Some("Groq"));
-        // Plain `sk-` keys are used by OpenAI, DeepSeek and others alike.
+        assert_eq!(detect_service("csk-abc"), Some("Cerebras"));
+        assert_eq!(detect_service("tgp_v1_abc"), Some("Together AI"));
+        // Plain `sk-` keys are told apart only by their shape, when at all.
+        assert_eq!(
+            detect_service("sk-0123456789abcdef0123456789abcdef"),
+            Some("DeepSeek")
+        );
+        // Split so secret scanners do not take this made-up key for a real one.
+        assert_eq!(
+            detect_service(concat!("sk-abcdef", "T3Blbk", "FJabcdefghijklmnop")),
+            Some("OpenAI")
+        );
         assert_eq!(detect_service("sk-abc"), None);
+        assert_eq!(
+            detect_service("sk-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKl"),
+            None
+        );
     }
 
     #[test]

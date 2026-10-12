@@ -36,6 +36,7 @@ mod account_add;
 mod app_log;
 mod autostart;
 mod chrome;
+mod clipboard_keys;
 mod codex_switch;
 mod cost_tab;
 mod custom_theme;
@@ -520,6 +521,7 @@ impl App {
         display_options::load_saved();
         popup_place::load_saved();
         window_start::load_saved();
+        clipboard_keys::load_saved();
         let tab_layout = tabs::load_saved();
         let mut dashboard = dashboard::DashboardState::loading();
         dashboard.set_custom_tab_accounts(tab_layout.custom_accounts());
@@ -599,6 +601,9 @@ impl App {
             subscriptions.push(Subscription::run(reset_clock_stream));
         }
         // Runs while hidden too: the window should start even when nobody looks.
+        if clipboard_keys::enabled() {
+            subscriptions.push(Subscription::run(clipboard_keys::copied_keys));
+        }
         if window_start::any_enabled() {
             subscriptions.push(Subscription::run(window_start_stream));
         }

@@ -376,6 +376,7 @@ pub(super) fn copy_to_clipboard(text: &str) {
             }
             CloseClipboard();
         }
+        crate::clipboard_keys::note_own_copy();
     }
     #[cfg(not(windows))]
     let _ = text;

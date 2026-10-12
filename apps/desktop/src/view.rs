@@ -47,32 +47,23 @@ impl App {
             .width(Fill),
         )
         .width(Fill)
-        .height(44)
-        .padding([4, 10])
-        .style(move |_| container::Style {
-            background: Some(Background::Color(if active_theme.colors.is_light {
-                active_theme.colors.control_surface()
-            } else {
-                Color::from_rgba(0.0, 0.0, 0.0, TITLE_BAR_SHADE_OPACITY)
-            })),
-            border: Border {
-                radius: iced::border::Radius::default().top(WINDOW_FRAME_RADIUS),
-                ..Border::default()
-            },
-            ..Default::default()
-        });
+        .height(40)
+        .padding(iced::Padding::from([4, 10]).bottom(0));
 
-        let title_bar_separator = container(Space::new().width(Fill).height(Length::Fill))
+        // The title bar and the tab track share one shaded header, with no
+        // line between them.
+        let header = container(column![title_bar, provider_tab_bar])
             .width(Fill)
-            .height(1)
             .style(move |_| container::Style {
-                background: Some(Background::Color(active_theme.colors.border(
-                    if active_theme.colors.is_light {
-                        0.38
-                    } else {
-                        0.16
-                    },
-                ))),
+                background: Some(Background::Color(if active_theme.colors.is_light {
+                    active_theme.colors.control_surface()
+                } else {
+                    Color::from_rgba(0.0, 0.0, 0.0, TITLE_BAR_SHADE_OPACITY)
+                })),
+                border: Border {
+                    radius: iced::border::Radius::default().top(WINDOW_FRAME_RADIUS),
+                    ..Border::default()
+                },
                 ..Default::default()
             });
 
@@ -88,9 +79,7 @@ impl App {
         } else {
             window_shade(
                 column![
-                    title_bar,
-                    title_bar_separator,
-                    provider_tab_bar,
+                    header,
                     self.update_note(active_theme),
                     account_add_status,
                     if self.selected_tab == DashboardTab::Cost {

@@ -25,7 +25,7 @@ const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 const REFRESH_AFTER: chrono::Duration = chrono::Duration::hours(24);
 const RETRY_AFTER: chrono::Duration = chrono::Duration::hours(1);
 /// models.dev providers whose prices the logs need.
-const PROVIDERS: [&str; 2] = ["openai", "anthropic"];
+const PROVIDERS: [&str; 3] = ["openai", "anthropic", "google"];
 
 /// Where the prices in a report came from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,13 +107,46 @@ impl PriceTable {
     }
 
     fn lookup(&self, tool: CostTool, model: &str) -> Option<&ModelPrice> {
-        let provider = match tool {
-            CostTool::Codex => "openai",
-            CostTool::Claude => "anthropic",
-        };
-        model_keys(model)
-            .into_iter()
+        match tool {
+            CostTool::Codex => self.lookup_in("openai", model_keys(model)),
+            CostTool::Claude => self.lookup_in("anthropic", model_keys(model)),
+            CostTool::Antigravity => {
+                let keys = antigravity_model_keys(model);
+                let name = keys.first().map_or("", String::as_str);
+                if name.starts_with("claude") {
+                    self.lookup_in("anthropic", keys)
+                } else if name.starts_with("gpt") {
+                    self.lookup_in("openai", keys)
+                } else {
+                    self.lookup_in("google", keys.clone())
+                        .or_else(|| self.latest_gemini(name))
+                }
+            }
+        }
+    }
+
+    fn lookup_in(&self, provider: &str, keys: Vec<String>) -> Option<&ModelPrice> {
+        keys.into_iter()
             .find_map(|model| self.models.get(&format!("{provider}/{model}")))
+    }
+
+    /// A Gemini name with no version, such as `gemini-pro-default`: the
+    /// newest Gemini of that kind (`pro` or `flash`) with a price.
+    fn latest_gemini(&self, name: &str) -> Option<&ModelPrice> {
+        let kind = ["pro", "flash"]
+            .into_iter()
+            .find(|kind| name.starts_with(&format!("gemini-{kind}")))?;
+        self.models
+            .iter()
+            .filter_map(|(key, price)| {
+                let rest = key.strip_prefix("google/gemini-")?;
+                let (version, model_kind) = rest.split_once('-')?;
+                let model_kind = model_kind.strip_suffix("-preview").unwrap_or(model_kind);
+                let number = version.parse::<f64>().ok()?;
+                (model_kind == kind).then_some((number, price))
+            })
+            .max_by(|left, right| left.0.total_cmp(&right.0))
+            .map(|(_, price)| price)
     }
 
     /// The list price of `tokens`, or `None` when the model's price is
@@ -191,6 +224,26 @@ pub(super) fn model_keys(model: &str) -> Vec<String> {
     keys
 }
 
+/// The names to try for a model Antigravity logged. Its names carry
+/// serving tags after the model (`gemini-3.8-flash-tiered`,
+/// `gemini-3.1-pro-low`, `claude-opus-4-6-thinking`), so each name is tried
+/// with its tags dropped one at a time from the end, and each also as a
+/// `-preview` model.
+pub(super) fn antigravity_model_keys(model: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut name = model.trim().to_ascii_lowercase();
+    loop {
+        keys.push(name.clone());
+        keys.push(format!("{name}-preview"));
+        match name.rsplit_once('-') {
+            // Stop at the model family, before a bare `gemini` or `claude`.
+            Some((rest, _)) if rest.contains('-') => name = rest.to_owned(),
+            _ => break,
+        }
+    }
+    keys
+}
+
 /// Downloads models.dev prices when the kept copy is a day old (or missing),
 /// trying at most once an hour. Returns whether new prices were saved.
 pub async fn refresh_prices_if_stale(cache_directory: &Path) -> Result<bool, String> {
@@ -241,7 +294,7 @@ pub async fn refresh_prices_if_stale(cache_directory: &Path) -> Result<bool, Str
     Ok(true)
 }
 
-/// The OpenAI and Anthropic prices in a models.dev catalog.
+/// The OpenAI, Anthropic, and Google prices in a models.dev catalog.
 pub(super) fn models_dev_prices(catalog: &Value) -> HashMap<String, ModelPrice> {
     let mut prices = HashMap::new();
     for provider in PROVIDERS {

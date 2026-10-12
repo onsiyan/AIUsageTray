@@ -28,8 +28,8 @@ pub(super) fn account_card(
     if let Some(provider) = identity_provider {
         identity_children.push(
             image(crate::provider_logo_handle(provider, theme.colors.is_light))
-                .width(20)
-                .height(20)
+                .width(23)
+                .height(23)
                 .content_fit(ContentFit::Contain)
                 .into(),
         );

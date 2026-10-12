@@ -1,5 +1,5 @@
-//! `cost`: what Codex and Claude Code usage on this PC would cost at API
-//! list prices, from their local session logs.
+//! `cost`: what Codex, Claude Code, and Antigravity usage on this PC would
+//! cost at API list prices, from their local session logs and databases.
 
 use usage_monitor_core::cost::{self, CostReport, LogRoots};
 

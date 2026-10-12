@@ -97,6 +97,195 @@
    "cache_read": 0.2,
    "cache_write": 2.5
   },
+  "google/deep-research-max-preview-04-2026": {
+   "input": 2,
+   "output": 12,
+   "cache_read": 0.2,
+   "long": {
+    "threshold": 200000,
+    "input": 4,
+    "output": 18,
+    "cache_read": 0.4
+   }
+  },
+  "google/deep-research-preview-04-2026": {
+   "input": 2,
+   "output": 12,
+   "cache_read": 0.2,
+   "long": {
+    "threshold": 200000,
+    "input": 4,
+    "output": 18,
+    "cache_read": 0.4
+   }
+  },
+  "google/gemini-2.5-computer-use-preview-10-2025": {
+   "input": 1.25,
+   "output": 10,
+   "long": {
+    "threshold": 200000,
+    "input": 2.5,
+    "output": 15
+   }
+  },
+  "google/gemini-2.5-flash": {
+   "input": 0.3,
+   "output": 2.5,
+   "cache_read": 0.03
+  },
+  "google/gemini-2.5-flash-image": {
+   "input": 0.3,
+   "output": 30,
+   "cache_read": 0.075
+  },
+  "google/gemini-2.5-flash-lite": {
+   "input": 0.1,
+   "output": 0.4,
+   "cache_read": 0.01
+  },
+  "google/gemini-2.5-flash-preview-tts": {
+   "input": 0.5,
+   "output": 10
+  },
+  "google/gemini-2.5-pro": {
+   "input": 1.25,
+   "output": 10,
+   "cache_read": 0.125,
+   "long": {
+    "threshold": 200000,
+    "input": 2.5,
+    "output": 15,
+    "cache_read": 0.25
+   }
+  },
+  "google/gemini-2.5-pro-preview-tts": {
+   "input": 1,
+   "output": 20
+  },
+  "google/gemini-3-flash-preview": {
+   "input": 0.5,
+   "output": 3,
+   "cache_read": 0.05
+  },
+  "google/gemini-3-pro-image": {
+   "input": 2,
+   "output": 120
+  },
+  "google/gemini-3-pro-image-preview": {
+   "input": 2,
+   "output": 120
+  },
+  "google/gemini-3.1-flash-image": {
+   "input": 0.5,
+   "output": 60
+  },
+  "google/gemini-3.1-flash-image-preview": {
+   "input": 0.5,
+   "output": 60
+  },
+  "google/gemini-3.1-flash-lite": {
+   "input": 0.25,
+   "output": 1.5,
+   "cache_read": 0.025
+  },
+  "google/gemini-3.1-flash-lite-image": {
+   "input": 0.25,
+   "output": 30
+  },
+  "google/gemini-3.1-flash-lite-preview": {
+   "input": 0.25,
+   "output": 1.5,
+   "cache_read": 0.025
+  },
+  "google/gemini-3.1-flash-live-preview": {
+   "input": 0.75,
+   "output": 4.5
+  },
+  "google/gemini-3.1-flash-tts-preview": {
+   "input": 1,
+   "output": 20
+  },
+  "google/gemini-3.1-pro-preview": {
+   "input": 2,
+   "output": 12,
+   "cache_read": 0.2,
+   "long": {
+    "threshold": 200000,
+    "input": 4,
+    "output": 18,
+    "cache_read": 0.4
+   }
+  },
+  "google/gemini-3.1-pro-preview-customtools": {
+   "input": 2,
+   "output": 12,
+   "cache_read": 0.2,
+   "long": {
+    "threshold": 200000,
+    "input": 4,
+    "output": 18,
+    "cache_read": 0.4
+   }
+  },
+  "google/gemini-3.5-flash": {
+   "input": 1.5,
+   "output": 9,
+   "cache_read": 0.15
+  },
+  "google/gemini-3.5-flash-lite": {
+   "input": 0.3,
+   "output": 2.5,
+   "cache_read": 0.03
+  },
+  "google/gemini-3.5-live-translate-preview": {
+   "input": 3.5,
+   "output": 21
+  },
+  "google/gemini-3.6-flash": {
+   "input": 0.75,
+   "output": 3.75,
+   "cache_read": 0.075
+  },
+  "google/gemini-3.7-flash": {
+   "input": 0.75,
+   "output": 3.75,
+   "cache_read": 0.075
+  },
+  "google/gemini-3.8-flash": {
+   "input": 0.75,
+   "output": 3.75,
+   "cache_read": 0.075
+  },
+  "google/gemini-embedding-001": {
+   "input": 0.15,
+   "output": 0
+  },
+  "google/gemini-embedding-2": {
+   "input": 0.2,
+   "output": 0
+  },
+  "google/gemini-flash-latest": {
+   "input": 0.75,
+   "output": 3.75,
+   "cache_read": 0.075
+  },
+  "google/gemini-flash-lite-latest": {
+   "input": 0.3,
+   "output": 2.5,
+   "cache_read": 0.03
+  },
+  "google/gemini-omni-flash-preview": {
+   "input": 1.5,
+   "output": 17.5
+  },
+  "google/lyria-3-clip-preview": {
+   "input": 0,
+   "output": 0
+  },
+  "google/lyria-3-pro-preview": {
+   "input": 0,
+   "output": 0
+  },
   "openai/gpt-3.5-turbo": {
    "input": 0.5,
    "output": 1.5,

@@ -1,4 +1,5 @@
-//! Reads token usage from Codex and Claude Code session logs.
+//! Reads token usage from Codex and Claude Code session logs, and from
+//! Antigravity's conversation databases (see [`super::antigravity`]).
 //!
 //! Every file's place and running state are kept between scans, so a log
 //! that grew is read only from where the last scan stopped, and an unchanged
@@ -33,11 +34,14 @@ const CODEX_PREFIX_BYTES: usize = 192;
 pub struct LogRoots {
     pub codex: Vec<PathBuf>,
     pub claude: Vec<PathBuf>,
+    /// Folders of Antigravity conversation databases.
+    pub antigravity: Vec<PathBuf>,
 }
 
 impl LogRoots {
-    /// `CODEX_HOME` (else `~/.codex`) sessions, and `CLAUDE_CONFIG_DIR` (else
-    /// `~/.claude` and `~/.config/claude`) projects.
+    /// `CODEX_HOME` (else `~/.codex`) sessions, `CLAUDE_CONFIG_DIR` (else
+    /// `~/.claude` and `~/.config/claude`) projects, and the conversations of
+    /// the Antigravity app and CLI under `~/.gemini`.
     pub fn from_environment() -> Self {
         let home = env::var_os("USERPROFILE")
             .or_else(|| env::var_os("HOME"))
@@ -50,6 +54,16 @@ impl LogRoots {
                 vec![
                     codex_home.join("sessions"),
                     codex_home.join("archived_sessions"),
+                ]
+            })
+            .unwrap_or_default();
+        let antigravity = home
+            .as_ref()
+            .map(|home| {
+                let gemini = home.join(".gemini");
+                vec![
+                    gemini.join("antigravity").join("conversations"),
+                    gemini.join("antigravity-cli").join("conversations"),
                 ]
             })
             .unwrap_or_default();
@@ -69,13 +83,18 @@ impl LogRoots {
                 })
                 .unwrap_or_default(),
         };
-        Self { codex, claude }
+        Self {
+            codex,
+            claude,
+            antigravity,
+        }
     }
 
     fn of(&self, tool: CostTool) -> &[PathBuf] {
         match tool {
             CostTool::Codex => &self.codex,
             CostTool::Claude => &self.claude,
+            CostTool::Antigravity => &self.antigravity,
         }
     }
 }
@@ -96,6 +115,8 @@ struct ScanCache {
 struct FileEntry {
     tool: CostTool,
     size: u64,
+    /// Seconds since 1970; milliseconds for Antigravity, whose databases
+    /// change several times a second.
     modified: u64,
     /// Where reading stopped: just past the last complete line.
     offset: u64,
@@ -108,6 +129,9 @@ struct FileEntry {
     /// written more than once and in more than one file.
     #[serde(default)]
     claude: Vec<ClaudeRecord>,
+    /// The number of the next Antigravity call to read.
+    #[serde(default)]
+    next_call: i64,
 }
 
 /// What a Codex log said last, needed to read the lines after it.
@@ -142,18 +166,20 @@ pub(super) fn scan(roots: &LogRoots, cache_directory: &Path) -> ScannedUsage {
                 continue;
             }
             found.insert(tool);
-            for path in jsonl_files(root) {
-                let Ok(metadata) = fs::metadata(&path) else {
+            let paths = match tool {
+                CostTool::Antigravity => database_files(root),
+                _ => jsonl_files(root),
+            };
+            for path in paths {
+                let Some((size, modified)) = size_and_time(&path, tool) else {
                     continue;
                 };
-                let modified = metadata
-                    .modified()
-                    .ok()
-                    .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                    .map_or(0, |since| since.as_secs());
                 let key = path.to_string_lossy().into_owned();
                 let previous = cache.files.remove(&key);
-                let entry = read_file(&path, tool, metadata.len(), modified, previous);
+                let entry = match tool {
+                    CostTool::Antigravity => read_database(&path, size, modified, previous),
+                    _ => read_file(&path, tool, size, modified, previous),
+                };
                 if let Some(entry) = entry {
                     files.insert(key, entry);
                 }
@@ -203,6 +229,112 @@ pub(super) fn scan(roots: &LogRoots, cache_directory: &Path) -> ScannedUsage {
         );
     }
     ScannedUsage { rows, found }
+}
+
+/// A file's size and last change. An Antigravity database writes through
+/// its `-wal` file first, so that file's size and time count too, and its
+/// time is kept to the millisecond, since a write can keep the size and
+/// land in the same second as the last one.
+fn size_and_time(path: &Path, tool: CostTool) -> Option<(u64, u64)> {
+    let antigravity = tool == CostTool::Antigravity;
+    let time = |metadata: &fs::Metadata| {
+        metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map_or(0, |since| {
+                if antigravity {
+                    u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+                } else {
+                    since.as_secs()
+                }
+            })
+    };
+    let metadata = fs::metadata(path).ok()?;
+    let mut size = metadata.len();
+    let mut modified = time(&metadata);
+    if antigravity {
+        let mut wal = path.as_os_str().to_owned();
+        wal.push("-wal");
+        if let Ok(wal) = fs::metadata(PathBuf::from(wal)) {
+            size += wal.len();
+            modified = modified.max(time(&wal));
+        }
+    }
+    Some((size, modified))
+}
+
+/// The conversation databases directly in `root`.
+fn database_files(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut files = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file() && path.extension().is_some_and(|extension| extension == "db")
+        })
+        .collect::<Vec<_>>();
+    files.sort();
+    files
+}
+
+/// Brings one Antigravity conversation's entry up to date, reading only the
+/// calls added since `previous`; an unchanged database is not opened.
+fn read_database(
+    path: &Path,
+    size: u64,
+    modified: u64,
+    previous: Option<FileEntry>,
+) -> Option<FileEntry> {
+    let mut entry = match previous {
+        Some(entry)
+            if entry.tool == CostTool::Antigravity
+                && entry.size == size
+                && entry.modified == modified =>
+        {
+            return Some(entry);
+        }
+        Some(entry) if entry.tool == CostTool::Antigravity => entry,
+        _ => FileEntry {
+            tool: CostTool::Antigravity,
+            size: 0,
+            modified: 0,
+            offset: 0,
+            codex: CodexState::default(),
+            rows: Vec::new(),
+            claude: Vec::new(),
+            next_call: 0,
+        },
+    };
+    let calls = match super::antigravity::read_generations(path, entry.next_call) {
+        Ok(calls) => calls,
+        // Busy, or not a conversation: keep what was read and try next time.
+        Err(_) => return (entry.next_call > 0).then_some(entry),
+    };
+    // A call whose step time is missing counts on the day the file changed.
+    let file_day = DateTime::from_timestamp_millis(i64::try_from(modified).unwrap_or(0))
+        .map(|time| time.with_timezone(&Local).date_naive());
+    for call in calls {
+        entry.next_call = entry.next_call.max(call.index + 1);
+        let Some(day) = call.day.or(file_day) else {
+            continue;
+        };
+        if call.model.is_empty() || call.tokens.total() == 0 {
+            continue;
+        }
+        add_usage(
+            &mut entry.rows,
+            day,
+            &call.model,
+            call.long_context,
+            &call.tokens,
+        );
+    }
+    entry.size = size;
+    entry.modified = modified;
+    Some(entry)
 }
 
 fn jsonl_files(root: &Path) -> Vec<PathBuf> {
@@ -255,6 +387,7 @@ fn read_file(
             codex: CodexState::default(),
             rows: Vec::new(),
             claude: Vec::new(),
+            next_call: 0,
         },
     };
     let mut file = File::open(path).ok()?;
@@ -270,6 +403,8 @@ fn read_file(
             entry.codex = state;
             read
         }
+        // Read as a database by `read_database`.
+        CostTool::Antigravity => return None,
         CostTool::Claude => {
             let records = &mut entry.claude;
             for_each_line(

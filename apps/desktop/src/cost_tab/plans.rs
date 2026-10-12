@@ -1,6 +1,6 @@
 //! The subscriptions the Cost tab weighs the API value against: the plan of
-//! each saved Codex and Claude account, at its monthly list price or the
-//! price the user set for that plan.
+//! each saved Codex, Claude, and Antigravity account, at its monthly list
+//! price or the price the user set for that plan.
 
 use std::{collections::BTreeMap, fs, io};
 
@@ -40,8 +40,8 @@ impl Plan {
     }
 }
 
-/// The plans of the saved Codex and Claude accounts, Codex first, then by
-/// name. Accounts whose plan is not known yet are left out.
+/// The plans of the saved Codex, Claude, and Antigravity accounts, in that
+/// order, then by name. Accounts whose plan is not known yet are left out.
 pub(super) fn plans(entries: &[AccountUsageEntry], prices: &BTreeMap<String, f64>) -> Vec<Plan> {
     let mut counted: BTreeMap<(u8, String), (CostTool, String, usize)> = BTreeMap::new();
     for entry in entries {
@@ -58,12 +58,15 @@ pub(super) fn plans(entries: &[AccountUsageEntry], prices: &BTreeMap<String, f64
             CostTool::Codex
         } else if belongs_to_provider(&entry.account.provider_id, UsageProvider::Claude) {
             CostTool::Claude
+        } else if belongs_to_provider(&entry.account.provider_id, UsageProvider::Antigravity) {
+            CostTool::Antigravity
         } else {
             continue;
         };
         let order = match tool {
             CostTool::Codex => 0,
             CostTool::Claude => 1,
+            CostTool::Antigravity => 2,
         };
         counted
             .entry((order, plan_key(tool, plan)))
@@ -91,6 +94,7 @@ fn plan_key(tool: CostTool, plan: &str) -> String {
     let tool = match tool {
         CostTool::Codex => "codex",
         CostTool::Claude => "claude",
+        CostTool::Antigravity => "antigravity",
     };
     format!("{tool}:{}", plan.to_lowercase())
 }
@@ -105,6 +109,11 @@ fn plan_name(tool: CostTool, plan: &str) -> String {
         },
         CostTool::Claude => {
             let name = plan.strip_prefix("Claude ").unwrap_or(plan);
+            capitalize(name)
+        }
+        // `Google AI Pro` reads `AI Pro`.
+        CostTool::Antigravity => {
+            let name = plan.strip_prefix("Google ").unwrap_or(plan);
             capitalize(name)
         }
     }
@@ -132,6 +141,9 @@ fn list_price(tool: CostTool, plan: &str) -> Option<f64> {
         (CostTool::Claude, "claude max 20x") => 200.0,
         (CostTool::Claude, "claude team" | "claude team standard") => 25.0,
         (CostTool::Claude, "claude team premium") => 125.0,
+        (CostTool::Antigravity, "free") => 0.0,
+        (CostTool::Antigravity, "google ai pro") => 19.99,
+        (CostTool::Antigravity, "google ai ultra") => 249.99,
         _ => return None,
     };
     Some(price)
@@ -204,6 +216,11 @@ mod tests {
         assert_eq!(list_price(CostTool::Codex, "team"), Some(30.0));
         assert_eq!(list_price(CostTool::Claude, "claude pro"), Some(20.0));
         assert_eq!(list_price(CostTool::Codex, "enterprise"), None);
+        assert_eq!(plan_name(CostTool::Antigravity, "Google AI Pro"), "AI Pro");
+        assert_eq!(
+            list_price(CostTool::Antigravity, "google ai pro"),
+            Some(19.99)
+        );
     }
 
     #[test]

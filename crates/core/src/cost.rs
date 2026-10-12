@@ -1,6 +1,7 @@
-//! What Codex and Claude Code usage on this PC would cost at API list prices,
-//! read from the tools' own session logs (`~/.codex/sessions`,
-//! `~/.claude/projects`).
+//! What Codex, Claude Code, and Antigravity usage on this PC would cost at API
+//! list prices, read from the tools' own session logs (`~/.codex/sessions`,
+//! `~/.claude/projects`) and conversation databases
+//! (`~/.gemini/antigravity/conversations`).
 //!
 //! The figures are estimates: subscription plans bill separately, and the
 //! logs belong to the PC rather than to one account, so every account that
@@ -10,6 +11,7 @@
 //! SSH (see [`remote`]). What the logs held is kept after the tools delete
 //! them, so the report reaches back to the first use the app saw.
 
+mod antigravity;
 mod history;
 mod pricing;
 pub mod remote;
@@ -39,15 +41,17 @@ const MAX_REPORT_DAYS: u64 = 3_660;
 pub enum CostTool {
     Codex,
     Claude,
+    Antigravity,
 }
 
 impl CostTool {
-    pub const ALL: [Self; 2] = [Self::Codex, Self::Claude];
+    pub const ALL: [Self; 3] = [Self::Codex, Self::Claude, Self::Antigravity];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Codex => "Codex",
             Self::Claude => "Claude Code",
+            Self::Antigravity => "Antigravity",
         }
     }
 }

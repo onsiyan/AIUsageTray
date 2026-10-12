@@ -1,5 +1,6 @@
-//! The Cost page: what Codex and Claude Code usage would cost at API list
-//! prices, read from this PC's logs and from other machines' over SSH.
+//! The Cost page: what Codex, Claude Code, and Antigravity usage would cost
+//! at API list prices, read from this PC's logs and from other machines'
+//! over SSH.
 //!
 //! The page leads with what the user gets from their subscriptions: the API
 //! value of the period against what their plans cost for it. Below come each
@@ -329,10 +330,12 @@ pub(super) fn tr(
     }
 }
 
-/// Codex in a neutral tone and Claude in its brand orange.
+/// Codex in a neutral tone, Claude in its brand orange, and Antigravity in
+/// Google blue.
 fn tool_color(tool: CostTool, theme: &'static ThemeDefinition) -> Color {
     match tool {
         CostTool::Claude => Color::from_rgb8(0xD9, 0x77, 0x57),
+        CostTool::Antigravity => Color::from_rgb8(0x4C, 0x8B, 0xF5),
         CostTool::Codex if theme.colors.is_light => Color::from_rgb8(0x3A, 0x3A, 0x3A),
         CostTool::Codex => Color::from_rgb8(0xE6, 0xE6, 0xE6),
     }
@@ -351,6 +354,7 @@ fn tool_provider(tool: CostTool) -> UsageProvider {
     match tool {
         CostTool::Codex => UsageProvider::Codex,
         CostTool::Claude => UsageProvider::Claude,
+        CostTool::Antigravity => UsageProvider::Antigravity,
     }
 }
 
@@ -1531,14 +1535,14 @@ fn footer(
             if report.machines.is_empty() {
                 tr(
                     language,
-                    "Read from this PC's Codex and Claude Code logs, all accounts together.",
-                    "مقروءة من سجلات Codex وClaude Code على هذا الجهاز، لكل الحسابات معًا.",
+                    "Read from this PC's Codex, Claude Code, and Antigravity logs, all accounts together.",
+                    "مقروءة من سجلات Codex وClaude Code وAntigravity على هذا الجهاز، لكل الحسابات معًا.",
                 )
             } else {
                 tr(
                     language,
-                    "Read from the Codex and Claude Code logs of this PC and your machines, all accounts together.",
-                    "مقروءة من سجلات Codex وClaude Code على هذا الجهاز وأجهزتك، لكل الحسابات معًا.",
+                    "Read from the Codex, Claude Code, and Antigravity logs of this PC, and the Codex and Claude Code logs of your machines, all accounts together.",
+                    "مقروءة من سجلات Codex وClaude Code وAntigravity على هذا الجهاز، وسجلات Codex وClaude Code على أجهزتك، لكل الحسابات معًا.",
                 )
             },
             theme,

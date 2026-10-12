@@ -4,7 +4,8 @@ use std::path::Path;
 
 use chrono::{Days, Local, TimeZone};
 
-use super::pricing::{BUNDLED_PRICES, model_keys, models_dev_prices};
+use super::antigravity::tests::{call_record, step_record};
+use super::pricing::{BUNDLED_PRICES, antigravity_model_keys, model_keys, models_dev_prices};
 use super::scan::{CACHE_FILE, for_each_line};
 use super::*;
 
@@ -52,7 +53,47 @@ fn roots(home: &Path) -> LogRoots {
     LogRoots {
         codex: vec![home.join("codex")],
         claude: vec![home.join("claude")],
+        antigravity: vec![home.join("antigravity")],
     }
+}
+
+/// An Antigravity conversation database with the tables the scan reads.
+fn antigravity_conversation(path: &Path) -> rusqlite::Connection {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let connection = rusqlite::Connection::open(path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE steps (idx integer, metadata blob, PRIMARY KEY (idx));
+             CREATE TABLE gen_metadata (idx integer, data blob, size integer, PRIMARY KEY (idx));",
+        )
+        .unwrap();
+    connection
+}
+
+/// Adds a call ending on step `step`, made at noon `days_ago` days ago.
+fn add_antigravity_call(
+    connection: &rusqlite::Connection,
+    index: i64,
+    step: i64,
+    days_ago: u64,
+    model: &str,
+    input: u64,
+) {
+    let seconds = DateTime::parse_from_rfc3339(&stamp(days_ago))
+        .unwrap()
+        .timestamp();
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO steps (idx, metadata) VALUES (?1, ?2)",
+            rusqlite::params![step, step_record(u64::try_from(seconds).unwrap())],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO gen_metadata (idx, data, size) VALUES (?1, ?2, 0)",
+            rusqlite::params![index, call_record(model, input, 500, 30, 20, step)],
+        )
+        .unwrap();
 }
 
 #[test]
@@ -251,6 +292,86 @@ fn models_dev_prices_keep_rates_and_context_tiers() {
     let file = serde_json::json!({"models": prices});
     assert_eq!(file["models"]["openai/gpt-x"]["long"]["threshold"], 272000);
     assert_eq!(file["models"]["anthropic/claude-x"]["output"], 15.0);
+}
+
+#[test]
+fn antigravity_calls_are_counted_by_day_and_read_once() {
+    let home = tempfile::tempdir().unwrap();
+    let cache = home.path().join("cache");
+    let database = home.path().join("antigravity").join("a.db");
+    let connection = antigravity_conversation(&database);
+    add_antigravity_call(&connection, 0, 1, 1, "gemini-3.8-flash", 1_000);
+    add_antigravity_call(&connection, 1, 3, 0, "gemini-3.8-flash", 2_000);
+    add_antigravity_call(&connection, 2, 5, 0, "claude-opus-4-6-thinking", 4_000);
+
+    let report = scan_report(&roots(home.path()), &cache);
+    let antigravity = report.tool(CostTool::Antigravity).unwrap();
+    assert!(antigravity.logs_found);
+    let today = antigravity.last(1);
+    assert_eq!(today.tokens.input, 6_000);
+    assert_eq!(today.tokens.cache_read, 1_000);
+    assert_eq!(today.tokens.output, 100);
+    assert_eq!(today.tokens.reasoning, 60);
+    assert_eq!(antigravity.last(2).tokens.input, 7_000);
+    assert_eq!(today.unpriced_tokens, 0, "Gemini and Claude are priced");
+    assert!(today.cost_usd > 0.0);
+
+    // Only the new call is read: an older one changed after it was read is
+    // not read again.
+    connection
+        .execute(
+            "UPDATE gen_metadata SET data = ?1 WHERE idx = 0",
+            rusqlite::params![call_record("gemini-3.8-flash", 999_999, 0, 0, 0, 1)],
+        )
+        .unwrap();
+    add_antigravity_call(&connection, 3, 7, 0, "gemini-3.8-flash", 8_000);
+    drop(connection);
+    let again = scan_report(&roots(home.path()), &cache);
+    let antigravity = again.tool(CostTool::Antigravity).unwrap();
+    assert_eq!(antigravity.last(1).tokens.input, 14_000);
+    assert_eq!(antigravity.last(2).tokens.input, 15_000);
+}
+
+#[test]
+fn antigravity_model_names_find_their_prices() {
+    assert!(
+        antigravity_model_keys("gemini-3.7-flash-tiered").contains(&"gemini-3.7-flash".to_owned())
+    );
+    assert!(
+        antigravity_model_keys("gemini-3.1-pro-low").contains(&"gemini-3.1-pro-preview".to_owned())
+    );
+    assert_eq!(
+        antigravity_model_keys("gemini-pro")
+            .last()
+            .map(String::as_str),
+        Some("gemini-pro-preview")
+    );
+    let table = PriceTable::load(Path::new("does-not-exist"));
+    let tokens = TokenCounts {
+        input: 1_000_000,
+        ..TokenCounts::default()
+    };
+    for model in [
+        "gemini-3.8-flash",
+        "gemini-3.8-flash-n",
+        "gemini-3.8-flash-exp-a",
+        "gemini-3.7-flash-tiered",
+        "gemini-3.1-pro-low",
+        "gemini-pro-default",
+        "claude-opus-4-6-thinking",
+    ] {
+        assert!(
+            table
+                .cost(CostTool::Antigravity, model, &tokens, false)
+                .is_some(),
+            "{model}"
+        );
+    }
+    assert!(
+        table
+            .cost(CostTool::Antigravity, "made-up-model", &tokens, false)
+            .is_none()
+    );
 }
 
 #[test]

@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-10-09
+## [1.0.0] - 2026-10-13
 
 ### Added
 
@@ -18,14 +18,35 @@ All notable changes to this project are documented here. The format follows
   account, and the app itself never sends anything.
 - Test a saved key on the API keys page (the plug button): one free request
   to the service's own API, such as listing its models, says whether the
-  key works or was rejected. Nothing is spent. Offered for 18 services,
+  key works or was rejected. Nothing is spent. Offered for 39 services,
   among them OpenAI, Claude, Gemini, xAI, DeepSeek, Mistral, OpenRouter
   and Groq.
+- Catch copied keys (the clipboard button on the API keys page, off until
+  turned on): a key you copy anywhere is kept in the vault under its
+  service, told by how the key starts (Claude, OpenAI, OpenRouter, Gemini,
+  xAI, Groq, Cerebras, Together AI, and others). A plain `sk-` key, used by
+  several services, is tried with the same free request as the key test
+  against DeepSeek, Kimi, OpenAI, SiliconFlow, and Stability AI in turn, and
+  kept under the first that accepts it. Only text that is one key is taken;
+  keys already kept, the app's own copies, and copies a password manager
+  marks private are skipped.
+- A pasted key now also names Cerebras, Firecrawl, Voyage AI, Together AI,
+  DeepSeek (`sk-` and 32 hexadecimal characters), and older OpenAI keys.
+- The Kimi and SiliconFlow key tests also try their China sites, and
+  SiliconFlow and Firecrawl keys can be tested.
 - Opening the app again while it runs (a taskbar pin, the Start menu, or a
   shortcut) opens its popup instead of doing nothing.
+- The Cost page counts Antigravity too, read from its conversation
+  databases on this PC, at Google's Gemini prices (and Anthropic's for the
+  Claude models it offers), against the Google AI Pro or Ultra plan. Each
+  refresh opens only the conversations that changed since the last one and
+  reads only the model calls they added.
 
 ### Changed
 
+- The tabs sit in one rounded track, and the selected tab is a raised pill
+  on it. The title bar and the tabs share one header, without the line
+  between them, and the provider logo on each account is a little larger.
 - Less space between the tabs and the first card.
 - The README leads with what the app does and why, adds a FAQ, and folds
   the technical sections; the repository has a description, topics, and a
